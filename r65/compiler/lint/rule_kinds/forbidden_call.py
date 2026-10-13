@@ -55,8 +55,7 @@ class ForbiddenCall(LintRule):
         self.severity = parse_severity(severity_name)
         self.custom_hint = hint
 
-        # For each caller, map forbidden callee -> path list (or None if
-        # direct-only and not in direct callees).
+        # caller -> {forbidden callee: call path}
         self._violations: Dict[str, Dict[str, List[str]]] = {}
 
     # ------------------------------------------------------------------ setup

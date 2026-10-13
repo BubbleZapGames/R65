@@ -10,7 +10,7 @@ takes an explicit path via ``--lint-config``), parses it with stdlib
 wants to use the built-in style rules must list them explicitly::
 
     [lint]
-    enable = ["L001", "L002", "L003", "L004", "L005", "L006"]
+    enable = ["L001", "L002", "L003", "L004", "L005", "L006", "L007", "L008", "L009"]
 
 Schema:
 
@@ -75,7 +75,7 @@ class LintConfig:
 def default_config() -> LintConfig:
     """Return an empty config — nothing enabled, nothing denied.
 
-    Built-in rules (L001–L006) only run when explicitly listed in a project's
+    Built-in rules (L001–L009) only run when explicitly listed in a project's
     ``r65-lint.toml`` ``[lint].enable`` list. Without a config file, ``--lint``
     is a no-op.
     """
@@ -112,7 +112,7 @@ def load_config(
     """Resolve and load lint config.
 
     Precedence (applied in order, later overrides earlier):
-      1. All built-in rule codes enabled.
+      1. Nothing enabled (:func:`default_config`).
       2. ``[lint].enable`` / ``[lint].disable`` from the TOML file.
       3. ``[lint].deny`` from the TOML file.
       4. CLI ``--allow`` removes codes from enabled.
@@ -212,7 +212,7 @@ def _apply_lint_table(config: LintConfig, table: dict, path: Path) -> None:
             raise LintConfigError(
                 "[lint].enable must be a list of strings", config_path=path
             )
-        # Allowlist: start from the given set intersected with what exists.
+        # Allowlist: the given set replaces the default. Unknown L-codes are an error.
         requested = set(enable)
         _warn_unknown_builtin_codes(requested, path, "enable")
         config.enabled_codes = requested

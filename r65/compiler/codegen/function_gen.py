@@ -129,8 +129,8 @@ class FunctionCodeGenerator:
                     scratch.is_free = False
 
         # Mark ALL globally-used scratch param addresses as occupied.
-        # In FixedStack mode, a caller's scratch params persist while the callee
-        # runs. If we allow local variables at those addresses, the callee's locals
+        # A caller's scratch params persist while the callee runs (under both
+        # ABIs that promote to scratch). If we allow local variables at those addresses, the callee's locals
         # overwrite the caller's params. Globally reserving all param addresses
         # prevents this collision.
         global_addrs = getattr(mir_func, '_global_scratch_param_addrs', None)
@@ -161,10 +161,6 @@ class FunctionCodeGenerator:
         abi_info = ABIInfo.from_mir_function(mir_func)
         mir_func.abi_info = abi_info
         prologue_bytes = abi_info.prologue_stack_bytes
-
-        # NOTE: We no longer need to add A register parameter save bytes.
-        # Stack params are accessed directly at their passed locations without
-        # copying, so there's no need to save/restore A during the prologue.
 
         # Create instruction-level liveness analyzer for precise liveness tracking
         from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
@@ -286,9 +282,8 @@ class FunctionCodeGenerator:
 
         # Fix up far self D=S vreg offset now that frame_size is known
         # The far self pointer (3 bytes) was pushed by PHB+PHY before frame alloc.
-        # From SP after all prologue: offset = prologue_stack_bytes - 2 + frame_size
-        # (prologue_stack_bytes includes the 3 bytes for PHB+PHY, minus those 3 gives
-        # the bytes above the self ptr; + frame_size for the frame; +1 for SP+1 base)
+        # It sits just above the frame and the post-frame pushes:
+        # offset = post_frame_prologue_bytes + frame_size + 1.
         # Skip for the FixedStack scratch path — that pre-allocates to SCRATCH and
         # stays put.
         if (mir_func.self_far_uses_d_equals_s and mir_func.self_y_vreg
@@ -497,9 +492,8 @@ class FunctionCodeGenerator:
         selection so it points at the offending source and MIR instruction.
 
         Errors from instruction selection (e.g. "Cannot resolve hardware
-        register X as memory operand") are frequently raised with no source
-        location, which forced callers to instrument the compiler just to
-        learn which function failed. This fills in, when missing:
+        register X as memory operand") are often raised without a source
+        location; this fills in, when missing:
           - source_loc: the failing instruction's location, falling back to
             the enclosing function's definition location.
           - message: the enclosing function name.
@@ -745,8 +739,7 @@ class FunctionCodeGenerator:
             return _xy_register(instr.left) == dest_reg
 
         # Deny by default: an instruction keeps the width only if it is known
-        # to. (An allow-list of known changers missed `INC $mem` in m16 - the
-        # `m = m + 1` fold - and left a loop header reading in 16-bit A.)
+        # to.
         def _size(instr):
             t = getattr(instr, 'type_info', None)
             return get_type_size(t) if t else 0
@@ -879,7 +872,8 @@ class FunctionCodeGenerator:
         """
         Create scratch register pool from user-defined register variables.
 
-        Scans static variables for those marked with register=true attribute.
+        Scans static variables for those marked with the `register` flag
+        (`#[zeropage(addr, register)]`).
         Memory management is the programmer's responsibility - the compiler
         only uses scratch registers explicitly defined by the programmer.
 
@@ -955,13 +949,18 @@ class FunctionCodeGenerator:
         Prologue may include (in order):
         1. Stack pointer initialization (entry functions with custom stack)
         2. Entry function setup (SEI/CLC/XCE/REP - switch to native mode)
-        3. Stack frame allocation (if needed)
-        4. DBR management (databank=inline)
-        5. Mode transitions
-        6. Register preservation
+        3. Interrupt register and scratch-pool saves
+        4. Far-self pushes (PHB/PHY, then PHK/PLB)
+        5. A-parameter save (TAY/TAX) when later steps clobber A
+        6. Stack frame allocation (if needed)
+        7. DBR management (databank=inline)
+        8. REP #$20 for an m16 entry
+        9. Register preservation (#[preserves])
+        10. Far-pointer setup (PHD/TSC/TCD, or PHB/LDA/PHA/PLB)
+        11. A-parameter restore
 
-        Stack frame allocation comes BEFORE register saves so that saved registers
-        and stack parameters are at consistent offsets regardless of local variable count.
+        Stack frame allocation comes BEFORE the #[preserves] pushes so saved
+        registers sit at fixed offsets from S regardless of frame size.
 
         Args:
             mir_func: MIR function
@@ -1016,8 +1015,8 @@ class FunctionCodeGenerator:
         # U32::div_u8 from U32::to_string) inherit a sane DBR — otherwise the
         # hijacked DBR=$7E propagates and nested HW-register absolute writes
         # (STA $4204) hit WRAM at $7E:4204 instead of the HW divider.
-        # Epilogue's PLB pulls back the saved hijacked DBR (caller restores it
-        # in turn), so the protocol is preserved.
+        # The saved byte is discarded with the frame by the return cleanup (no
+        # PLB); the dispatching caller restores its own DBR.
         if mir_func.self_far_uses_d_equals_s:
             self._emit_instr(Opcode.PHB, comment="Save caller's DBR (was hijacked to self bank)")
             self._emit_instr(Opcode.PHY, comment="Push self address (Y = object addr)")
@@ -1027,8 +1026,8 @@ class FunctionCodeGenerator:
         # For far self FixedStack scratch path: copy self (Y addr + caller DBR bank)
         # into a 3-byte zeropage scratch slot. DP stays at 0 so other scratch
         # params/registers remain reachable via [dp] addressing.
-        # Stack effect: PHB pushes 1 byte (saved for PLB at epilogue); STY/STA touch
-        # only zeropage. PHK+PLB then sets DBR=PB for the body.
+        # Stack effect: PHB pushes 1 byte (discarded by the return cleanup, no
+        # PLB); STY/STA touch only zeropage. PHK+PLB then sets DBR=PB for the body.
         if mir_func.self_far_uses_scratch:
             scratch_addr = mir_func.self_scratch_addr
             assert scratch_addr is not None
@@ -1125,7 +1124,6 @@ class FunctionCodeGenerator:
 
         # Set up processor mode based on inferred entry mode
         # In R65, X/Y are always x16, A mode is based on parameter types
-        # Mode transitions are now automatic - compiler inserts REP/SEP as needed
         from r65.compiler.typeck.processor_mode import ModeState
 
         # For functions with m16 entry (u16 @ A parameter), set up 16-bit A mode
@@ -1134,8 +1132,8 @@ class FunctionCodeGenerator:
         if mir_func.entry_m_mode == ModeState.M16:
             # REP #$20 to set 16-bit accumulator mode
             self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Set m16 mode for u16 @ A parameter")
-        # If m8 (default), no prologue mode switch needed - we assume caller is in m8 mode
-        # For now, we trust that the caller will set up the correct mode
+        # An m8 callee needs no switch: the caller pins the callee's entry mode
+        # before the JSR (`call_select._emit_entry_mode_switch`).
 
         # Emit register saves for #[preserves(...)]
         # Registers are pushed in order: STATUS, A, X, Y, D, DBR
@@ -1182,8 +1180,8 @@ class FunctionCodeGenerator:
     def _get_far_ptr_bank_stack_offset(self, mir_func: MIRFunction, frame_size: int) -> int:
         """Compute stack offset to the far pointer's bank byte for SET_DBR prologue.
 
-        At the point the LDA runs, PHB has already been pushed (line 994 emits PHB
-        before line 995 emits LDA), so we need the full prologue_stack_bytes.
+        At the point the LDA runs, PHB has already been pushed (the SET_DBR
+        prologue emits PHB before this LDA), so we need the full prologue_stack_bytes.
         """
         # Get the single far pointer param index
         far_idx = next(iter(mir_func.far_ptr_param_indices))
@@ -1212,8 +1210,6 @@ class FunctionCodeGenerator:
             mir_func: MIR function
         """
         # Emit the mode switch sequence using raw assembly
-        # This is cleaner than emitting individual instructions since these
-        # are special bootstrap instructions that don't need comments
         self.emitter.emit_raw("SEI")   # Disable interrupts
         self.emitter.emit_raw("CLC")   # Clear carry for XCE
         self.emitter.emit_raw("XCE")   # Enter native mode
@@ -1296,7 +1292,7 @@ class FunctionCodeGenerator:
                 if isinstance(instr, InlineAsm):
                     return ALL_REGS
 
-                # MemSet/MemCopy use registers
+                # MemoryFill/BlockCopy expand to MVN/MVP code over A, X, Y
                 if isinstance(instr, (MemoryFill, BlockCopy)):
                     return ALL_REGS
 
@@ -1355,15 +1351,11 @@ class FunctionCodeGenerator:
         After this, the stack has the saved registers on top, and stack-relative
         addressing for local variables will work correctly.
 
-        CRITICAL: The 65816 has a hidden high byte of A (the "B accumulator") that
-        is NOT preserved by PHA in m8 mode (PHA only pushes the low byte). If the
-        handler body switches to m16 and performs 16-bit operations, the high byte
-        gets clobbered. When the interrupted code later uses REP #$20, the corrupted
-        high byte causes wrong results.
-
-        Fix: Push PHP FIRST (saves mode), then REP #$20 (force m16), then PHA
-        (pushes full 16-bit A). This always saves both bytes of A regardless of
-        what mode the CPU was in when the interrupt fired.
+        The 65816 has a hidden high byte of A (the "B accumulator") that PHA
+        in m8 does not push. If the handler body does 16-bit work, that byte
+        gets clobbered, and the interrupted code's next REP #$20 sees it. So A
+        is saved under REP #$30 — both bytes, whatever width was interrupted.
+        No PHP: RTI restores P from the CPU-pushed frame.
 
         Order of pushes: REP #$30, [PHA(16-bit)], PHX, PHY, PHD, PHB, SEP #$20
         (Corresponding pops in epilogue: PLB, PLD, PLY, PLX, [REP #$20, PLA(16-bit)])
@@ -1415,11 +1407,7 @@ class FunctionCodeGenerator:
         # for a scratch byte without a `PEI` partner pushes one byte in m8
         # but two in m16, while the epilogue always pulls back one.
         self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "8-bit A for handler body")
-        # Emit .ACCU 8 so WLA-DX tracks the mode correctly.
-        # WLA-DX auto-tracks REP/SEP, so the preceding REP #$20 (for PHA)
-        # switched its internal state to 16-bit. The SEP #$20 switches it
-        # back, but we emit .ACCU 8 explicitly to be safe — WLA-DX's
-        # linear tracking can lose sync across branch targets.
+        # Keep the emitter's tracked width (and .ACCU) in step with the SEP.
         self.emitter.emit_accu_mode(8)
 
     def _reconcile_interrupt_saves(self, mir_func: MIRFunction, instr_selector):
@@ -1476,16 +1464,15 @@ class FunctionCodeGenerator:
 
     def _emit_interrupt_scratch_saves(self, scratch_pool: ScratchRegisterPool):
         """
-        Save scratch register WRAM contents to the stack for interrupt handlers.
+        Save the zeropage scratch pool to the stack for interrupt handlers.
 
         When an NMI fires mid-execution, the interrupted code may be using
         scratch registers for local variables. The interrupt handler also uses
         these scratch registers for its own temporaries. Without saving/restoring,
         the interrupted code's values get corrupted.
 
-        Uses absolute addressing (not DP) because D's value is unknown when an
-        interrupt fires — the interrupted code may have set D = S for far pointer
-        stack params, making DP addressing read from the wrong location.
+        D was reset to 0 by `_emit_interrupt_register_saves`, so PEI/LDA dp
+        reach the pool whatever D the interrupted code had.
 
         Called after _emit_interrupt_register_saves() which leaves us in m8 mode.
 
@@ -1515,13 +1502,13 @@ class FunctionCodeGenerator:
         """
         Emit stack frame allocation code.
 
-        Delegates to the ABIModel which decides between PHB-per-byte
-        (small/FixedStack) and TSC/SBC/TCS (large/Default).
+        Delegates to the ABIModel which decides between push-based allocation
+        (PHB, or PHX/PHY/PHB for Default) and TSC/SBC/TCS.
 
         Args:
             frame_size: Number of bytes to allocate
-            force_direct_stack: If True, always use TSC/SBC/TCS approach (for interrupt
-                handlers where mode is unknown after register saves)
+            force_direct_stack: If True, always use TSC/SBC/TCS (set for
+                interrupt handlers)
         """
         self.abi_model.emit_frame_alloc(self._emit_instr, frame_size, force_direct_stack)
 
@@ -1601,8 +1588,9 @@ class FunctionCodeGenerator:
         for anything else (no ROM data, no HW, no function calls).
 
         D=S path: PHB+PHY push far self pointer to stack, then D=S infrastructure
-        provides [dp],Y indirect long addressing for self access. DBR stays at
-        caller's bank, so ROM/HW/calls work normally.
+        provides [dp],Y indirect long addressing for self access. The prologue
+        then resets DBR to the program bank (PHK/PLB), so ROM/HW/calls see a
+        sane DBR.
         """
         if not mir_func.is_trait_method or not mir_func.self_y_vreg:
             return
@@ -1656,11 +1644,9 @@ class FunctionCodeGenerator:
         Emit function epilogue.
 
         Epilogue includes (in order):
-        1. D restore for far pointer stack params (PLD)
+        1. PLD/PLB for far pointer stack params
         2. Preserved register restoration (reverse of prologue push order)
-        3. DBR restoration (for databank=inline)
-        4. Mode restoration (for transition=inline)
-        5. Stack frame deallocation (non-entry functions)
+        3. PLB for databank=inline
 
         Note: Return value loading and RTS/RTL are handled separately
         by the return instruction.
@@ -1727,23 +1713,18 @@ class FunctionCodeGenerator:
                 self._emit_instr(Opcode.PLB, comment="Restore data bank")
 
     def _emit_mode_restore(self, mir_func: MIRFunction):
-        """Mode restore placeholder.
+        """Emits nothing.
 
-        Mode switching for return values is now handled in select_return's
-        _switch_to_exit_mode(), which runs BEFORE loading return values.
-        This ensures 16-bit return values are loaded in the correct mode.
-
-        This method is kept for API compatibility but no longer emits code.
+        Mode switching for return values happens in select_return's
+        _switch_to_exit_mode() (control_flow_select.py), which runs BEFORE
+        loading return values so 16-bit values load in the correct mode.
         """
-        # Mode switching is now handled in control_flow_select.py:_switch_to_exit_mode()
         pass
 
 
 class ProgramFunctionGenerator:
     """
-    Generates all functions in a program.
-
-    Orchestrates function generation for entire MIR program.
+    Holder for the per-program FunctionCodeGenerator.
     """
 
     def __init__(self,

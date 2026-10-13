@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Static init lowerer: generates __init_start() for static variable initialization.
-
-Extracted from MIRBuilder to improve modularity and reduce file size.
 """
 
 from typing import TYPE_CHECKING, Optional, List
@@ -134,7 +132,7 @@ class StaticInitLowerer:
 
             elif is_rom_storage and not TypeUtils.is_aggregate_type(static_decl.var_type):
                 # A scalar in ROM: its bytes become a data label, read in
-                # place. Without one it fell to the RAM allocator and read $00.
+                # place.
                 self._emit_rom_scalar_init(static_decl, initializer)
 
             elif is_rom_storage:
@@ -221,8 +219,7 @@ class StaticInitLowerer:
         no loop to run - it needs its bytes in a table, or a read of it lands
         wherever the RAM allocator would have put it - and an aggregate value
         (`[[7; 2]; 3]`) is no single byte to store, so both become the same
-        table an array literal would, expanded element by element. (Both used
-        to be dropped: no data, and a fill value of 0.)
+        table an array literal would, expanded element by element.
         """
         from r65.compiler.hir.types import ArrayTypeInfo
 

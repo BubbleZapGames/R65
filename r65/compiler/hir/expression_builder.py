@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 Expression builder - builds HIR expressions from AST expressions.
-
-Extracted from HIRBuilder to improve modularity and reduce file size.
 """
 
 import dataclasses
@@ -776,12 +774,14 @@ class ExpressionBuilder:
         """`(enum_name, index_ast)` if *scrutinee* names a tagged enum element.
 
         A tagged enum has no contiguous element, so matching on one is really
-        matching on its tag plane at some index. The three spellings that reach
-        an element all reduce to an index here:
+        matching on its tag plane at some index. Every spelling that reaches
+        an element reduces to an index here:
 
-          POOL[i]  ->  i
-          self     ->  self          (inside a tagged enum method)
-          SHAPE    ->  0             (a single instance is a pool of one)
+          POOL[i]        ->  i
+          POOL[i].field  ->  i       (enum field of an #[soa] element)
+          self           ->  self    (inside a tagged enum method)
+          self.field     ->  self    (inside a method on that #[soa] struct)
+          SHAPE          ->  0       (a single instance is a pool of one)
 
         Returns None for anything else, including a fieldless enum, which is an
         ordinary value and matches directly.

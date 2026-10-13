@@ -2,7 +2,7 @@
 """
 Type utilities for code generation.
 
-Delegates to TypeInfo.size_bytes for HIR types.
+Width and A-residency predicates shared by the allocator and the emitters.
 """
 
 from typing import TYPE_CHECKING
@@ -116,12 +116,9 @@ def convert_operand_widths(instr):
 def is_narrowing_convert(instr) -> bool:
     """True for a TypeConvert that truncates two bytes down to one.
 
-    Narrowing is the one conversion direction that costs nothing when the
-    value is already in A: `_emit_narrowing_conversion` recognises an A
-    destination and emits a bare `SEP #$20`. Widening has no such path —
-    it ends in `STA dest_loc` plus sign/zero-extension writes *to that
-    location* — so the register allocator must be able to tell the two
-    apart before it lets a conversion result live in A.
+    Narrowing with the source in A is a bare `SEP #$20`
+    (`_emit_narrowing_conversion`); see `is_a_resident_convert` for the
+    widening case.
 
     Shares `convert_operand_widths` with `select_type_convert`, so the
     allocator cannot come to a different conclusion than the emitter it is

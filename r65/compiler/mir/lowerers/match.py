@@ -100,7 +100,7 @@ class MatchLowerer:
     # ========================================================================
 
     # Cycle costs of the two dispatch shapes, read off the emitted code and
-    # confirmed on Mesen (2026-08-22).
+    # measured on Mesen.
     #
     # A table dispatch is a bounds check, a scale, and an indirect jump:
     #   LDA slot / SEC / SBC #min / BCC out / CMP #size / BCS out
@@ -121,13 +121,8 @@ class MatchLowerer:
         so a chain walks about half its arms. That is a crude model and it is
         wrong in a specific, common way: an idiomatic `match` puts the hot
         "none/empty" case first, which favours the chain further. Erring
-        toward the chain is therefore the safer bias.
-
-        The previous rule -- three patterns -- chose a table where a chain
-        walked under two arms for ~18 cycles against the table's 33. Nothing
-        in classickong.r65 reached it until or-patterns became eligible, at
-        which point `particle_process` measured **100 cycles/frame slower**:
-        its four particle slots are usually `PART_TYPE_NONE`, the first arm.
+        toward the chain is therefore the safer bias: a chain wins whenever
+        the hot arm is first.
         """
         if num_arms < 2:
             return False
@@ -230,9 +225,8 @@ class MatchLowerer:
         # Build value-to-arm-index mapping. `match` is first-match-wins, and
         # `pattern_values` is in arm order, so an earlier arm must keep the
         # value: assigning would hand it to the *last* arm that mentions it.
-        # Overlap is reachable through a range (`1..=2` then `2..=3`) and,
-        # since or-patterns became table-eligible, through the far more
-        # natural `1 | 2` then `2 | 3`.
+        # Overlap is reachable through a range (`1..=2` then `2..=3`) and
+        # through the far more natural `1 | 2` then `2 | 3`.
         value_to_arm = {}
         for value, arm_index in pattern_values:
             value_to_arm.setdefault(value, arm_index)

@@ -17,6 +17,7 @@ The optimization is safe when:
 4. The function is not a `*dyn` dispatch target — a far trait's dispatch
    wrapper reaches its implementors through `JML` trampolines that
    expect an `RTL`, and those edges are not `Call` instructions.
+5. The function has at least one direct caller.
 """
 
 from typing import Dict, Set, List, Optional, Tuple
@@ -75,10 +76,7 @@ class FarToNearOptimizer:
     """
     Optimizer that converts far function calls to near when safe.
 
-    A far function can be converted to near if:
-    1. All direct callers are in the same bank as the function
-    2. The function's address is never taken (no indirect calls possible)
-    3. The function is not an interrupt handler
+    See the module docstring for the conditions.
     """
 
     def __init__(self, verbose: bool = False):
@@ -167,11 +165,7 @@ class FarToNearOptimizer:
         """
         Find all far functions that can be safely converted to near.
 
-        A function is convertible if:
-        1. It is currently marked as far
-        2. All its callers are in the same bank
-        3. Its address is never taken
-        4. It is not an interrupt handler
+        See the module docstring for the conditions.
 
         Returns:
             List of function names that can be converted

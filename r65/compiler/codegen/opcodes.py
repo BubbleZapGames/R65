@@ -1075,7 +1075,6 @@ X16_IMMEDIATE_OPCODES = frozenset({
 # Instruction Selection Mappings
 # ============================================================================
 # Consolidated opcode mappings used by instruction selectors.
-# Previously duplicated across instruction_select.py and call_select.py.
 
 # Mapping from base mnemonic to opcode variants by addressing mode
 OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {}

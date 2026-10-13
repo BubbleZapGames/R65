@@ -55,7 +55,7 @@ class Type(ASTNode):
 class Program(ASTNode):
     """Top-level program node containing all declarations."""
     items: List[Declaration]
-    doc: Optional[str] = None  # Inner doc comments (//! and /*! */)
+    doc: Optional[str] = None  # Inner doc comments (//! and /*! */); parser-only, the preprocessor rebuilds Program without it
 
 
 # ============================================================================
@@ -65,7 +65,7 @@ class Program(ASTNode):
 @dataclass
 class BasicType(Type):
     """Basic type like u8, u16, bool."""
-    name: str  # "u8", "u16", "i8", "i16", "bool", "near"
+    name: str  # builtin scalar (u8 u16 i8 i16 bool) or a user type name
 
 
 @dataclass
@@ -101,8 +101,8 @@ class NeverType(Type):
 class MultiReturnType(Type):
     """Multi-return type: the element types a function returns, e.g. ``-> u8, u16``.
 
-    Each value is mapped to a hardware register (A, then B or X, then Y) at code
-    generation time based on its size and the function's accumulator mode. There
+    Each value is mapped to a hardware register (A, then B or X, then Y) during
+    MIR lowering based on its size and the function's accumulator mode. There
     is no register-name spelling — the types alone determine the registers.
     """
     element_types: List[Type]  # e.g. [u8, u16] (2-4 elements)
@@ -333,7 +333,7 @@ class ImplMethod(ASTNode):
     body: Optional['Block']
     is_const: bool = False
     doc: Optional[str] = None
-    self_by_value: bool = False  # True for bare `self` (newtypes only)
+    self_by_value: bool = False  # bare `self`: newtype/enum value in A, or #[soa]/tagged-enum index in X
     has_self: bool = True  # False for an associated fn declaring no self at all
 
 
@@ -517,7 +517,7 @@ class MacroDecl(Declaration):
 class MacroInvocation(Expression):
     """Macro invocation (e.g., my_macro!(arg1, arg2)).
 
-    This is parsed as an expression but expanded during preprocessing.
+    This is parsed as an expression but expanded by the macro pass (frontend/macros.py).
     The args are stored as raw token strings until expansion.
     """
     name: str
@@ -529,7 +529,7 @@ class MacroInvocationStmt(Declaration):
     """Top-level macro invocation statement.
 
     Macro invocations at the top level (not in expressions) are
-    stored as declarations and expanded during preprocessing.
+    stored as declarations and expanded by the macro pass (frontend/macros.py).
     """
     name: str
     args: List[str]  # Raw argument token strings
@@ -701,7 +701,7 @@ class EnumVariantExpr(Expression):
 @dataclass
 class Register(Expression):
     """Hardware register reference."""
-    name: str  # "A", "X", "Y", "B", "Status", "D", "DBR", "PBR", "S"
+    name: str  # a key of registers.REGISTERS
 
 
 @dataclass
@@ -892,7 +892,7 @@ class MatchArm(ASTNode):
     body can be an Expression (normal case) or a Statement (return/break/continue).
     """
     pattern: Pattern
-    body: 'ASTNode'  # Expression or Statement (ReturnStatement, BreakStatement, ContinueStatement)
+    body: 'ASTNode'  # Expression, ReturnStmt/BreakStmt/ContinueStmt, or a statement-only Block
 
 
 @dataclass
@@ -940,7 +940,7 @@ class LetElseStmt(Statement):
     """`let PATTERN = expr else { ... };` — only lives inside the parser.
 
     The block that holds it folds it, and every statement after it, into a
-    match (see Parser._desugar_let_else), so no later pass sees this node.
+    match (see ASTBuilder._desugar_let_else), so no later pass sees this node.
     """
     pattern: Pattern
     scrutinee: Expression

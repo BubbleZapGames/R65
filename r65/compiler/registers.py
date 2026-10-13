@@ -3,8 +3,8 @@
 The 65816 registers a program names, and what each one is.
 
 The one table the frontend (macro fragments), HIR (the register symbols,
-bindings, `#[preserves]`), typeck and codegen read, so a register's rules are
-written once.
+bindings, `#[preserves]`) and typeck read, so a register's rules are written
+once.
 """
 
 from dataclasses import dataclass

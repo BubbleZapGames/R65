@@ -2,7 +2,7 @@
 """
 HIR error types for the R65 compiler.
 
-Re-exports error types from the central errors module for backwards compatibility.
+Re-exports the central error types for HIR modules.
 """
 
 # Re-export from central errors module

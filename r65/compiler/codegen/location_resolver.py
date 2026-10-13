@@ -2,13 +2,8 @@
 """
 Location resolution and opcode selection for 65816 code generation.
 
-Provides unified handling of memory locations, addressing modes,
-and opcode selection through a strategy-based approach.
-
-This module consolidates:
-- Address calculation utilities
-- Opcode selection based on location kind
-- Location offset and manipulation
+Maps PhysicalLocations to an addressing mode, operand and opcode variant,
+and offsets locations by a byte count.
 """
 
 from dataclasses import dataclass
@@ -76,7 +71,7 @@ class LocationResolver:
             location: Physical location to resolve
 
         Returns:
-            ResolvedLocation with mode, operand, and metadata
+            ResolvedLocation with mode and operand
         """
         if location.kind == LocationKind.STACK:
             return self._resolve_stack(location)

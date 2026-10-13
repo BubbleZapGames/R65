@@ -144,14 +144,10 @@ class ProgramCodeGenerator:
             if inlined_count > 0:
                 print(f"Function inlining: {inlined_count} call site(s) inlined")
 
-                # Re-run mode tracking on every function the inliner mutated.
-                # Cloned blocks intentionally arrive with entry_mode/exit_mode
-                # = None — the inliner's contract treats per-block mode
-                # metadata as invalidated by any inline (the LLVM /
-                # PreservedAnalyses::none() pattern). Skipping this step
-                # is exactly what allowed the join-point mode-fix in the
-                # peephole optimizer to default to m8 inside bodies that
-                # required m16 (classickong.r65 set_rect bug).
+                # Re-run mode tracking on every function the inliner mutated:
+                # cloned blocks arrive with entry_mode/exit_mode = None, and
+                # later passes (the peephole join-point fix among them) would
+                # otherwise default those blocks to m8.
                 from r65.compiler.mir.mode_tracker import reanalyze_function
                 func_by_name = {f.name: f for f in mir_program.functions}
                 for caller_name in func_inliner.mutated_funcs:
@@ -244,7 +240,7 @@ class ProgramCodeGenerator:
         self.emitter.emit_memory_map(rom_type=rom_type, banks=rom_banks,
                                      fastrom=is_fastrom)
 
-        # Phase 1: Memory allocation
+        # Memory allocation
         self.allocator = MemoryAllocator()
 
         # Set stack region from global #[stack(...)] attribute or use default
@@ -264,12 +260,11 @@ class ProgramCodeGenerator:
             print(w)
         self.warnings.extend(self.allocator.warnings)
 
-        # Phase 2: Symbol definitions
+        # Symbol definitions
         symbol_gen = SymbolDefinitionGenerator(self.emitter, self.allocator)
         symbol_gen.emit_all_definitions(mir_program.constants)
 
-        # Phase 3-6: Function code generation
-        # (Phases 3-6 are integrated within function generation)
+        # Function code generation
         self.func_gen = ProgramFunctionGenerator(self.emitter, self.allocator)
 
         # Create scratch pool once for all functions
@@ -299,16 +294,10 @@ class ProgramCodeGenerator:
         # Compute max outgoing arg bytes for caller-owned outgoing args convention
         abi_model.compute_outgoing_args(mir_program, self._compute_outgoing_arg_bytes)
 
-        # Whether the program needs a shared interrupt-vector
-        # placeholder. The handler must live in bank $00 because the
-        # SNES interrupt vector table is 16-bit-only — when an
-        # interrupt fires the CPU loads PC from bank $00 with PB
-        # cleared to 0. A handler placed in any other bank would be
-        # jumped to at the WRONG bank's same offset, silently
-        # leaving whatever code happens to live at the matching
-        # bank-0 offset to handle BRK / COP / unused IRQ. (This was
-        # most visible at -O2 where m8/m16 mismatches let stray
-        # `00` bytes execute as BRK.)
+        # Whether the program needs a shared interrupt-vector placeholder.
+        # The vector table is 16-bit and an interrupt clears PB, so
+        # `__empty_handler` (the target of every unused vector) must be
+        # at a bank-$00 address.
         needs_empty_handler = self._program_needs_interrupt_vectors(mir_program)
 
         # Guarantee a bank-0 window exists to hold it. A program whose
@@ -389,18 +378,13 @@ class ProgramCodeGenerator:
                     reset=reset_h, **handlers
                 )
 
-        # Phase 6.5: Trait dispatch tables (jump tables and wrapper functions)
+        # Trait dispatch tables (jump tables and wrapper functions)
         self._emit_trait_dispatch_tables(mir_program)
 
-        # Stack-usage check is now main.py step [9/9] — it consumes the
-        # codegen_*-populated MIRFunctions and raises CodegenError on
-        # overflow (vs. this in-codegen pass's print-only warnings).
-        # self._analyze_stack_depth(mir_program)  # superseded by stack_usage
-
-        # Phase 7: ROM data sections (for array literal initialization)
+        # ROM data sections (for array literal initialization)
         self._emit_rom_data_sections(mir_program)
 
-        # Phase 8: Interrupt vectors
+        # Interrupt vectors
         self._emit_interrupt_vectors(mir_program)
 
         # Symbol exports (for debugging and linking)
@@ -478,10 +462,9 @@ class ProgramCodeGenerator:
            indexes into a jump table
         2. A jump table with word-size entries pointing to concrete implementations
 
-        Near dispatch wrapper:
+        Near dispatch wrapper (self in Y, DBR = object's bank):
             TraitName__method__dispatch:
-              LDY #$0000
-              LDA ($03,S),Y        ; Load TypeId from *self_ptr (offset 0)
+              LDA $0000,Y          ; Load TypeId from *self (offset 0)
               REP #$20
               AND #$00FF           ; Zero-extend to 16-bit
               ASL A                ; x2 for word table
@@ -489,7 +472,8 @@ class ProgramCodeGenerator:
               SEP #$20
               JMP (TraitName__method__table,X)
 
-        Far dispatch uses JML trampolines instead of a jump table.
+        Far dispatch indexes a word table of JML stubs (one per TypeId), so
+        the caller's JSL return address stays for the method's RTL.
         """
         if not hasattr(mir_program, 'trait_dispatch_info') or not mir_program.trait_dispatch_info:
             return
@@ -681,11 +665,10 @@ class ProgramCodeGenerator:
         - Functions with #[bank(n)] attribute go to bank n.
         - Functions with no bank attribute default to bank 0.
         - Functions with #[bank(auto)] (bank_attr present, bank_number=None,
-          guaranteed `far` by HIR validation) are placed in the bank above
-          the highest explicit bank, sequentially. wlalink will report a
-          per-bank overflow if the chosen bank is too small; the user can
-          then split with explicit #[bank(n)] directives or assign their
-          own larger banks.
+          guaranteed `far` by HIR validation) are placed together in bank
+          max(highest explicit bank + 1, 4). wlalink reports an overflow if
+          they do not fit; the user can then split with explicit #[bank(n)]
+          directives.
 
         Args:
             functions: List of MIR functions
@@ -883,20 +866,11 @@ class ProgramCodeGenerator:
 
     def _validate_bank_sizes(self, nodes: list, mir_program: MIRProgram):
         """
-        Validate that code/data fits within bank size limits.
-
-        Checks each bank against the appropriate size limit:
-        - LoROM: 32KB per bank
-        - HiROM: 64KB per bank
-
-        The header bank (bank 0) has reduced capacity due to the SNES header.
+        No-op: bank sizes are checked by wlalink, not here.
 
         Args:
             nodes: Optimized assembly nodes
             mir_program: MIR program (for snesrom config)
-
-        Raises:
-            BankSizeError: If any bank exceeds its limit
         """
         # Determine ROM type from snesrom config
         is_hirom = False
@@ -911,8 +885,9 @@ class ProgramCodeGenerator:
 
         # Bank size validation is handled by WLA-DX linker, which has
         # accurate bank boundaries from .BANK directives in the emitted assembly.
-        # The AsmNode list doesn't contain .BANK directives (emitted separately),
-        # so node-based validation would miscount all code as bank 0.
+        # bank_size.calculate_bank_sizes looks for `.BANK` as a Directive node,
+        # but it is emitted as RawAsm, so node-based validation would miscount
+        # all code as bank 0.
 
     # ========================================================================
     # Linkfile Generation
@@ -1137,7 +1112,7 @@ class ProgramCodeGenerator:
 
         # Add scope for each function
         for i, (func, addr) in enumerate(func_addrs):
-            # Estimate size (distance to next function or end of bank)
+            # Size is the distance to the next function; the last one gets 0x100
             if i + 1 < len(func_addrs):
                 size = func_addrs[i + 1][1] - addr
             else:
@@ -1154,7 +1129,7 @@ class ProgramCodeGenerator:
                 name=func.name,
                 scope_type="scope",
                 size=size,
-                span_ids=[],  # Will be filled by line info collection
+                span_ids=[],
                 parent_id=global_scope.id,
                 sym_id=sym_id
             )

@@ -238,8 +238,7 @@ class LivenessAnalyzer:
 
         Note `ranges[v] ⊆ relevant[v]`: a var live_out of a block but not
         live_in must be defined there (so it's in `define`), and live_in is
-        included directly — so the old `interferes` candidate set
-        (shared-live-blocks ∪ both-relevant-blocks) equals
+        included directly — so every block where both vars are live is in
         `relevant[v1] & relevant[v2]`.
         """
         if self._relevant_blocks_cache is not None:
@@ -267,11 +266,8 @@ class LivenessAnalyzer:
         Returns:
             True if variables interfere, False otherwise
         """
-        # Blocks a precise check must examine: those where BOTH vars are
-        # use/define/live_in. This is exactly the old candidate set (the
-        # shared-live-blocks term is subsumed — see _relevant_blocks), but
-        # computed from a cached per-vreg map instead of scanning every block
-        # on every call (the dominant cost of register allocation).
+        # Blocks where both vars are use/define/live_in. Every block where
+        # both are live is among them (see _relevant_blocks).
         relevant = self._relevant_blocks()
         candidate_blocks = relevant.get(var1, set()) & relevant.get(var2, set())
 
@@ -335,17 +331,8 @@ class LivenessAnalyzer:
                         var2_just_defined = True
                     var2_live = True
 
-                # A variable that was JUST defined at a Move instruction (and
-                # not also used) is not yet observable — the Move's dest doesn't
-                # interfere with the Move's source.  This is the standard
-                # copy-coalescing property.
-                #
-                # For non-Move defs (BinaryOp, Load, etc.), the dest's physical
-                # storage IS written during the instruction.  Even if the dest
-                # vreg has no future uses (e.g., it was eliminated by copy
-                # propagation), the write still occurs and would corrupt any
-                # other variable sharing the same storage.  So we must NOT
-                # suppress interference for non-Move defining instructions.
+                # A non-Move def physically writes its storage even when
+                # dead, so it always interferes.
                 from r65.compiler.mir.nodes import Move as MoveInstr
                 is_move = isinstance(instr, MoveInstr)
 
@@ -548,9 +535,8 @@ class InstructionLivenessAnalyzer:
         """
         Check if a virtual register is live across any Call instruction.
 
-        A vreg is "live across a call" if it is:
-        1. Live before the call (used after the call)
-        2. Defined before the call
+        A vreg is "live across a call" if it is defined before the call and
+        live after it.
 
         Args:
             vreg: Virtual register to check
@@ -648,7 +634,7 @@ class ClobberRegionAnalyzer:
     living in it across them - the slot allocator's coalescing checks the same
     list and keeps such a value out of the register.
 
-    This is Phase 2 optimization - V1 keeps regions within single basic blocks.
+    Regions never span blocks: one still open at block end restores there.
     """
 
     def __init__(self, instr_liveness: InstructionLivenessAnalyzer):

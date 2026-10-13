@@ -300,18 +300,16 @@ class CompareSelector(BaseSelector):
         if needs_16bit:
             self.parent._ensure_m16_mode()
         else:
-            # For 8-bit comparisons, ensure we're in m8 mode
+            # Otherwise m8: an 8-bit compare, or CPX/CPY (which follow the
+            # X flag and do not care)
             self.parent._ensure_m8_mode()
 
         # Emit appropriate comparison instruction based on left operand
         self._emit_comparison(left_loc, right_operand, is_immediate)
 
-        # NOTE: We do NOT restore m8 mode after 16-bit comparisons.
-        # The branch instructions that follow don't depend on the M flag.
-        # Loop back-edges need to preserve the mode expected by the loop header.
-        # Code paths that need m8 (like function returns) explicitly switch modes.
-        # Previously this did `self.parent._ensure_m8_mode()` which broke loops
-        # where the loop body runs in m16 mode.
+        # Leave the width as is: branches do not read M, and a loop back-edge
+        # must arrive in the header's mode. Code paths that need m8 (like
+        # function returns) switch explicitly.
 
         # Pop register if we pushed it for temp storage
         if pushed_reg:
@@ -352,8 +350,9 @@ class CompareSelector(BaseSelector):
             is_16bit: Whether the comparison is 16-bit
 
         Returns:
-            Tuple of (operand, is_immediate, needs_pop) for comparison emission
-            needs_pop is True if we pushed X/Y and need to pop after comparison
+            Tuple of (operand, is_immediate, swapped): swapped is 'SWAPPED'
+            when the right value was moved into A and the compare must run
+            reversed, else False
         """
         if isinstance(right, MIRImmediate):
             if is_16bit:
@@ -374,8 +373,9 @@ class CompareSelector(BaseSelector):
         Store hardware register to temp location for comparison.
 
         Returns:
-            Tuple of (operand, needs_pop) where operand is Address or PhysicalLocation
-            and needs_pop indicates if PLX/PLY is needed after comparison
+            Tuple of (operand, swapped): (temp Address, False), or
+            (None, 'SWAPPED') when the value was moved into A and the compare
+            must run reversed
         """
         if right_loc.hw_register in ['A', 'B']:
             # A and B - try scratch, fall back to swap
@@ -464,7 +464,7 @@ class CompareSelector(BaseSelector):
             # CPX/CPY always do 16-bit compares in x16 mode.
             # For u8 memory operands, CPX/CPY dp reads 2 bytes from memory
             # but only 1 byte was written — the adjacent byte may be garbage.
-            # Fix: use TXA/TYA + CMP for u8 non-immediate comparisons.
+            # So a u8 operand goes through TXA/TYA + CMP in m8.
             is_u8_compare = not self._is_16bit_type(self.parent.last_comparison_type)
             if is_u8_compare and not is_immediate:
                 if reg == 'X':

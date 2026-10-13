@@ -14,10 +14,12 @@ from r65.compiler.mir.nodes import (
 
 
 # ============================================================================
-# Operand access (the shared registry in mir/nodes.py)
+# Side effects and operand access (the shared registry in mir/nodes.py)
 # ============================================================================
 
-# Types that are safe to eliminate (no side effects beyond writing dest)
+# Types that are safe to eliminate (no side effects beyond writing dest).
+# `_reads_volatile` exempts only a direct Load: a LoadIndirect through a
+# pointer to a #[hw] register is dropped when its value is unused.
 _SIDE_EFFECT_FREE = frozenset({
     Move, Load, LoadIndirect, BinaryOp, UnaryOp,
     TypeConvert, ToBool, Rotate,
@@ -57,7 +59,7 @@ class DeadCodeEliminator:
     Eliminates dead code within MIR functions.
 
     Two phases:
-    1. Unreachable block elimination (BFS from entry)
+    1. Unreachable block elimination (walk from entry)
     2. Dead store elimination (fixed-point removal of unused vreg writes)
     """
 

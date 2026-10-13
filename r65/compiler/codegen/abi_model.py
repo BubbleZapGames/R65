@@ -4,7 +4,7 @@ ABI model abstraction for the R65 compiler.
 
 Defines selectable ABI policies that control calling convention decisions:
 - Default: PHA-based argument passing with caller PLX cleanup (default)
-- FixedStack: Zero-frame model with hw registers + scratch only, PHB-per-byte frames
+- FixedStack: no stack params (hw registers + scratch only), minimal PHB-per-byte frames
 - Pascal: Apple IIGS/Pascal convention — all params on stack, callee cleanup, stack result space
 """
 
@@ -64,7 +64,7 @@ class ABIModel(ABC):
     def frame_alloc_clobbers_a_threshold(self) -> int:
         """Max frame size that can be allocated without clobbering A.
 
-        Frames up to this size use push-based allocation (PHB/PHX/PHY/PHA).
+        Frames up to this size use push-based allocation (PHB, or PHX/PHY/PHB).
         Frames above this size use TSC/SEC/SBC/TCS which clobbers A.
         """
         return 4
@@ -372,8 +372,7 @@ class ABIModel(ABC):
         mechanism: a partition emits every REGISTER argument before the bracket
         opens, which is exactly where the clobber lives.
 
-        The ordering itself is unchanged and load-bearing — this decides only
-        where the bracket goes.
+        The ordering is load-bearing; this decides only where the bracket goes.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
@@ -484,12 +483,6 @@ class ABIModel(ABC):
         original order.
 
         Returns the reordered argument list.
-
-        This used to also return the set of scratch params that reordering had
-        moved ahead of an A-resident one, for the caller to bracket in TAY/TYA.
-        `_emit_other_args` now derives clobber points directly from
-        `arg_setup_clobbers_a`, which covers those cases and every other
-        mechanism, so the analysis is gone.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
         from r65.compiler.codegen.register_alloc import LocationKind
@@ -693,8 +686,8 @@ class ABIFixedStack(ABIModel):
     the need for an outgoing-arg area and simplifies frame layout to just
     preserves and a minimal local frame.
 
-    Frame allocation always uses PHB per byte (never TSC/SBC/TCS), and
-    deallocation always uses PLA per byte (max_pla_dealloc_size is
+    Frame allocation uses PHB per byte, except TSC/SBC/TCS when
+    force_direct_stack (interrupt handlers); deallocation always uses PLA per byte (max_pla_dealloc_size is
     unlimited). This keeps the stack pointer movement predictable and
     bounded, which is useful for environments where stack depth must be
     statically analyzable. Recursive functions are rejected at compile time
@@ -746,7 +739,7 @@ class ABIPascal(ABIModel):
     caller to PLA.
 
     Frame allocation uses PHB per byte for small frames (<=4) and
-    TSC/SEC/SBC/TCS for larger ones, same as Default. The callee writes
+    TSC/SEC/SBC/TCS for larger ones. The callee writes
     its return value into the result space via STA offset,S before the
     epilogue, then removes parameter bytes (but not result space) using
     the existing PLX/TSC/ADC/TCS/PHX/RTS cleanup machinery.
@@ -893,7 +886,7 @@ class ABIDefault(ABIModel):
 
     Return values are passed in hardware registers (A, B, X, Y). For
     calls that return in X (multi-register returns), caller-side cleanup
-    uses a scratch save to avoid clobbering X.
+    pops with PLY instead of PLX so X survives.
     """
 
     def __init__(self):
@@ -961,9 +954,8 @@ def abi_model_from_string(name: str) -> ABIModel:
 def _force_accu_mode(selector, bits):
     """Pin the accumulator to `bits`, in whichever direction is needed.
 
-    The original restore only ever widened. Narrowing matters just as much: a
-    `TYA` executed in m16 writes 16 bits into A, and the high half *is* B —
-    which may be holding a `@ B` argument by then.
+    Narrowing matters as much as widening: a `TYA` in m16 writes 16 bits into
+    A, and the high half *is* B — which may hold a `@ B` argument.
     """
     from r65.compiler.codegen.opcodes import Opcode
     from r65.compiler.codegen.constants import M_FLAG

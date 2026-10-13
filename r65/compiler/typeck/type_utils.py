@@ -166,8 +166,7 @@ class TypeUtils:
 
     @staticmethod
     def types_equal(t1: TypeInfo, t2: TypeInfo) -> bool:
-        """Check if two types are exactly equal."""
-        # Handle pointer type special case: array is compatible with slice
+        """Type identity, except `*[T; N]` equals `*T` (array-pointer coercion)."""
         if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
             if t1.is_far != t2.is_far:
                 return False

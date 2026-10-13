@@ -166,7 +166,7 @@ class MoveOperationSelector(BaseSelector):
             hw_register: Target register ('A', 'X', 'Y', 'B')
             src_loc: Source memory location
             is_u16: Whether this is a 16-bit load (DEST type)
-            persist_16bit_mode: If True and loading to A, stay in m16 mode after load
+            persist_16bit_mode: Ignored; a 16-bit A load always stays in m16
         """
         # X and Y are always 16-bit registers in R65, so the Move's nominal
         # `is_u16` (derived from the dest type) is always True for X/Y dest —

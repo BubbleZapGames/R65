@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-Instruction selection helper classes.
-
-Extracted from InstructionSelector to improve modularity and testability.
+XBA (A/B swap) state tracking for InstructionSelector.
 """
 
 from enum import Enum
@@ -54,7 +52,8 @@ class XBAStateManager:
         if self.state == XBAState.SWAPPED:
             self.emit_xba(comment or "Restore A from B")
         elif self.state == XBAState.UNKNOWN:
-            # Can't optimize - need to assume it might need restoration
+            # UNKNOWN: no XBA is emitted; callers must not rely on A holding
+            # its original value.
             pass
 
     def ensure_swapped(self, comment: str = None):

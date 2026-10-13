@@ -1,9 +1,8 @@
 """
 Rule kind: ``call_depth_limit``.
 
-BFS from an entry point; emit at the *first* edge that exceeds ``max_depth``.
-Pointing users at the offending call rather than at the leaf keeps the
-diagnostic actionable::
+BFS from an entry point; emits once per function beyond ``max_depth``,
+located at the declaration of a parent one level shallower::
 
     [[rule]]
     code = "C023"

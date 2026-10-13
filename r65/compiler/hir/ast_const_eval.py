@@ -132,7 +132,7 @@ class ConstEvaluator:
         """
         Evaluate a constant expression.
 
-        Returns: int, bool, or str value
+        Returns: int, bool, str, list (array literal/fill) or dict (struct literal)
         Raises: HIRError if expression is not constant or evaluation fails
         """
         if isinstance(expr, ast.IntegerLiteral):
@@ -524,7 +524,7 @@ class ConstEvaluator:
         try:
             return get_unified_type_size(arg, self.symbol_table)
         except Exception as e:
-            # If type not yet available (e.g., struct declared later), defer evaluation
+            # Not sizable yet (e.g. a struct declared later): report as non-constant.
             raise HIRError(f"Cannot evaluate size_of at this time: {e}", source_loc=expr.source_loc)
 
     def _eval_offset_of(self, expr: ast.FunctionCall) -> int:
@@ -1181,8 +1181,9 @@ class ConstEvaluator:
 
         match x { 0 => a, 1 | 2 => b, name => c, _ => d }
         becomes:
-        (lambda _m_: (a) if _m_ == 0 else (b) if _m_ == 1 or _m_ == 2
-         else (lambda name: (c))(_m_) else (d))(scrutinee)
+        (lambda _m_: (a if _m_ == 0 else (b if _m_ == 1 or _m_ == 2
+         else (lambda name: c)(_m_))))(scrutinee)
+        Arms after an irrefutable one are dropped.
         """
         scrutinee = self._transpile_expr(expr.scrutinee)
 

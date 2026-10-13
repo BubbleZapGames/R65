@@ -46,9 +46,6 @@ class PreservationChecker:
                 source_loc=self.func_decl.source_loc
             )
 
-        # Note: We no longer check for modifications since the compiler
-        # automatically generates PHA/PLA, PHX/PLX, etc. for preserved registers
-
     def _returns_a_value(self) -> bool:
         """Whether this function hands a value back in a register.
 

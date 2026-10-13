@@ -54,12 +54,9 @@ class TypeChecker:
     """
     Main type checker orchestrator.
 
-    Multi-pass design:
-    1. Build CFG for each function
-    2. Perform mode analysis (track modes through CFG)
-    3. Type check expressions (bottom-up with mode context)
-    4. Validate operator restrictions
-    5. Check register preservation
+    Runs one program-wide pre-pass (`_promote_far_pointer_params`), then walks
+    each function once: checks types bottom-up (operator restrictions inline,
+    via `check_binary_op`), then XY16 regions, then `#[preserves]`.
     """
 
     def __init__(self, program: HIRProgram):
@@ -88,7 +85,8 @@ class TypeChecker:
         self._register_aliases: dict[int, str] = {}
 
         # One-shot permission for `ARR[i]` on a #[soa] array: set by
-        # check_field_access around its base, consumed by check_array_index.
+        # check_field_access around its base (and by CallValidator around a
+        # method receiver), consumed by check_array_index.
         self._soa_element_ok: bool = False
 
         # Set symbol table on TypeUtils for trait impl checking
@@ -297,10 +295,9 @@ class TypeChecker:
         """
         Verify that an assignment target is mutable.
 
-        Only checks direct identifier reassignments (x = 5, x += 1, x++). Struct
-        field mutations (p.x = 5) and array element mutations (arr[0] = 5) are
-        always allowed since R65 lacks struct literal initializers in `let`,
-        requiring the `let p: Point; p.x = 5` pattern for zero-initialized structs.
+        Only direct identifier reassignment (x = 5, x += 1, x++) needs `mut`.
+        Writes through a field, element or deref never do (CLAUDE.md
+        §Mutability).
         """
         # Only check direct identifier assignments
         if isinstance(target, HIRIdentifier) and target.symbol is not None:
@@ -547,7 +544,7 @@ class TypeChecker:
         Supports automatic integer promotion for mixed-size operands:
         - u8 + u16 -> u16 (u8 widened to u16)
         - i8 + i16 -> i16 (i8 widened to i16)
-        - u8 + i8 -> i8 (reinterpret, no runtime cost)
+        - u8 + i8 -> u8 (same-size mix prefers unsigned)
 
         Args:
             left_type: Type of left operand
@@ -590,11 +587,9 @@ class TypeChecker:
         if (left_name == 'u16' and right_name == 'i16') or (left_name == 'i16' and right_name == 'u16'):
             return BasicTypeInfo(name='u16')  # Prefer unsigned for mixed 16-bit
 
-        # Mixed signed/unsigned of different sizes: promote to larger signed type
-        # u8 + i16 -> i16 (u8 zero-extended to i16)
-        # i8 + u16 -> i16 (both promoted to signed 16-bit)
+        # Different sizes: the wider operand's type wins
+        # (u8 + i16 -> i16, i8 + u16 -> u16)
         if left_name in INTEGER_TYPE_NAMES and right_name in INTEGER_TYPE_NAMES:
-            # Return the 16-bit type, preferring signed for mixed operations
             left_bits = 16 if left_name in ['u16', 'i16'] else 8
             right_bits = 16 if right_name in ['u16', 'i16'] else 8
             if left_bits > right_bits:
@@ -711,7 +706,6 @@ class TypeChecker:
 
         func_map = {f.name: f for f in self.program.all_functions()}
 
-        # Walk all function bodies, find HIRFunctionCall nodes with HIRAddressOf args
         # Scan all function bodies for calls that pass far pointers to near params
         for func in func_map.values():
             if func.body is None:
@@ -796,9 +790,6 @@ class TypeChecker:
             )
             self._check_return_fits_a_register(func)
 
-        # Interrupt handlers use automatic mode management (mode is saved/restored by RTI)
-        # No validation needed since mode is now inferred automatically
-
         # Get entry mode from inferred mode (based on parameter types)
         # entry_m_mode is set by HIR builder based on A parameter type
         if func.entry_m_mode is not None:
@@ -833,7 +824,7 @@ class TypeChecker:
 
         # Phase 3b: Validate XY16 (x8) regions — reject unsafe patterns inside
         # `STATUS.XY16 = false` / `= true` pairs (calls, control flow, indexing,
-        # missing restore). See docs/status-flags.md §XY16 for the safety rules.
+        # missing restore). See typeck/xy16_region.py for the rules.
         from r65.compiler.typeck.xy16_region import check_xy16_regions
         check_xy16_regions(func)
 
@@ -1352,9 +1343,7 @@ class TypeChecker:
 
             # Element 1 is checked only when the element type came from context.
             # With no context it *is* the inference source, so there is nothing
-            # to check it against. It used to be skipped in both cases, which
-            # made it the one position a newtype could launder itself through
-            # into an array of its payload.
+            # to check it against.
             if expected_elem_type is not None:
                 self._check_array_element(1, expr.elements[0], first_type,
                                           final_elem_type)
@@ -2023,7 +2012,7 @@ class TypeChecker:
         finally:
             self._soa_element_ok = False
 
-        # Auto-dereference pointers for field access (like Rust's -> operator)
+        # Auto-dereference pointers for field access (like C's `->`)
         # This allows `self.field` to work when self is *StructName
         from r65.compiler.hir import StructTypeInfo
         if isinstance(base_type, PointerTypeInfo):
@@ -2228,9 +2217,7 @@ class TypeChecker:
                 )
 
         # Arrays and structs are not copied by a bare `=` (copy cost stays
-        # explicit). Point the developer at the clone assignment — `Clone` is the
-        # sanctioned aggregate-copy primitive — instead of the old "copy fields /
-        # use a pointer" advice.
+        # explicit). Point at `Clone`, the sanctioned aggregate-copy primitive.
         if TypeUtils.is_aggregate_type(target_type):
             # `dst = src.clone()` — sanctioned aggregate copy. The value carries
             # clone_info; MIR lowers it to an AggregateCopy into the target.
@@ -2362,7 +2349,7 @@ class TypeChecker:
         if expr.final_expr is not None:
             final_type = self.check_expression(expr.final_expr, context_type)
         else:
-            # Diverging block (e.g. { return 1; }) - void type
+            # No tail expression: the block is void (it may or may not diverge)
             final_type = BasicTypeInfo(name='void')
         expr.expr_type = final_type
         return final_type

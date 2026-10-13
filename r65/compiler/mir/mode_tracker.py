@@ -108,7 +108,9 @@ class MIRModeTracker:
             block: Block to compute entry mode for
 
         Returns:
-            Joined ProcessorMode, or None if modes conflict
+            Joined ProcessorMode, or None if modes conflict or no
+            predecessor has an exit mode yet (analyze() treats both as a
+            conflict)
         """
         if not block.predecessors:
             # No predecessors - use default mode (m8, x16)
@@ -166,15 +168,8 @@ class MIRModeTracker:
 
 def reanalyze_function(mir_func: MIRFunction) -> bool:
     """
-    Recompute per-block mode metadata for a function whose MIR has been
-    mutated since the last analysis (currently: by the inliner).
-
-    Called after MIR-mutating passes. Clears stale `entry_mode` /
-    `exit_mode` on every block, then re-runs the fixpoint via a fresh
-    `MIRModeTracker`. This is the canonical "invalidate analyses,
-    recompute lazily" pattern (cf. LLVM `PreservedAnalyses::none()`):
-    the inliner's job is to leave the CFG valid; this helper makes the
-    decorating metadata catch up.
+    Clear and recompute every block's entry/exit mode. Run after building
+    a function and again after any pass that edits its CFG (the inliner).
 
     Returns the same bool as `MIRModeTracker.analyze()` — True on
     success, False on irreconcilable mode conflict at a merge point.

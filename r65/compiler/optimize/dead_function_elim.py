@@ -21,6 +21,8 @@ class DeadFunctionEliminator:
     2. It is an interrupt handler (interrupt_attr is not None)
     3. It is called by another live function
     4. It is the initialization function (__init_start)
+    5. It is a trait implementor (reached via a dispatch table) or named by
+       a `fn` static in ROM
 
     All other functions are removed from the program.
     """
@@ -82,7 +84,7 @@ class DeadFunctionEliminator:
         Find all entry point functions.
 
         Entry points are:
-        - Functions marked with #[entry]
+        - Functions marked with #[entry] or #[used]
         - Interrupt handlers (marked with #[interrupt(...)])
         - The __init_start initialization function
 

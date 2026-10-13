@@ -67,6 +67,8 @@ class NamingConvention(LintRule):
         self.custom_hint = hint
 
     def setup(self, ctx: LintContext) -> None:
+        # Top-level declarations only: impl methods live inside HIRImplDecl,
+        # so `target = "functions"` does not see them.
         for decl in ctx.program.declarations:
             if not isinstance(decl, self.target_class):
                 continue

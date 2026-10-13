@@ -318,8 +318,8 @@ def run_lint(
 ) -> DiagnosticCollector:
     """Run every enabled lint rule on ``program`` and return the diagnostics.
 
-    If ``config`` is ``None``, a default config with all built-in rules
-    enabled is used (no config file, no custom rules).
+    If ``config`` is ``None``, :func:`default_config` is used. It enables
+    nothing (built-in rules are opt-in) and has no custom rules, so no rule runs.
     """
     from r65.compiler.lint.config import LintConfig, default_config
     from r65.compiler.lint.rules import BUILTIN_RULES

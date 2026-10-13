@@ -13,7 +13,8 @@ class RedundantCast(LintRule):
 
     Type comparison uses ``TypeUtils.types_equal`` from the type checker so
     structural types (arrays, pointers, function types) compare correctly,
-    not just basic-type names.
+    not just basic-type names. It treats ``*[T; N]`` as equal to ``*T``, so
+    ``(p as *[u8; 4]) as *u8`` is also reported.
     """
 
     def __init__(self):

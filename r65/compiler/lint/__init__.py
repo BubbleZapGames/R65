@@ -6,7 +6,7 @@ construction. Rules walk the HIR once via :class:`R65Linter` and emit
 :class:`Diagnostic` objects into a shared :class:`DiagnosticCollector`.
 
 Public API:
-    run_lint(program, enabled_codes=None) -> DiagnosticCollector
+    run_lint(program, config=None) -> DiagnosticCollector
 """
 
 from r65.compiler.lint.config import (

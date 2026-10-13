@@ -6,10 +6,12 @@ Pre-pass that runs before codegen to determine which stack parameters can be
 promoted to scratch (zero-page) register passing. Scratch params use faster
 DP addressing and require no stack cleanup overhead.
 
-A stack parameter is promoted if:
-1. Scratch registers are available (matching size)
-2. The parameter's vreg is NOT live across any call in the callee
-3. The function's address is not taken (would break function pointer callers)
+A stack parameter is promoted when a scratch register of matching size is
+free and its vreg is not live across any call in the callee; see
+`_is_eligible_for_any_promotion` (also excludes address-taken, recursive and
+trait-method fns, and D=S far-ptr fns) and `_analyze_function`. Promotions
+whose address a callee's scratch param would overwrite are then demoted
+(`_find_war_conflicts`).
 """
 
 from typing import Dict, Set, List
@@ -82,9 +84,8 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
 
     # Step 2b: Demote any caller param whose scratch addr would be
     # overwritten by a callee's scratch param at a call where the caller
-    # param is used as an argument. Iterate to fixed point — demoting a
-    # promotion can free up addresses for other functions, but can't
-    # introduce new conflicts.
+    # param is used as an argument. Demotion only shrinks callee footprints,
+    # so it cannot create a conflict. Freed addresses are not reassigned.
     func_by_name = {f.name: f for f in mir_program.functions}
     while True:
         demoted_any = False
@@ -212,7 +213,8 @@ def _find_war_conflicts(caller: MIRFunction,
 
     A WAR conflict exists when:
     - caller's param P is at scratch addr X (size N).
-    - caller has a Call to G where P (its vreg) is used as a non-stack arg.
+    - caller has a Call to G where P (its vreg) is used as an argument (any
+      mechanism).
     - G has a scratch param Q whose [addr, addr+size) overlaps [X, X+N).
 
     Call-arg setup writes Q to that overlapping address before P is loaded

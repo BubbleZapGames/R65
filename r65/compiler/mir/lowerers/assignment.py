@@ -610,9 +610,6 @@ class AssignmentLowerer:
             raise MIRLoweringError(f"Tuple has too many elements ({num_elements}), max supported is {len(return_registers)}", source_loc=expr.source_loc)
 
         # Assign each target from the corresponding return register
-        # Note: We need to be careful about order if targets overlap with source registers
-        # For (A, X) = func(), if func returns in A and X, and targets are A and X,
-        # no moves are needed. But if targets are (X, A), we need to swap.
 
         # Collect assignments that need to be made
         assignments = []

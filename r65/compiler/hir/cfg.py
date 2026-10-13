@@ -38,7 +38,8 @@ class CfgEvaluator:
             True if condition evaluates to true, False otherwise
             
         Raises:
-            CompilationError: If condition contains unknown identifiers or errors
+            CompilationError on an unknown key in `key = value`, or an unknown
+            operator. An unknown bare identifier is false.
         """
         if isinstance(condition, CfgIdentifier):
             return self._evaluate_identifier(condition)

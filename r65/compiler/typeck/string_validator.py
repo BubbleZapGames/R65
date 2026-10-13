@@ -19,18 +19,21 @@ class StringValidator:
     @staticmethod
     def check_string_literal(expr: HIRStringLiteral, context_type: Optional[TypeInfo]) -> TypeInfo:
         """
-        Type check string literal for byte array initialization.
+        Type check a string literal.
 
-        String literals are only valid as initializers for u8 arrays.
-        Extended ASCII (0x00-0xFF) is allowed; UTF-8 multi-byte characters are rejected.
+        A string literal is either a `[u8; N]` initializer (zero-padded) or,
+        with no context or a `*u8` context, an anonymous ROM array whose
+        pointer takes the context's far-ness.
+        Code points up to U+00FF are stored as that byte; anything above is rejected.
         Escape sequences: \\n, \\t, \\r, \\0, \\\\, \\", \\x##
 
         Args:
             expr: String literal expression
-            context_type: Expected type (must be [u8; N])
+            context_type: Expected type ([u8; N], *u8, far *u8, or None)
 
         Returns:
-            ArrayTypeInfo with u8 element type
+            ArrayTypeInfo with u8 element type, or PointerTypeInfo to u8 for an
+            inline literal
         """
         # Check for inline string literal context (no context or *u8 pointer context).
         # Inline string literals are promoted to an anonymous ROM byte array and

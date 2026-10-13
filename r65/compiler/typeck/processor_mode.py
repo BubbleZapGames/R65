@@ -55,8 +55,7 @@ class ProcessorMode:
 
 
     def is_fully_known(self) -> bool:
-        """Check if mode is fully known (always True in new design)."""
-        # Mode is always known in the new design - m8 or m16, always x16
+        """Always True: M is m8 or m16 and X is always x16."""
         return True
 
     def get_a_type(self) -> TypeInfo:
@@ -133,11 +132,7 @@ class ProcessorMode:
 
     def is_compatible(self, other: 'ProcessorMode') -> bool:
         """
-        Check if this mode is compatible with another.
-
-        In the new design, modes are compatible if:
-        - M modes match (both m8 or both m16)
-        - X modes always match (both x16)
+        Compatible iff the M bits match (X is always x16).
         """
         return self.m_mode == other.m_mode
 

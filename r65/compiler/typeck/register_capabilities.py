@@ -56,8 +56,8 @@ UNRESTRICTED_REGISTERS = {'STATUS', 'D', 'DBR', 'PBR', 'S'}
 # not against each other (no direct X vs Y comparison instruction)
 INDEX_REGISTERS = {'X', 'Y'}
 
-# Valid direct register-to-register transfers (single instruction or short sequence)
-# Each tuple is (source, dest) -> instruction(s)
+# (source, dest) pairs the compiler can transfer without a user-visible
+# intermediate register (one instruction or a fixed short sequence).
 # Transfers not in this set require an intermediate register
 VALID_REGISTER_TRANSFERS = {
     # A <-> X: TAX, TXA
@@ -149,9 +149,9 @@ def can_transfer_directly(src_reg: str, dest_reg: str) -> bool:
     """
     Check if a direct register-to-register transfer is possible.
 
-    Returns True if there's a single instruction to transfer from
-    src_reg to dest_reg. Returns False if an intermediate register
-    would be needed.
+    Returns True if the compiler can transfer src_reg to dest_reg without a
+    user-visible intermediate register (one instruction or a fixed short
+    sequence). Returns False if an intermediate register would be needed.
 
     Args:
         src_reg: Source register name

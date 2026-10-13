@@ -15,8 +15,8 @@ class Cc65DebugWriter:
     """
     Writes debug info in cc65 .dbg format.
 
-    The cc65 debug format is a text-based format with tab-separated key=value
-    pairs. Each line starts with a record type identifier followed by fields.
+    The cc65 debug format is text: each line is a record type, a tab, then
+    comma-separated key=value pairs.
 
     Format:
         version major=2,minor=0
@@ -90,7 +90,7 @@ class Cc65DebugWriter:
     def _write_files(self, f: TextIO):
         """Write file records."""
         for dbg_file in sorted(self.info.files.values(), key=lambda x: x.id):
-            # Escape backslashes and quotes in filename
+            # Backslashes become '/', quotes are escaped
             escaped_name = dbg_file.name.replace('\\', '/').replace('"', '\\"')
             f.write(f"file\tid={dbg_file.id},name=\"{escaped_name}\",size=0,mtime=0\n")
 

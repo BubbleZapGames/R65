@@ -12,7 +12,7 @@ from typing import Optional, List
 
 class BuiltinKind(Enum):
     """Categories of built-in functions."""
-    PROCESSOR_CONTROL = "processor_control"  # wai, stp, NOP, xba
+    PROCESSOR_CONTROL = "processor_control"  # NOP
     ARITHMETIC = "arithmetic"                 # mul, div, mod
     SHIFT = "shift"                           # shl, shr
     ROTATE = "rotate"                         # rotate_left, rotate_right
@@ -42,7 +42,7 @@ class BuiltinRegistry:
 
     # Built-in function definitions
     BUILTINS = {
-        # Processor control (no parameters, no return value)
+        # Processor control (optional repeat count, no return value)
         'NOP': BuiltinSignature(
             name='NOP',
             kind=BuiltinKind.PROCESSOR_CONTROL,

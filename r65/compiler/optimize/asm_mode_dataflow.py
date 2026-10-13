@@ -4,18 +4,10 @@ Forward dataflow over the asm node list that computes the accumulator
 m-flag mode (m8/m16/⊥) entering every node.
 
 Why this exists:
-    The peephole optimizer used to track mode by sniffing `.ACCU`
-    directives interleaved in the asm stream. Those directives are a
-    *hint* the codegen emits for WLA-DX (which tracks mode linearly,
-    not by control flow); they are not a primitive of CPU semantics.
-    Reading them as truth led to the optimizer believing one thing
-    while the runtime CPU was in a different mode — most painfully at
-    loop back-edges, where a `SEP #$20` at the tail leaves the CPU in
-    m8 even though the body's `.ACCU 16` directive made the optimizer
-    (and WLA-DX) assemble m16 immediates that then mis-decoded at
-    runtime.
-
-    The single source of truth for runtime mode is:
+    `.ACCU` directives are hints for WLA-DX, which tracks mode linearly
+    rather than by control flow. At a loop back-edge they can disagree
+    with the CPU (a tail `SEP #$20` leaves m8 under the body's
+    `.ACCU 16`). Runtime mode comes only from:
         SEP #$20  ⟶ m8
         REP #$20  ⟶ m16
         PLP, RTI  ⟶ unknown (depends on stacked P)
@@ -24,13 +16,20 @@ Why this exists:
     running a standard forward dataflow on that CFG.
 
 Public API:
-    compute_modes(nodes, entry_modes=None) -> ModeInfo
+    compute_modes(nodes, entry_modes, entry_x_modes, start_bits,
+                  call_exit_modes) -> ModeInfo
+    first_constraining_mode_after(nodes, info, start_idx) -> Mode
 
 ModeInfo answers:
     - incoming_at(idx)     → set of modes (8 / 16 / None) that may
                              hold when nodes[idx] is about to execute
     - unique_mode_at(idx)  → the single mode if all paths agree, else
                              None
+    - x_incoming_at(idx) / unique_x_mode_at(idx) → the same for the
+                             x flag
+    - is_reachable(idx)    → False for nodes no path reaches
+    - is_join(idx)         → True iff the node has more than one
+                             predecessor edge
     - has_mixed_known(idx) → True iff at least one path arrives in m8
                              AND at least one in m16
     - required_at(idx)     → the mode the instruction REQUIRES given
@@ -38,9 +37,11 @@ ModeInfo answers:
                              mode-independent ops
 
 Notes on `.ACCU`:
-    This pass deliberately ignores `.ACCU` directives. Their content
-    is a function of the dataflow result (we re-emit them from this
-    analysis at the end of optimization), not an input to it.
+    `compute_modes` ignores `.ACCU` directives. Their content is a
+    function of the dataflow result (we re-emit them from this analysis
+    at the end of optimization), not an input to it. Only
+    `first_constraining_mode_after` reads them, as codegen's declared
+    intent when choosing a mode fix.
 """
 
 from __future__ import annotations
@@ -70,8 +71,7 @@ Mode = Optional[int]
 
 # The set of modes that may hold at a node is a tiny lattice — any subset
 # of {8, 16, None} — so it is stored as a 3-bit mask rather than a Python
-# set. This removes ~2M set allocations per classickong compile (the mode
-# dataflow ran as ~38% of compile time, dominated by per-node set() calls).
+# set; the dataflow is hot, and this avoids a set allocation per node.
 # A mask of 0 is the empty set (⊥ — unreachable / not yet reached).
 _BIT_M8 = 1
 _BIT_M16 = 2
@@ -103,8 +103,8 @@ def _bits_to_set(bits: int) -> Set[Mode]:
 def _unique_of_bits(bits: int) -> Mode:
     """The single definite mode iff the mask is exactly {8} or {16}, else None.
 
-    Matches the old _unique: a value is unique only when exactly one known
-    mode is present and "unknown" is not — i.e. the mask is _BIT_M8 or _BIT_M16.
+    Unique only when exactly one known mode is present and "unknown" is
+    not — i.e. the mask is _BIT_M8 or _BIT_M16.
     """
     if bits == _BIT_M8:
         return 8
@@ -181,7 +181,8 @@ class ModeInfo:
 # Unconditional control transfers — successor is the branch target only,
 # not the next-in-line node. JUMP_OPCODES already excludes conditional
 # branches (BCC/BEQ/etc.), so JMP/JML/etc. all qualify. BRA is a branch,
-# but it's also unconditional, so we treat it specially.
+# but it's also unconditional, so we treat it specially. Codegen never
+# emits BRL, so it is not listed.
 _UNCONDITIONAL_TRANSFER = JUMP_OPCODES | RETURN_OPCODES | frozenset({Opcode.BRA})
 
 
@@ -297,8 +298,8 @@ def compute_modes(
                 {entry_name: 16}  — m16 entry (e.g. `@ A: u16`)
                 {entry_name: None}— "unknown" (legal but conservative)
         entry_x_modes: optional ``{label_name: initial_x_mode}`` seed.
-            R65 keeps x16 across all functions; pass ``None`` to use
-            the default seeding (x16 at the program entry).
+            R65 keeps x16 across all functions; omitted, x is left
+            unseeded (no default).
         start_bits: optional ``(m_mask, x_mask)`` lattice masks for
             nodes[0], replacing the program-start seed. For a slice of a
             larger stream, pass the masks the whole stream computed at

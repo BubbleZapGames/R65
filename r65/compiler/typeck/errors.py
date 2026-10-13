@@ -2,7 +2,7 @@
 """
 Type checking error types for R65 compiler.
 
-Re-exports error types from the central errors module for backwards compatibility.
+Re-exports the type-check error types from r65.compiler.errors.
 """
 
 # Re-export from central errors module

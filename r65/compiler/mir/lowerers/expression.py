@@ -118,10 +118,8 @@ class ExpressionLowerer:
             )
 
         else:
-            # For <, <=, >, >=: emit Compare + flag-based branch.
-            # The previous implementation used `temp = left - right` then
-            # checked `temp != 0`, which actually computes `left != right` —
-            # a < returned 1 for ANY ordering except equality.
+            # For <, <=, >, >=: relational ops branch on Compare's flags
+            # (BCC/BCS/BMI/BPL).
             return self._emit_compare_to_bool(
                 left, right, expr.op,
                 left_type=expr.left.expr_type,
@@ -877,7 +875,7 @@ class ExpressionLowerer:
 
         Computes: base_address + index * element_size
 
-        Three array-base shapes are supported:
+        Array-base shapes:
           1. Bare static array: &ARR[i]
           2. Static struct field array: &AGG.field[i] (incl. nested), folded
              through resolve_array_base_memloc so the field offset rides on
@@ -885,6 +883,8 @@ class ExpressionLowerer:
           3. Pointer-relative field array: &ptr.field[i] / &self.field[i] —
              auto-deref field access. The base is a runtime pointer; the
              field offset and scaled index are added to it at runtime.
+          4. Indexed pointer: &p[i] — the pointer's value is the base.
+          5. Multi-index: &T[i][j], &ROWS[i].name[j].
 
         Args:
             expr: HIR address-of expression with HIRArrayIndex operand
@@ -916,9 +916,8 @@ class ExpressionLowerer:
 
         # Case 4: &p[index] — indexing a pointer itself (a parameter, a local,
         # any pointer-valued expression). Its value is the base, known only
-        # at runtime; the element is the pointee. Without this it fell into
-        # the static-array path below and asked codegen for the pointer's
-        # *own* address as if it were an array symbol.
+        # at runtime; the element is the pointee. The static path below would
+        # take the pointer variable's own address.
         if isinstance(array_type, PointerTypeInfo):
             return self._lower_addressof_array_index_via_pointer(
                 expr, array_expr, 0, array_index.index,
@@ -1180,8 +1179,7 @@ class ExpressionLowerer:
         # &ARR[i].field — the element's address plus the field's offset.
         # `&ARR[i]` already has a lowering that knows how to scale the index and
         # fold a symbolic base, so reuse it rather than repeating that here.
-        # This is the case `docs/soa.md` lists as a natural follow-up, and it is
-        # what lets a tagged enum's payload binding be a method receiver: `t`
+        # This is what lets a tagged enum's payload binding be a method receiver: `t`
         # expands to `POOL__data[i].Variant`, so `t.method()` needs the address
         # of a field of an array element.
         if isinstance(field_access.base, HIRArrayIndex):

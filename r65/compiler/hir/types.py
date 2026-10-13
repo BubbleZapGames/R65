@@ -143,15 +143,11 @@ class NewtypeTypeInfo(TypeInfo):
     aggregate machinery (pass-by-reference, struct decomposition, AggregateCopy)
     and needs no special handling in MIR.
 
-    **The identifier is `newtype_name`, not `name`, on purpose.** Much of the
-    compiler asks machine questions by duck-typing — `hasattr(t, 'name')` then
-    `t.name in ('u16', 'i16')`, or `str(t) in ('u8', 'i8', 'bool')`. A newtype
-    carrying a plain `.name` answers those with its own name, which is never in
-    the expected set, so every such site silently concluded "8-bit" or "2 bytes"
-    and miscompiled instead of failing. Reading `.name` now raises, and because
-    it raises `TypeError` rather than `AttributeError` it propagates through
-    `hasattr` and `getattr(..., default)` too — so those sites break loudly at
-    author time. Call `strip_newtype` first; ask `size_bytes` for the width.
+    **The identifier is `newtype_name`, not `name`, on purpose.** Duck-typed
+    width checks (`t.name in ('u16', 'i16')`, `str(t) in (...)`) would read a
+    newtype's own name and silently pick the wrong width. `.name` raises
+    `TypeError`, which `hasattr`/`getattr(..., default)` do not swallow, so such
+    sites fail loudly. Call `strip_newtype` first; ask `size_bytes` for the width.
     """
     newtype_name: str
     inner: TypeInfo
@@ -265,10 +261,7 @@ class MultiReturnTypeInfo(TypeInfo):
         return sum(t.size_bytes for t in self.element_types)
 
     def __str__(self):
-        # No parentheses: a multi-return type is written `-> u8, u16`, and the
-        # parenthesized form this used to print is not something the language
-        # accepts — an error quoting it sent the reader to a spelling that does
-        # not parse.
+        # No parentheses: written `-> u8, u16`, and diagnostics quote it.
         return ", ".join(str(t) for t in self.element_types)
 
 

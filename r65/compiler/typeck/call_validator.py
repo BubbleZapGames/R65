@@ -106,11 +106,8 @@ class CallValidator:
         """
         Type check function call.
 
-        Supports both:
-        - Direct calls: expr.func is HIRIdentifier pointing to function
-        - Indirect calls: expr.func is expression with function pointer type
-        - Built-in calls: expr.builtin_name is set
-        - Method calls: expr.func is HIRFieldAccess on struct type
+        Handles direct, indirect (function pointer), built-in and method-sugar
+        (`recv.m()`) calls.
         """
         # Special-case format! string-segment dispatch (emitted by the
         # built-in format! macro for {s} specifiers). Rewrite to either
@@ -238,9 +235,10 @@ class CallValidator:
         field_access = expr.func
         method_name = field_access.field_name
 
-        # `POOL[i].m()` — the receiver is an #[soa] element, which is legal
-        # exactly here. check_array_index refuses one otherwise, so grant the
-        # same one-shot permission check_field_access does for its own base.
+        # `POOL[i].clone()` is never legal (an #[soa] struct cannot impl
+        # Clone). The one-shot permission only lets the receiver type-check, so
+        # the "does not implement Clone" error below is reported instead of
+        # check_array_index's whole-element error.
         previous_ok = getattr(self.type_checker, '_soa_element_ok', False)
         self.type_checker._soa_element_ok = True
         try:
@@ -322,7 +320,6 @@ class CallValidator:
         method_name = field_access.field_name
 
         # Get the type of the receiver (e.g., PLAYER has type Player)
-        # We need to check the type without throwing an error for missing field
         # `POOL[i].m()` — the receiver is an #[soa] element, which is legal
         # exactly here. check_array_index refuses one otherwise, so grant the
         # same one-shot permission check_field_access does for its own base.
@@ -656,8 +653,8 @@ class CallValidator:
         # Detect struct (or pointer-to-struct), or a newtype.
         #
         # Resolution here is by name, not by trait dispatch, so a newtype works
-        # the same way even though it cannot implement ToString (a TypeId byte at
-        # offset 0 would overlap its value). Its inherent `to_string` is found by
+        # the same way even though it cannot implement ToString (the trait takes
+        # `*self`, and newtype methods take `self` by value). Its inherent `to_string` is found by
         # the same lookup and called statically -- which is what a newtype wants
         # anyway: no vtable, and `self` arrives by value.
         struct_name: Optional[str] = None
@@ -689,9 +686,9 @@ class CallValidator:
             method_sym = self.symbol_table.lookup(f'{struct_name}.to_string')
             if not method_sym or method_sym.kind != SymbolKind.METHOD:
                 if is_newtype:
-                    # A newtype cannot implement the trait, so point at the
-                    # inherent method it can have instead -- taking `self` by
-                    # value, as all newtype methods do.
+                    # A newtype cannot implement ToString (it takes `*self`),
+                    # so point at the inherent method it can have instead --
+                    # taking `self` by value, as all newtype methods do.
                     raise TypeCheckError(
                         f"format {{s}}: newtype '{struct_name}' has no 'to_string' method",
                         source_loc=expr.source_loc,
@@ -904,17 +901,11 @@ class CallValidator:
         return func_type
 
     def _check_call_mode_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
-        """Check mode compatibility between caller and callee.
+        """No-op: every caller/callee mode pairing is legal.
 
-        In the new design, mode transitions are handled automatically by the compiler:
-        - Compiler inserts REP/SEP around 16-bit A operations
-        - Call sites switch to callee's entry mode as needed
-
-        This method no longer raises errors for mode mismatches - the compiler
-        will generate the appropriate mode switch code.
+        Mode switches around a call are generated after typeck: the MIR Call
+        carries the callee's entry/exit mode (mir/lowerers/call.py).
         """
-        # Mode transitions are now automatic - no validation needed
-        # The MIR builder will insert REP/SEP instructions as needed at call sites
         pass
 
     def _check_call_bank_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):

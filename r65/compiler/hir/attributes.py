@@ -27,14 +27,6 @@ class ProcessedAttribute:
     source_loc: Optional[SourceLocation] = None
 
 
-# Mode attribute - simplified to only contain databank parameter
-# CPU mode (m8/m16, x8/x16) is now inferred from parameter types:
-# - Default: m8 (8-bit A), x16 (16-bit X/Y)
-# - Function entry: m16 if A parameter is u16, else m8
-# - X/Y always u16 (compiler error if u8 X/Y parameter)
-# - Auto REP/SEP inserted around 16-bit A operations
-
-
 class DataBankMode(Enum):
     """Data bank register management mode."""
     NONE = "none"        # No DBR management (default)
@@ -44,19 +36,14 @@ class DataBankMode(Enum):
 
 @dataclass
 class ModeAttribute(ProcessedAttribute):
-    """#[mode(databank=...)] - only databank parameter retained.
-
-    CPU mode (m8/m16, x8/x16) is now automatically inferred from:
-    - Parameter types: u16 @ A -> m16 entry, otherwise m8
-    - X/Y registers are always u16 (x16 mode)
-    """
+    """#[mode(databank=...)]: DBR management only; CPU mode is inferred from the signature."""
     databank: DataBankMode = field(default=DataBankMode.NONE)
 
 
 # Preserves attribute
 @dataclass
 class PreservesAttribute(ProcessedAttribute):
-    """#[preserves(A, X, Y, STATUS, D, DBR, S)] - B and PBR not allowed"""
+    """#[preserves(...)] - registers with `preservable=True` in registers.REGISTERS (not B, PBR or S)"""
     registers: List[str] = field(default_factory=list)
 
 
@@ -66,7 +53,7 @@ class StorageKind(Enum):
     ZEROPAGE = "zeropage"  # Direct page ($0000-$00FF) - uses DP addressing
     LOWRAM = "lowram"      # Low RAM ($0000-$1FFF) - auto starts at $0100
     RAM = "ram"            # Main RAM ($7E2000-$7FFFFF)
-    # ROM removed - immutable statics are implicitly ROM
+    # No ROM kind: an immutable static with no attribute is ROM.
     HW = "hw"              # Hardware-mapped I/O (automatically volatile)
 
 
@@ -164,7 +151,8 @@ class InlineAttribute(ProcessedAttribute):
     - NEVER (#[inline(never)]): never inlined.
 
     Functions without any inline attribute use the implicit-inline heuristics
-    (called-once, small leaf, etc.) when -O2 is enabled.
+    (called-once, small leaf, etc.) when -O2 is enabled. Trivial getters/setters
+    get a HINT attribute from the HIR builder at every -O level.
     """
     mode: InlineMode = InlineMode.HINT
 
@@ -216,8 +204,8 @@ _UNSUPPORTED_RUST_ATTRS = {
 }
 
 
-# Defined in `frontend` so the parser can use it too — types accept attributes
-# now, so `#[derive]` on a struct is caught there rather than as a parse failure.
+# Defined in `frontend` so the parser can use it too: `#[derive]` on a type is
+# caught there rather than as a parse failure.
 _derive_trait_names = derive_trait_names
 
 
@@ -280,8 +268,8 @@ class AttributeProcessor:
     def _process_mode(self, attr: ast.Attribute, context: str) -> ModeAttribute:
         """Process #[mode(...)] attribute.
 
-        The #[mode] attribute now only supports the databank parameter.
-        CPU mode (m8/m16, x8/x16) is automatically inferred from parameter types.
+        Only the databank parameter is accepted; CPU mode is inferred from
+        parameter types.
         """
         if context not in ['function']:
             raise HIRError(f"#[mode] attribute only valid on functions", source_loc=attr.source_loc)
@@ -439,8 +427,7 @@ class AttributeProcessor:
         )
 
     def _process_bank(self, attr: ast.Attribute, context: str) -> BankAttribute:
-        """Process #[bank(n)] attribute - now a directive, not a function attribute."""
-        # #[bank(n)] is now a global directive, not a function attribute
+        """#[bank] is a top-level directive (ast.BankDirective); as an item attribute it is an error."""
         raise HIRError(
             f"#[bank(n)] is a global directive, not a function attribute. "
             f"Place #[bank(n)] before function declarations to set the bank for "

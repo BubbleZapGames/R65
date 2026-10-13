@@ -7,8 +7,8 @@ not a copy of a value: nothing preserves it. So code between the binding and a
 later read of `x` that writes the register - an expression evaluated through A,
 anything done with a 16-bit accumulator (whose high byte is B), an array index
 loaded into X, a pointer read indexing with Y, a call - leaves `x` reading
-whatever was put there instead. That used to compile silently to the
-wrong value; it is now an error at the overwriting line.
+whatever was put there instead, so that write is an error at the
+overwriting line.
 
 The aliases are tracked through the MIR right after lowering, before any
 optimisation can move or remove a clobber: every operand `get_alias` returned

@@ -3,7 +3,8 @@
 Virtual register allocation for MIR.
 
 Virtual registers are unlimited during MIR construction.
-They are mapped to scratch registers or stack during code generation.
+Codegen maps them to a hardware register (A coalescence, X/Y loop/hint
+promotion), a scratch zero-page slot, or a stack slot.
 """
 
 from r65.compiler.mir.nodes import *
@@ -14,10 +15,9 @@ class VirtualRegisterAllocator:
     """
     Allocates virtual registers (unlimited).
 
-    Virtual registers are placeholders that will be mapped to:
-    - Scratch registers (designated zero-page locations)
-    - Stack locations
-    during code generation.
+    Virtual registers are placeholders allocated in codegen to a hardware
+    register (A coalescence, X/Y loop/hint promotion), a scratch zero-page
+    slot, or a stack slot.
 
     The allocator simply assigns unique IDs - actual hardware allocation
     happens later in the code generation phase.

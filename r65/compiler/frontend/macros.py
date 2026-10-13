@@ -52,11 +52,15 @@ class MacroExpander:
 
     def __init__(self):
         self.macros: Dict[str, ast.MacroDecl] = {}
-        self._impl_macros: Dict[str, Dict[str, ast.MacroDecl]] = {}  # struct_name → {macro_name → MacroDef}
+        self._impl_macros: Dict[str, Dict[str, ast.MacroDecl]] = {}  # struct_name → {macro_name → MacroDecl}
         self.warnings: List[str] = []
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
-        self._program_items: List[ast.Declaration] = []  # Store program declarations for symbol! resolution
+        # The program's own item list (aliased, not copied): symbol!/format!
+        # look declarations up here, and format! appends its ROM literal
+        # statics, which reach the output only because _expand_declarations
+        # is iterating this same list.
+        self._program_items: List[ast.Declaration] = []
         self._format_literal_counter = 0  # Unique ID for format string literal statics
         self._format_invocation_counter = 0  # Unique ID for format! invocations
 
@@ -334,9 +338,7 @@ class MacroExpander:
             return self._expand_method_macro_expr(expr)
 
         elif isinstance(expr, ast.BlockExpression):
-            # `{ stmts; value }`. Not recursing here left any macro inside a
-            # block expression unexpanded, and it reached the HIR builder as an
-            # "Unknown expression type" — for free macros too, not just methods.
+            # `{ stmts; value }`: both parts can hold invocations.
             return replace(
                 expr,
                 statements=self._expand_statements(expr.statements),
@@ -411,12 +413,8 @@ class MacroExpander:
         elif isinstance(expr, ast.MatchExpression):
             new_arms = []
             for arm in expr.arms:
-                # Match arm bodies can be expressions OR statements (ast.Block,
-                # ast.ReturnStmt, etc — same set the HIR builder special-cases
-                # in _build_match_expression). Without dispatching on the
-                # body kind here, a Block arm body's nested macro invocations
-                # would survive expansion and surface later as
-                # "Unknown statement type: MacroInvocationStmtInner".
+                # An arm body is an expression or a statement
+                # (Block/return/break/continue); a Block needs the statement walker.
                 if isinstance(arm.body, ast.Block):
                     new_body = self._expand_block(arm.body)
                 else:
@@ -782,7 +780,8 @@ class MacroExpander:
 
         return self._invoke_macro(name, args, source_loc, parse_as_statements)
 
-    # Fragment-type classification sets (faithful to the lexer terminals).
+    # Fragment-type classification sets (mirroring the lexer terminals;
+    # _INT_RE does not accept a type suffix such as `5u16`).
     _REG_NAMES = REGISTER_NAMES
     _TYPE_NAMES = frozenset({'bool', 'u16', 'i16', 'u8', 'i8'})
     _BOOL_LITERALS = frozenset({'true', 'false'})
@@ -867,8 +866,8 @@ class MacroExpander:
         arity (or, when `check_fragments`, fragment types) don't fit the args.
 
         Fragment types are only consulted to disambiguate between multiple arms;
-        a single-arm macro matches on arity alone, preserving the historical
-        no-validation behavior for all existing macros.
+        a single-arm macro matches on arity alone; its fragment types are
+        documentation (docs/macros.md, Multiple Arms).
         """
         simple_params = [p for p in arm.params if not p.is_repeated]
         repeated_params = [p for p in arm.params if p.is_repeated]
@@ -922,7 +921,7 @@ class MacroExpander:
         Returns (arm, bindings). Raises MacroError if no arm matches.
         """
         # Fragment types only matter when there is more than one arm to choose
-        # between; single-arm macros match on arity alone (backward compatible).
+        # between; single-arm macros match on arity alone.
         check_fragments = len(macro.arms) > 1
 
         reasons: List[Tuple[ast.MacroArm, str]] = []
@@ -934,7 +933,7 @@ class MacroExpander:
                 return arm, bindings
             reasons.append((arm, reason))
 
-        # No arm matched. Single-arm macros keep the precise legacy diagnostic.
+        # No arm matched. A single-arm macro reports its one mismatch reason directly.
         if len(macro.arms) == 1:
             raise MacroError(f"macro '{macro.name}' {reasons[0][1]}", source_loc)
 
@@ -1245,8 +1244,8 @@ class MacroExpander:
         # $7E....) and pass &buf[off] to formatters — no running pointer, no
         # 24-bit pointer arithmetic. The far pointer `p` is declared lazily only
         # when a variable-length specifier (plain decimal, signed, string) makes
-        # the offset unknown (Phase B), after which behaviour matches the old
-        # pointer-threaded codegen.
+        # the offset unknown (Phase B), after which every write goes through
+        # the cursor `p`, which then advances.
         fmt_id = self._format_invocation_counter
         self._format_invocation_counter += 1
         p = f'__fmtptr{fmt_id}'  # unique pointer name (declared lazily, Phase B)
@@ -1522,7 +1521,8 @@ class MacroExpander:
         """
         Parse a format specifier string.
 
-        Valid specifiers: u8, u16, u8:x, u16:x, u16:Nd (1<=N<=10), s, c
+        Valid specifiers: u8 u16 i8 i16 bool s c, u8:x u16:x, and
+        (u8|u16):[0]Nd with 1<=N<=10.
 
         Args:
             spec_str: Specifier string (contents between { and })

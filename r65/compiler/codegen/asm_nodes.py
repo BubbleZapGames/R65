@@ -195,20 +195,17 @@ class ModeChange(AsmNode):
 
     These directives don't generate any bytes; they tell WLA-DX what
     width to use when sizing accumulator-immediate (m flag) or
-    index-immediate (x flag) operands that follow. WLA-DX assembles
-    linearly — it doesn't track SEP/REP semantically — so `ModeChange`
-    nodes have to appear at every point where the linear assembler
-    needs to be told the runtime mode just shifted.
+    index-immediate (x flag) operands that follow. WLA-DX follows
+    SEP/REP only in text order, not across branches, so a `ModeChange`
+    is needed wherever control flow joins in a different width.
 
     `flag` is `"ACCU"` (m flag, accumulator width) or `"INDEX"`
     (x flag, index-register width). `bits` is 8 or 16.
 
-    Codegen does NOT scatter these around at SEP/REP sites anymore —
+    Codegen emits a ModeChange after each SEP/REP it writes; at -O1+
     `r65.compiler.optimize.mode_directive_rewrite.normalize_mode_directives`
-    regenerates them from the asm-mode dataflow at the start and end
-    of peephole optimization. The single source of truth for runtime
-    mode is `compute_modes()` (see asm_mode_dataflow.py), not these
-    nodes.
+    strips and regenerates them from the asm-mode dataflow, whose
+    `compute_modes()` (see asm_mode_dataflow.py) is the source of truth.
     """
     flag: str   # "ACCU" or "INDEX"
     bits: int   # 8 or 16

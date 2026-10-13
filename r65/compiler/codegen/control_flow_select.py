@@ -69,8 +69,8 @@ class ControlFlowInstructionSelector(BaseSelector):
             instr: JumpTable instruction
         """
         table_size = len(instr.targets)
-        # The dispatch sequence below uses 8-bit immediates throughout
-        # (CMP #size, SBC #base, ASL byte index). table_size of 256+
+        # The bounds check below runs in m8 (CMP #size, SBC #base with
+        # 8-bit immediates). table_size of 256+
         # would emit `CMP #$00`, silently disabling the bounds check.
         # The match analyser caps tables at MAX_JUMP_TABLE_SIZE = 128, so
         # this should always hold; assert to fail loud if the cap shifts.
@@ -80,12 +80,11 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         scrutinee_loc = self.parent._get_operand_location(instr.scrutinee)
 
-        # Load scrutinee into A in m8 so the bounds-check immediates and
-        # the AND/ASL below all operate on a single byte. Without this, an
+        # Load scrutinee into A in m8 so the bounds-check immediates
+        # operate on a single byte. Without this, an
         # m16-on-entry caller would have LDA read 2 bytes from a u8 location
         # and the CMP/SBC immediates would extend to 16-bit, silently
         # corrupting the dispatch.
-        # Jump table dispatch expects m8 scrutinee
         self.parent._ensure_m8_mode()
         if scrutinee_loc.is_hw('A'):
             pass  # Already in A
@@ -166,7 +165,6 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Load scrutinee into A in m8. Same rationale as select_jump_table:
         # if m16 is live on entry the bounds check and SBC immediates run
         # 16-bit and silently corrupt the dispatch.
-        # LUT dispatch expects m8 scrutinee
         self.parent._ensure_m8_mode()
         if not scrutinee_loc.is_hw('A'):
             self.parent._emit_load('LDA', scrutinee_loc)
@@ -316,8 +314,6 @@ class ControlFlowInstructionSelector(BaseSelector):
         # Optimize comparisons against zero.
         # When RHS is immediate 0, several simplifications apply:
         # - Unsigned: x>0 is x!=0, x<=0 is x==0, x>=0 is always true, x<0 always false
-        # - Signed: no overflow possible (V=0) so N flag directly indicates sign,
-        #   avoiding the complex BVC/EOR N-XOR-V trick
         if compare_rhs_zero and not is_signed and comparison in ('<', '<=', '>', '>='):
             result = self._emit_zero_comparison_branch(
                 comparison, true_target, false_target
@@ -531,14 +527,12 @@ class ControlFlowInstructionSelector(BaseSelector):
             return
 
         # Use consolidated emit_epilogue from FunctionCodeGenerator
-        # Note: emit_epilogue no longer does mode switching (we did it above)
         if self.parent.func_gen:
             self.parent.func_gen.emit_epilogue(self.current_function, self.parent.reg_alloc)
         else:
             # Fallback to inline methods if func_gen not available
             self._emit_preserved_register_restores()
             self._emit_dbr_restore()
-            # Mode restore is now handled by _switch_to_exit_mode above
 
         self._emit_return_instruction()
 

@@ -97,9 +97,9 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # The call graph constrains scratch param promotion: a
     # callee's scratch params must not collide with any caller's scratch params
     # on the same call chain (the callee's prologue would overwrite the
-    # caller's param). We process functions in topological order with callers
-    # first; when promoting G we exclude scratches used by any function that
-    # transitively calls G.
+    # caller's param). Functions are processed in program order; when
+    # promoting G we exclude scratch bytes already chosen by any transitive
+    # caller or callee of G.
 
     # Per-function record of chosen scratch bytes.
     func_scratch_bytes: Dict[str, Set[int]] = {}
@@ -377,8 +377,8 @@ def _promote_function_params(
     result: Dict[int, Tuple[str, object]] = {}
 
     # First pass: assign cross-call params to hw regs (they have existing region-spill support)
-    #   - Only A, X, Y are safe (B has no spill support, callees clobber it via m16 ops)
-    #   - Scratch registers are NOT safe (callees allocate their own locals to same DP addresses)
+    #   - Try A, X, Y first (B has no spill support, callees clobber it via m16 ops)
+    #   - Then scratch: Step 4's global reservation keeps callee locals off scratch param bytes
     # Second pass: assign local params to hw regs (incl. B), then scratch
     for is_cross_call_pass in [True, False]:
         for param_idx, vreg, param_size, cross_call in params_to_place:
@@ -470,11 +470,8 @@ def _inject_hw_param_moves(func: MIRFunction):
         )
         moves_to_inject.append(move)
 
-    # Insert moves at the beginning of the entry block
-    # (after any existing register-param moves, but before other instructions)
-    # To keep it simple, just prepend them — register-param moves are already
-    # at the start, and order among hw-promoted moves doesn't matter much
-    # as long as they come before the first use.
+    # Prepended: each reads a register no explicit binding uses
+    # (`taken_hw_regs`), so order among the entry moves is free.
     entry_block.instructions = moves_to_inject + entry_block.instructions
 
 

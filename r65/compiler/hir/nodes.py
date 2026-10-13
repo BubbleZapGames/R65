@@ -118,7 +118,7 @@ class HIRProgram(HIRNode):
 @dataclass
 class RegisterBinding:
     """A parameter or let bound to a hardware register (`x @ A`)."""
-    register_name: str  # "A", "X", "Y", "B"
+    register_name: str  # any register with bindable=True in registers.REGISTERS
 
 
 @dataclass
@@ -170,11 +170,10 @@ class HIRFunctionDecl(HIRDeclaration):
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
 
-    # STATUS flag return tracking (for optimized branch generation at call sites)
-
     # Inferred processor mode (populated by HIR builder)
     # - entry_m_mode: m8 if no u16 A parameter, m16 if u16 @ A parameter
-    # - exit_m_mode: m16 if return type is u16/i16, else m8
+    # - exit_m_mode: m16 if the value returned in A is 2 bytes (u16/i16, near
+    #   pointer or fn pointer, 2-byte enum, newtype over any of those), else m8
     # - x_mode is always x16 (16-bit X/Y)
     entry_m_mode: Optional[Any] = None  # Will be ModeState (M8 or M16)
     exit_m_mode: Optional[Any] = None   # Will be ModeState (M8 or M16)
@@ -530,9 +529,9 @@ class HIRStatusFlagAccess(HIRExpression):
     Represents property access on the STATUS register for individual CPU flags.
     Used for optimized branch generation (BCS, BCC, BEQ, etc.) and flag manipulation.
 
-    Flags: Carry, Zero, Irq, Decimal, Index, Accumulator, Overflow, Negative
+    Flags: see hir/status_flags.STATUS_FLAGS (Carry, Zero, Irq, Decimal, XY16, A16, Overflow, Negative)
     """
-    flag_name: str = ""       # "Carry", "Zero", "Irq", "Decimal", "Index", "Accumulator", "Overflow", "Negative"
+    flag_name: str = ""       # a key of status_flags.STATUS_FLAGS
 
 
 @dataclass
@@ -561,7 +560,6 @@ class HIRArrayLiteralExpr(HIRExpression):
     Array literal expression (e.g., [1, 2, 3, 4]).
 
     Creates an array with explicit element values.
-    Used for ROM data that gets block-copied to RAM.
     """
     elements: List[HIRExpression] = field(default_factory=list)
 
@@ -596,7 +594,6 @@ class HIRStructLiteralExpr(HIRExpression):
     Struct literal expression (e.g., Player { x: 10, y: 20, health: 100 }).
 
     Creates a struct with explicit field values.
-    Used for ROM data that gets block-copied to RAM.
     """
     struct_name: str = ""
     struct_decl: Optional['HIRStructDecl'] = None  # Resolved during HIR construction

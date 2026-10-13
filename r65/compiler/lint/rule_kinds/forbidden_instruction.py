@@ -30,7 +30,7 @@ from r65.compiler.lint.rule_kinds._common import (
 
 KIND_NAME = "forbidden_instruction"
 
-# Split asm lines into tokens by whitespace/commas/semicolons (comments).
+# First identifier-like token on a line (the mnemonic).
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 

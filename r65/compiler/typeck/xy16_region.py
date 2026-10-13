@@ -146,10 +146,9 @@ class Xy16RegionChecker:
                     "the region without restoring 16-bit mode",
                 )
 
-        # Inspect sub-expressions (even outside x8: return/if-condition may
-        # themselves contain assignments to XY16 that we still want to surface
-        # as region errors when they occur mid-region). We only walk when
-        # in_x8 to avoid spurious false positives on normal code.
+        # Sub-expressions are checked only inside a region. Branch and loop
+        # bodies are always walked as fresh scopes so a region opened inside
+        # them is still validated.
         if isinstance(stmt, HIRLetStmt):
             if stmt.initializer is not None and in_x8:
                 self._check_expr(stmt.initializer)

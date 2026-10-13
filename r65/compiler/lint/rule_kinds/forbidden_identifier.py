@@ -1,7 +1,7 @@
 """
 Rule kind: ``forbidden_identifier``.
 
-Bans references to specific resolved symbol names from function bodies.
+Bans identifiers with these source names from function bodies.
 Optionally scoped via ``name_pattern`` (regex over the enclosing function
 name) or ``allow_in`` (exempt list of function names).
 

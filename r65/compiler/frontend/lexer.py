@@ -63,7 +63,7 @@ class Lexer:
         'IF': TokenType.KEYWORD,
         'AS': TokenType.KEYWORD,
 
-        # Built-in functions
+        # Built-in function names (no grammar terminal: they lex as IDENT)
         'NOP': TokenType.KEYWORD,
         'MUL': TokenType.KEYWORD,
         'DIV': TokenType.KEYWORD,
@@ -73,7 +73,8 @@ class Lexer:
         'ROTATE_LEFT': TokenType.KEYWORD,
         'ROTATE_RIGHT': TokenType.KEYWORD,
 
-        # Reserved Rust keywords
+        # Keywords. IMPL, TRAIT, FOR, IN, MATCH, SELF, DYN and EXTERN are
+        # terminals; the other (Rust-reserved) names lex as KEYWORD.
         'IMPL': TokenType.KEYWORD,
         'TRAIT': TokenType.KEYWORD,
         'FOR': TokenType.KEYWORD,
@@ -213,10 +214,10 @@ class Lexer:
 
     def _validate_identifier_not_register(self, identifier: str, line: int, column: int):
         """
-        Validate identifier (currently a no-op, kept for API compatibility).
+        Validate identifier (a no-op).
 
         Lowercase and mixed-case identifiers are valid variable names, even if they
-        match register names case-insensitively. Only uppercase names (A, X, Y,
+        match register names case-insensitively. Only uppercase names (A, B, X, Y,
         STATUS, D, DBR, PBR, S) are treated as registers by the grammar.
         """
         # No validation needed - the grammar's REGISTER terminal only matches
@@ -246,9 +247,6 @@ class Lexer:
             return Token(TokenType.KEYWORD, lark_token.value, lark_token.line, lark_token.column)
 
         elif token_type == 'IDENT':
-            # Note: We don't validate register names here because we need parser context
-            # to distinguish between variable names (x, y, d) and wrong-case registers
-            # Validation happens in the parser's identifier() method
             return Token(TokenType.IDENTIFIER, lark_token.value, lark_token.line, lark_token.column)
 
         elif token_type == 'STRING':

@@ -42,7 +42,6 @@ class TypeConversionSelector(BaseSelector):
         Handles:
         - Widening: u8->u16 (zero-extend), i8->i16 (sign-extend)
         - Narrowing: u16->u8 (truncate to low byte)
-        - Reinterpret: u8<->i8 (no operation, same bits)
         - Pointer conversions: near<->far, pointer-to-integer, integer-to-pointer
 
         Args:
@@ -304,8 +303,8 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
             elif isinstance(src_operand, HardwareRegister):
                 if src_operand.name == 'X':
-                    # In 16-bit mode, TXA would copy both bytes including B
-                    # Use AND #$00FF pattern to ensure only low byte
+                    # TXA in m16 then AND #$00FF, so B is zeroed as well as
+                    # A narrowed
                     self.parent._ensure_m16_mode()
                     self._emit_instr(Opcode.TXA, comment="Load X for narrowing")
                     self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Mask to low byte")
@@ -376,7 +375,8 @@ class TypeConversionSelector(BaseSelector):
         Emit pointer type conversion.
 
         Handles:
-        - Near pointer to far pointer (2 bytes → 3 bytes, add bank 0)
+        - Near pointer to far pointer (2 bytes → 3 bytes, add the ROM data's
+          bank for `&TABLE`, else 0)
         - Far pointer to near pointer (3 bytes → 2 bytes, truncate)
         - Pointer to u16 (extract 16-bit address)
         - Pointer to u8 (extract low byte)

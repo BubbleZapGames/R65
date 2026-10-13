@@ -29,7 +29,7 @@ class BaseSelector(ABC):
     Base class for instruction selector components.
 
     Provides common emit helpers, location resolution, and parent reference
-    pattern used by all selector classes (CallSelector, CompareSelector, etc.).
+    pattern used by all selector classes (CallInstructionSelector, CompareSelector, ...).
 
     Subclasses should:
     1. Implement instruction-specific selection methods
@@ -102,8 +102,8 @@ class BaseSelector(ABC):
         write TWO bytes -- a 1-byte destination cannot use them at all, whatever
         the addressing mode. This is the only thing value_bytes decides.
 
-        `is_u16` is the existing _is_16bit predicate, threaded through unchanged,
-        and drives only the accumulator width for a direct store from A. It is
+        `is_u16` is `InstructionSelector._is_16bit` and drives only the
+        accumulator width for a direct store from A. It is
         False for a 2-byte struct and for 4-byte u32/f32, so collapsing the two
         would quietly change the A path for those.
         """

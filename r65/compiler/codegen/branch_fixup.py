@@ -72,7 +72,7 @@ ALL_BRANCH_OPCODES: Set[Opcode] = CONDITIONAL_BRANCH_OPCODES | {Opcode.BRA}
 
 @dataclass
 class BranchInfo:
-    """Information about a conditional branch instruction."""
+    """A branch (conditional or BRA) that may need a long form."""
     index: int              # Index in node list
     target_label: str       # Target label name
     opcode: Opcode          # Original opcode
@@ -112,7 +112,7 @@ class BranchFixup:
         branches, label_indices = self._build_indices(nodes)
 
         if not branches:
-            return nodes  # No conditional branches to fix
+            return nodes  # No branches to fix
 
         # Phase 2: Determine which branches need long form (iterative)
         self._analyze_branches(nodes, branches, label_indices)
@@ -241,8 +241,6 @@ class BranchFixup:
                     idx_16 = node.bits == 16
             elif isinstance(node, Directive):
                 # Data directives (.db / .dw / .dl / .dsb / .dsw etc.).
-                # Mode directives go through `ModeChange` now and never
-                # reach this branch.
                 current_offset += data_directive_size(node.name, node.args)
             elif isinstance(node, RawAsm):
                 current_offset += raw_asm_size(node.text, acc_16, idx_16)

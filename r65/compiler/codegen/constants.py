@@ -154,8 +154,9 @@ def get_return_registers(return_type, entry_m_mode=None):
     """
     Get the return register order based on return type and mode.
 
-    For (u8, u8) tuples in m8 mode, uses B as the second return register
-    instead of X, which avoids TAX and allows more direct value flow.
+    When the second value is 8-bit (u8/i8/bool) and the mode is not m16, the
+    order is A, B, X, Y (so a third value goes in X); otherwise A, X, Y. B as
+    the second register avoids a TAX.
 
     Args:
         return_type: The function's return type (MultiReturnTypeInfo or other)
@@ -176,7 +177,7 @@ def get_return_registers(return_type, entry_m_mode=None):
 
 
 def _is_8bit_type(type_info) -> bool:
-    """Check if a type is an 8-bit type (u8 or i8).
+    """Check if a type is an 8-bit type (u8, i8 or bool).
 
     Asks about the machine width, so a newtype answers for its payload — a u8
     newtype in the second return slot must still pick the B register.

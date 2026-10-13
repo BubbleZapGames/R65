@@ -20,10 +20,9 @@ class VirtualRegister:
     """
     Virtual register (unlimited during MIR, mapped to scratch/stack during codegen).
 
-    Virtual registers are placeholders that will be allocated to:
-    - Scratch registers (designated zero-page locations)
-    - Stack locations
-    during code generation.
+    Virtual registers are placeholders allocated in codegen to a hardware
+    register (A coalescence, X/Y loop/hint promotion), a scratch zero-page
+    slot, or a stack slot.
     """
     id: int
     type_info: Any  # TypeInfo from HIR
@@ -262,17 +261,13 @@ class StoreIndirect(MIRInstruction):
 @dataclass
 class MemoryFill(MIRInstruction):
     """
-    Fill a memory region with a constant value using a loop.
+    Fill a memory region with a constant value.
 
     For array fill expressions like [0; 256].
 
-    Generates:
-        LDA #fill_value
-        LDX #count
-    .loop:
-        STA dest,X
-        DEX
-        BNE .loop
+    Codegen picks the strategy by value and size: MVN self-copy for zero
+    fills over 32 bytes, otherwise a STZ or LDA/STA indexed loop (see
+    InstructionSelector.select_memory_fill).
     """
     dest: MemoryLocation  # Base address to fill
     fill_value: int       # Value to fill with (constant)
@@ -331,7 +326,8 @@ class BlockCopy(MIRInstruction):
         MVN #src_bank, #dst_bank
 
     Note: MVN uses banks as operands, source/dest addresses in X/Y,
-    and count-1 in A. Copies A+1 bytes.
+    and count-1 in A. Copies A+1 bytes. Bracketed by PHB/PLB: MVN leaves
+    DBR at the destination bank.
     """
     dest: MemoryLocation   # Destination address in RAM
     rom_data: ROMDataRef   # Reference to ROM data section
@@ -709,8 +705,7 @@ class ChainRole(Enum):
     rather than once per call. ChainRole tells codegen which side of the
     bracket (if any) each dispatch should emit.
 
-    SOLO is the default — preserves the pre-pass behavior for any
-    TraitDispatch the chain pass doesn't touch.
+    SOLO (default): emit both PHB and PLB.
     """
     SOLO = "solo"      # Standalone dispatch — emit PHB and PLB
     START = "start"    # First in chain — emit PHB + DBR set, no PLB
@@ -734,7 +729,7 @@ class Argument:
     """
     value: Union[VirtualRegister, HardwareRegister, Immediate]
     mechanism: ArgumentMechanism
-    location: Optional[Union[HardwareRegister, Any]] = None  # Register or Symbol for VARIABLE
+    location: Optional[Union[HardwareRegister, Any]] = None  # Register; MemoryLocation or Symbol for VARIABLE
     param_type: Optional[Any] = None  # Parameter type from function signature (for correct stack push size)
     scratch_addr: Optional[int] = None  # Zero-page address for SCRATCH_PARAM mechanism
 
@@ -805,11 +800,11 @@ class TraitDispatch(CallBase):
     self_is_far: bool = False  # True if self pointer is far (24-bit)
     # Position of this dispatch within a same-self chain. Set by the
     # analysis pass `analyze_trait_dispatch_chains` (analysis/trait_chain_coalesce.py).
-    # Default SOLO preserves the pre-pass behavior.
+    # SOLO (default): emit both PHB and PLB.
     self_chain_role: 'ChainRole' = field(
         default_factory=lambda: ChainRole.SOLO
     )
-    # v2(C): for far-self chains, set on MIDDLE/END members when every
+    # For far-self chains, set on MIDDLE/END members when every
     # method's impls and every gap instruction preserve Y at exit. The
     # codegen then skips the Y reload for those members. Independent of
     # ``self_chain_role`` — DBR-bracket coalescing and Y elision are two
@@ -1046,8 +1041,8 @@ def iter_operands(instr, *, role=None, accepts_hr=None):
 def map_operands(instr, fn):
     """In place, apply fn to every register-operand slot of instr, writing the
     result back. fn receives the raw slot value (possibly None/Immediate/str)
-    and must return it unchanged for non-register values. Mirrors the historical
-    per-node replace walkers; unknown node types are left untouched.
+    and must return it unchanged for non-register values. Unknown node types
+    are left untouched.
     """
     specs = OPERAND_SPECS.get(type(instr))
     if specs is None:

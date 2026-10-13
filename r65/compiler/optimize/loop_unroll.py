@@ -10,7 +10,7 @@ Constraints:
   - Loop must have a compile-time constant trip count
   - Body must have >= 4 and <= 20 MIR operations
   - Total unrolled size (trip_count * body_ops) < 255
-  - No break, continue (exits to outside the loop), or return in body
+  - No break (exits to outside the loop), return, call or asm! in body
   - No nested loops
 """
 
@@ -116,7 +116,6 @@ class LoopUnroller:
                             and p != header_id]
 
         # Ordered body blocks (header is NOT included; it's the condition check)
-        # body_block_ids includes header, so strip it
         pure_body_ids = [bid for bid in body_block_ids
                          if bid != header_id]
 
@@ -132,7 +131,7 @@ class LoopUnroller:
         ordered_body = _order_body_blocks(func, body_entry_id, pure_body_ids,
                                           header_id)
 
-        # Allocate a single landing block that replaces the entire loop
+        # Fresh block ids for the unrolled copies
         next_bid = max(func.blocks.keys()) + 1
 
         # Build unrolled sequence: for each iteration, clone body blocks

@@ -20,8 +20,9 @@ Algorithm
 
     ra(s) = 3 if call_site.is_far else 2         # JSL pushes PBR+PC vs JSR PC
 
-Recursion is already rejected at step 7 of the pipeline; we assert
-acyclicity defensively and raise a clear error if a cycle slips through.
+``RecursionChecker`` rejects recursion only through register/zero-page
+params or promoted locals. Other recursion is allowed: a back-edge costs 0
+here and ``has_recursion`` is set, so the bound is per invocation.
 
 Indirect calls (``Call.function`` is a ``VirtualRegister``) widen to the
 union of all address-taken functions — a conservative over-approximation.
@@ -31,9 +32,9 @@ blocks are treated as zero stack effect (documented contract: any
 bound).
 
 Interrupt handlers fire asynchronously, so their cost is added on top of
-the sync-path high-water mark. v1 assumes handlers run with interrupts
-disabled (R65's default), so at most one handler is active at a time;
-nested-interrupt accounting is a follow-up.
+the sync-path high-water mark. Handlers are assumed to run with interrupts
+disabled (R65's default), so at most one is active at a time. Nested
+interrupts are not accounted for.
 
 Capacity is taken from ``MIRProgram.stack_attr`` (``#[stack(start, end)]``)
 with the SNES default of $0100..$01FF (256 bytes). If the computed total
@@ -56,8 +57,9 @@ _DEFAULT_STACK_UPPER = 0x01FF
 
 
 # Bytes per register save on interrupt entry, in the default 65816 mode
-# the handler prologue sees: A pushed as 16-bit (PHA in m16), X/Y/D as
-# 16-bit, B/DBR as 8-bit. The CPU itself pushes 4 bytes on interrupt entry
+# the handler prologue sees: A pushed as 16-bit (PHA in m16, so B rides
+# along), X/Y/D as 16-bit, DBR as 8-bit. P is not pushed by the prologue
+# (RTI restores it). The CPU itself pushes 4 bytes on interrupt entry
 # (P + PB + PCH + PCL).
 _INTERRUPT_CPU_PUSH = 4
 _INTERRUPT_REG_BYTES = {

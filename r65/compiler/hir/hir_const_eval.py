@@ -299,8 +299,7 @@ def _get_type_mask(type_info) -> int:
             return 0xFF
         elif type_info.name in ('u16', 'i16'):
             return 0xFFFF
-    # A far pointer is 24-bit. Falling through to the 16-bit default drops the
-    # bank byte, which is how `0x7E1234 as far *u8` folded to $1234.
+    # A far pointer is 24-bit; the 16-bit default would drop its bank byte.
     if isinstance(type_info, (PointerTypeInfo, FunctionTypeInfo)):
         return 0xFFFFFF if getattr(type_info, 'is_far', False) else 0xFFFF
     return 0xFFFF  # Default to 16-bit

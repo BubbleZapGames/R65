@@ -88,5 +88,3 @@ class Token:
         """Check if this token is a specific keyword."""
         return self.type == TokenType.KEYWORD and self.value == keyword
 
-
-# LexerError is now imported from r65.compiler.errors

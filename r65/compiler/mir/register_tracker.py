@@ -105,8 +105,9 @@ class RegisterAliasTracker:
         """
         Get the binding type for a hardware register.
 
-        Searches all active aliases to find one bound to the specified register.
-        Returns the binding type if found (e.g., u16 for `let w @ A : u16`).
+        Returns the binding type of the first alias recorded on
+        *register_name* in this function (e.g., u16 for `let w @ A : u16`).
+        Scopes are not tracked.
 
         Args:
             register_name: Hardware register name ('A', 'X', 'Y', etc.)

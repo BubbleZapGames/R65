@@ -216,11 +216,8 @@ class MatchValidator:
         # newtype rather than the payload, which is what the reader wrote.
         payload_type = strip_newtype(scrutinee_type)
 
-        # Only a scalar payload answers the `.name` questions below. A pointer,
-        # struct, or array scrutinee has no `.name` at all, so reading one threw
-        # an AttributeError out of the type checker instead of a diagnostic. A
-        # bare pointer could always reach this; a newtype over a near pointer is
-        # simply a second route to it.
+        # Only a scalar payload has the `.name` the literal/range checks below
+        # read, so reject a literal or range pattern against anything else.
         if (not isinstance(payload_type, BasicTypeInfo)
                 and isinstance(pattern, (HIRLiteralPattern, HIRRangePattern))):
             raise TypeCheckError(

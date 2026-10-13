@@ -24,7 +24,7 @@ class AllocationInfo:
     symbol: Symbol
     address: int
     size: int  # Size in bytes
-    storage_type: str  # 'zeropage', 'ram', 'rom', 'hw'
+    storage_type: str  # 'zeropage', 'lowram', 'ram', 'rom', 'hw'
     is_explicit: bool  # True if user-specified address
     source_info: Optional[str] = None  # Source file:line for comments
     # True for a plane laid over another allocation's bytes rather than
@@ -639,7 +639,7 @@ class MemoryAllocator:
         Get allocations of a specific type.
 
         Args:
-            storage_type: 'zeropage', 'ram', 'hw', or 'rom'
+            storage_type: 'zeropage', 'lowram', 'ram', 'hw', or 'rom'
 
         Returns:
             List of AllocationInfo objects

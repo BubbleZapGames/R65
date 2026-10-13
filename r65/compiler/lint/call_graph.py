@@ -81,8 +81,8 @@ class CallGraph:
         A function that calls through a function pointer can reach any
         function whose address is taken. That is a sound over-approximation
         (the pointer's true value is not tracked here), and it mirrors the
-        MIR-level call graph, so every reachability-based rule — C001
-        included — sees function-pointer targets rather than treating them as
+        MIR-level call graph, so every reachability-based rule kind sees
+        function-pointer targets rather than treating them as
         dead ends. Trait/method dispatch is a separate, still-unresolved case.
         """
         callees = set(self.edges.get(func_name, ()))

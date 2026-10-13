@@ -19,7 +19,6 @@ class ABIInfo:
     """Static ABI knowledge for a function.
 
     Encapsulates all calling-convention facts known before codegen starts.
-    Replaces inline computations like ``3 if is_far else 2``.
     """
 
     __slots__ = (
@@ -87,9 +86,8 @@ class ABIInfo:
         so they must NOT shift the local stack base offset. They DO contribute to
         param offsets (params are still deeper than these pushes).
 
-        Currently only PHB+PHY for self_far_uses_d_equals_s.
-        For self_far_uses_scratch we push PHB only (1 byte) before frame alloc;
-        STY into the scratch slot does not touch the stack.
+        PHB+PHY (3) for far self under D=S; PHB (1) for far self in a scratch
+        slot (STY to the slot touches no stack).
         """
         if self.self_far_uses_d_equals_s:
             return 3
@@ -129,7 +127,8 @@ class ABIInfo:
 
     @property
     def prologue_stack_bytes(self) -> int:
-        """Total bytes pushed by prologue (DBR + preserves + far-ptr PHD).
+        """Total prologue pushes, pre-frame (far-self PHB/PHY) plus post-frame
+        (DBR, preserves, far-ptr PHD/PHB).
 
         Does NOT include interrupt scratch saves (pushed before frame alloc)
         or the return address itself.
@@ -179,7 +178,7 @@ class StackFrameLayout:
 
     @property
     def total_frame_size(self) -> int:
-        """Bytes allocated by prologue TSC/SBC/TCS."""
+        """Bytes the prologue's frame allocation reserves (pushes or TSC/SBC/TCS)."""
         return self.local_frame_size + self.outgoing_arg_bytes
 
     @property

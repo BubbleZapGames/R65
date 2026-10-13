@@ -111,8 +111,8 @@ class SymbolDefinitionGenerator:
             ; ============================================================================
             ; Direct Page Allocations
             ; ============================================================================
-            .DEFINE TEMP $20            ; main.r65:5
-            .DEFINE COUNTER $22         ; Auto-allocated
+            .DEFINE TEMP $0020          ; main.r65:5
+            .DEFINE COUNTER $0022       ; Auto-allocated
         """
         self._emit_allocation_section('zeropage', "Direct Page Allocations")
 
@@ -131,10 +131,12 @@ class SymbolDefinitionGenerator:
             ; ============================================================================
             ; RAM Allocations
             ; ============================================================================
-            .RAMSECTION "ram.7E" BANK $7E SLOT 1 FORCE ORGA $2000
+            .BASE $7E
+            .RAMSECTION "ram.7E" BANK $00 SLOT 1 FORCE ORGA $2000
                 BUFFER dsb 256
                 PLAYER_DATA dsb 100
             .ENDS
+            .BASE $<rom_base>
         """
         allocations = self.allocator.get_allocations_by_type('ram')
 
@@ -201,7 +203,7 @@ class SymbolDefinitionGenerator:
 
     def emit_lowram_definitions(self):
         """
-        Emit low RAM variable definitions ($0100-$1FFF).
+        Emit low RAM variable definitions ($0000-$1FFF, shared with direct page).
 
         Generated:
             ; ============================================================================
@@ -408,8 +410,9 @@ class SymbolDefinitionGenerator:
         3. Direct Page (.DEFINE)
         4. Low RAM (.DEFINE)
         5. Hardware Registers (.DEFINE)
-        6. RAM (.DEFINE)
-        7. ROM Data (.INCBIN)
+        6. RAM (.RAMSECTION)
+        7. Overlay planes (.DEFINE)
+        8. ROM data (.INCBIN)
         """
         # Stack bounds first — stable well-known symbols usable from asm!()
         self.emit_stack_bounds()
@@ -466,10 +469,9 @@ class SymbolDefinitionGenerator:
             alloc: Allocation info
 
         Returns:
-            Comment string (e.g., "Screen brightness")
+            Comment string: the allocation's source info, else
+            "Hardware register"
         """
-        # For hardware registers, try to add descriptive comment
-        # This could be enhanced with a hardware register database
         if alloc.source_info:
             return alloc.source_info
 

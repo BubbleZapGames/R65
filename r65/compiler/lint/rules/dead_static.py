@@ -7,7 +7,7 @@ from r65.compiler.lint.rule import LintContext, LintRule
 
 class DeadStaticMut(LintRule):
     """Warn when a ``static mut`` is written but never read (or totally
-    unused). On a 128KB ROM target, dead RAM is worth catching early.
+    unused). With 128KB of WRAM, dead RAM is worth catching early.
 
     Skips ``#[hw]`` statics: hardware registers are memory-mapped I/O, not
     storage, so "written but never read" is the common legitimate case

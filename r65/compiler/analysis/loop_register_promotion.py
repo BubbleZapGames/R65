@@ -2,14 +2,12 @@
 """
 Loop register promotion analysis.
 
-Pre-pass that runs before codegen to promote stack parameters used in loops
-to local virtual registers with hardware register hints. This avoids repeated
-stack-relative addressing (LDA d,S / STA d,S) in hot loops by keeping values
-in hardware registers (X, Y) or scratch locations.
-
-A stack parameter is promoted if:
-1. It is used (read or written) inside any loop body
-2. It is NOT a pointer type (pointers need memory locations for indirect addressing)
+Pre-pass that runs before codegen to give loop values X/Y register hints,
+avoiding repeated stack-relative addressing (LDA d,S / STA d,S) in hot loops:
+u16 stack params read in a loop get a copy with a hint (`_analyze_function`),
+and local +/-1 loop counters get a hint directly
+(`_promote_local_loop_counters`). The `_enforce_*` passes then drop hints that
+a clobber or an alias would break.
 """
 
 from typing import Dict, Set, List, Tuple, Optional
@@ -264,10 +262,8 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         vreg_size = get_type_size(vreg.type_info)
         if vreg_size > 2:
             continue
-        # Check that all uses are compatible with hardware register allocation.
-        # Store/StoreIndirect with our vreg as source needs LDA which can't
-        # resolve a hardware register as memory operand. Call arguments may
-        # also be incompatible depending on mechanism.
+        # Every use must be one codegen can serve from X/Y; see
+        # `_uses_compatible_with_hw`.
         if not _uses_compatible_with_hw(vreg_id, vreg_uses.get(vreg_id, [])):
             # Check if the only blocker is a Compare against a hw-promoted
             # parameter. Local counters are more valuable in hw registers
@@ -335,8 +331,8 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
 def _enforce_index_clobber_safety(func: MIRFunction) -> int:
     """
     Some instructions clobber index registers across a loop body, which would
-    corrupt a loop counter pinned to that register (via the depth-1 for-loop hint
-    or loop promotion):
+    corrupt a loop counter pinned to that register (via the depth-1/2 for-loop
+    hint or loop promotion):
 
     - JumpTable / LookupTable use ``TAX`` to index the dispatch table — they
       clobber **X only**. Y is untouched and still supports ``addr,Y`` indexing,
@@ -346,11 +342,15 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
       clobber **both X and Y**. A counter pinned to either must be dropped — there
       is no safe index register. (Small AggregateCopy clones unroll to A-only
       moves and are safe; see AGGREGATE_COPY_UNROLL_MAX.)
+    - LoadIndirect / StoreIndirect with no index register load Y with their
+      offset (``LDY #offset``): **Y only**, so a Y hint is relocated to X (when
+      free) or dropped.
 
-    Deliberately NOT covered: a StoreIndirect using ``(zp),Y`` addressing also
-    needs Y, but only for the duration of that one store, and often the index it
-    loads *is* the promoted counter (``PTR[i] = i``) — in which case pinning the
-    counter to Y is exactly right. Blanket-demoting on the presence of an
+    Deliberately NOT covered: an *indexed* StoreIndirect (``PTR[i]``) using
+    ``(zp),Y`` addressing also needs Y, but only for the duration of that one
+    store, and often the index it loads *is* the promoted counter
+    (``PTR[i] = i``) — in which case pinning the counter to Y is exactly
+    right. Blanket-demoting on the presence of an
     indexed indirect store would give that case up. The contention is instead
     left to the register allocator, which declines the hint when the index is a
     different value; the hint set here is advisory, not binding. Both outcomes
@@ -419,8 +419,8 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
         rewritten += 1
 
     # X-only clobbered: relocate X->Y when free, else drop. Only relocate when no
-    # block move exists anywhere in the function (otherwise Y may be clobbered by
-    # one). Vregs already cleared above are skipped (hint no longer 'X').
+    # block move exists in any loop of the function (otherwise Y may be clobbered
+    # by one). Vregs already cleared above are skipped (hint no longer 'X').
     y_claimed = any(v.register_hint == 'Y' for v in all_vregs.values())
     can_use_y = not xy_blocks
     for vid in sorted(_find_vregs_used_in_blocks(func, x_only_blocks)):
@@ -611,8 +611,12 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     - CondBranch (as condition) — okay
     - Jump — okay
 
+    - BinaryOp with the vreg as left operand against an Immediate, dest
+      elsewhere (e.g. ``%t = i << 1``) — read via TXA/TYA, op done in A
+
     Incompatible uses (codegen tries to resolve hw register as memory operand):
-    - BinaryOp with operations other than +1/-1 (shift, XOR, OR, etc.)
+    - Other BinaryOps with the vreg as left operand (non-immediate right side,
+      or an in-place op other than +1/-1)
     - BinaryOp where vreg is right operand (needs memory operand for CMP/SBC/etc.)
     - UnaryOp — needs value in A
     - LoadIndirect (as dest) — result comes from A, not X/Y

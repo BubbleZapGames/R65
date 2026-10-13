@@ -330,14 +330,14 @@ class AssemblyEmitter:
         self.stack_depth: int = 0
         # Track banks that have had data/code emitted to avoid .ORG 0 overlap
         self._used_banks: set = set()
-        # HiROM flag: when True, .BASE $C0 is emitted before ROM sections
-        # and .BASE $00 before RAM sections so #: bank bytes resolve correctly.
+        # HiROM flag, set by emit_memory_map (the .BASE emission itself
+        # reads rom_base).
         self.is_hirom: bool = False
         # Base bank byte for ROM labels, emitted as `.BASE $xx` before each
         # `.BANK`. WLA-DX resolves a label's bank as `.BASE + its ROM bank`
         # (doc/asmdiv.rst), so this is what puts `:label`, `#:label`, `JSL`,
         # `LDA.l` and `MVN` bank operands into the right 65816 bank:
-        #   $00 - LoROM SlowROM (banks $00-$3F); the historical default
+        #   $00 - LoROM SlowROM (banks $00-$3F); the default
         #   $80 - LoROM FastROM (banks $80-$BF); MEMSEL only speeds up $80-$FF
         #   $C0 - HiROM (banks $C0-$FF); already the FastROM-capable region
         self.rom_base: int = 0x00
@@ -522,11 +522,13 @@ class AssemblyEmitter:
                 this moves ROM labels into the $80-$BF mirror, the only region
                 MEMSEL ($420D) actually speeds up. HiROM already sits at $C0+.
 
-        Generated (LoROM):
+        Generated (LoROM; SLOT 2 only with has_wram_7f):
             .MEMORYMAP
                 DEFAULTSLOT 0
                 SLOTSIZE $8000
                 SLOT 0 $8000
+                SLOT 1 $2000 SIZE $E000
+                SLOT 2 $0000 SIZE $10000
             .ENDME
 
             .ROMBANKMAP
@@ -564,8 +566,8 @@ class AssemblyEmitter:
         self.emit_directive(".ENDRO")
         self.emit_blank_line()
 
-        # Store HiROM flag so emit_bank_directive and emit_ramsection
-        # can emit the correct .BASE before each section.
+        # Pick the ROM base that emit_bank_directive and emit_ramsection
+        # restore with .BASE before each section.
         self.is_hirom = rom_type.lower() != "lorom"
         if self.is_hirom:
             # $C0-$FF is both the fully-ROM-mapped and the FastROM-capable
@@ -586,7 +588,7 @@ class AssemblyEmitter:
         Emits `.BASE $<rom_base>` first when a non-zero base is in effect, so
         `:label` / `#:label` bank bytes resolve into the right 65816 bank:
         $C0+ for HiROM (where $0000-$FFFF all map to ROM) and $80+ for LoROM
-        FastROM. A zero base emits nothing, keeping SlowROM output unchanged.
+        FastROM. A zero base emits nothing.
 
         Args:
             bank_num: Bank number
@@ -663,7 +665,7 @@ class AssemblyEmitter:
 
 
     # ========================================================================
-    # N/Z Flag Tracking
+    # X/Y copy, stack-slot and N/Z tracking
     # ========================================================================
 
     # Beyond what `registers_written` lists: control leaving for code that
@@ -693,7 +695,8 @@ class AssemblyEmitter:
     # Stack-slot contents of A and X
     # ------------------------------------------------------------------
 
-    # Pushes/pulls by byte count; None = the accumulator / index width decides.
+    # Bytes each push/pull moves: an int, None for the accumulator width,
+    # 'x' for the index width.
     _PUSH_BYTES = {'PHA': None, 'PHX': 'x', 'PHY': 'x', 'PHP': 1, 'PHB': 1,
                    'PHK': 1, 'PHD': 2, 'PEA': 2, 'PEI': 2, 'PER': 2}
     _PULL_BYTES = {'PLA': None, 'PLX': 'x', 'PLY': 'x', 'PLP': 1, 'PLB': 1,
@@ -803,7 +806,7 @@ class AssemblyEmitter:
             comment: Optional inline comment
 
         Generated:
-            .DEFINE TEMP $20        ; main.r65:5
+            .DEFINE TEMP $0020      ; main.r65:5
         """
         line = f".DEFINE {name} ${value:04X}"
 
@@ -902,7 +905,7 @@ class AssemblyEmitter:
         self.emit_directive(f'    .INCBIN "{filepath}"')
 
     # ========================================================================
-    # Interrupt Vectors
+    # SNES Header and Interrupt Vectors
     # ========================================================================
 
     def emit_snes_header(self, snesrom_config=None, romsize_value: int = 0x08):
@@ -926,7 +929,8 @@ class AssemblyEmitter:
               VERSION $00
             .ENDSNES
 
-        Note: Vectors are placed separately using .ORGA directives.
+        Vectors are emitted separately by emit_interrupt_vectors
+        (.SNESNATIVEVECTOR / .SNESEMUVECTOR).
         """
         self.emit_section_header("SNES ROM Header")
 

@@ -121,24 +121,19 @@ class InlinabilityChecker:
     """
     Determines whether a function can and should be inlined.
 
-    Hard requirements (must all be true):
-    1. Not recursive (direct or mutual)
-    2. Not an interrupt handler
-    3. Not the entry point
-    4. No inline assembly (asm!())
-    5. If far and the caller is in another bank: body must be
-       bank-independent (see `_far_body_is_bank_safe`). Far fns whose
-       bodies only use far indirects, DP / zeropage, or WRAM
-       long-addressing can be inlined into any-bank callers; a same-bank
-       caller may inline any far fn, exactly as it would a near one.
-       Checked per (caller, callee) pair in `_bank_compatible`.
+    Hard requirements: see `can_inline` (recursion, interrupt, entry,
+    `__init_start`, asm!, trait methods, `#[preserves]`, ...) and, per
+    (caller, callee) pair, `_bank_compatible`: a far callee in another bank
+    must have a bank-independent body (`_far_body_is_bank_safe`); a
+    same-bank caller may inline any far fn, exactly as it would a near one.
 
-    Heuristics for inlining decisions:
-    - Explicit inlining (always checked):
-      - Marked #[inline] or #[inline(always)] → inline if < 30 instructions
+    Heuristics for inlining decisions (cycle budgets):
+    - `#[inline(always)]`: always (hard requirements still apply).
+    - `#[inline]`: cycle cost < `INLINE_COST_WITH_ATTR`.
     - Implicit inlining (only when implicit_inline=True, i.e., -O2):
-      - Called exactly once → always inline (no code size increase)
-      - No attribute → inline only if very small (< 3 instructions)
+      - Called once → cost ≤ `INLINE_COST_WITH_ATTR`
+      - Otherwise → cost ≤ `INLINE_COST_NO_ATTR` × loop-depth multiplier,
+        capped at `INLINE_COST_WITH_ATTR`
 
     Note: Trivial getters/setters are auto-marked with #[inline] at HIR level.
     """
@@ -242,10 +237,8 @@ class InlinabilityChecker:
         - **WRAM Load/Store with bank-resolved address ≥ $010000**
           (storage_type='ram', address >= 0x010000): codegen always emits
           long addressing because the address is wider than 16 bits.
-        - **Far-pointer stack params.** These used to be refused, on the
-          grounds that the body's `(d,S),Y` / `[dp],Y` derefs depend on a
-          prologue the inliner drops. They do not: codegen picks the far-deref
-          path from the *caller* it ends up in, and both outcomes are
+        - **Far-pointer stack params.** Codegen picks the far-deref path
+          from the *caller* the body lands in, and both outcomes are
           bank-explicit. A caller with no far-ptr params of its own gets
           `_get_far_ptr_strategy() is None` and the per-access path, which
           reads the bank byte from the pointer itself. A caller that does have
@@ -253,14 +246,13 @@ class InlinabilityChecker:
           `_is_set_dbr_safe` vetoes SET_DBR and forces D=S, whose `[dp],Y` is
           indirect long and takes its bank from the pointer bytes. Both
           analyses run after inlining (`codegen.py`), so they see the merged
-          body. Verified end to end: with this admitted, classickong's VRAM at
-          the end of a recorded playthrough is byte-identical and WRAM differs
-          only in dead stack below SP.
+          body.
 
         Rejected:
 
-        - **Near indirects** (is_far=False): use DBR, which differs
-          between caller's and callee's banks.
+        - **Near indirects** (is_far=False): use DBR. With databank=none
+          (the only mode admitted below) that is the caller's DBR whether
+          the callee is called or inlined; the rejection is conservative.
         - **Any Call** to a non-far function in the body — `JSR` targets
           the current PBR; after inlining that PBR is the caller's, so
           the JSR lands in the wrong bank.
@@ -494,22 +486,10 @@ class InlinabilityChecker:
         if not self.implicit_inline:
             return False
 
-        # Called exactly once → inline if not absurdly large. The "no code
-        # size increase" reasoning that lets us bypass the regular budget
-        # still applies, but huge called-once callees inflate the caller's
-        # frame past what the slot allocator can untangle (observed in
-        # classickong.r65 with unpack_level — a 700-line function whose
-        # locals collided with the caller's at slot $07,S). Capping at
-        # the same limit as explicitly-attributed functions keeps the win
-        # for small called-once helpers without breaking large ones.
-        #
-        # NOTE(slot-allocator-latent): the underlying liveness/slot-reuse
-        # bug is still there — synthetic small repros (one large called-
-        # once callee + caller with several u16 locals, see /tmp tests in
-        # the inlining session) do NOT trigger it, so a targeted fix
-        # would need a minimal reduction from the classickong.r65 case.
-        # The cap is the practical mitigation; revisit if a smaller repro
-        # surfaces.
+        # Called once: no code-size cost, but capped at
+        # `INLINE_COST_WITH_ATTR`, because very large called-once bodies
+        # have produced slot collisions in the caller's frame (no minimal
+        # repro yet).
         if self.call_counts.get(func_name, 0) == 1:
             return body_cost <= INLINE_COST_WITH_ATTR
 
@@ -572,14 +552,10 @@ class BlockCloner:
                 vreg.type_info,
                 f"inlined_{vreg.hint}" if vreg.hint else None
             )
-            # Carry over dynamic attributes the expression lowerer sets on
-            # vregs that hold address-of-ROM-data values (`.symbol` →
-            # `rom_label`). Without this, the near→far codegen at
-            # type_conversion_select.py:425 sees a vreg with no `.symbol`,
-            # falls back to bank $00, and the resulting far pointer aims
-            # at bank 0 instead of bank 8 (classickong.r65 -O2:
-            # title_screen_press_start_str inlining → PRESS START
-            # rendered from a wild far-ptr read).
+            # Carry `.symbol` (set on vregs that hold the address of ROM
+            # data): the near→far conversion in `type_conversion_select`
+            # reads its `rom_label` for the bank byte and falls back to $00
+            # without it.
             if hasattr(vreg, 'symbol') and vreg.symbol is not None:
                 new_vreg.symbol = vreg.symbol
             self.vreg_map[vreg.id] = new_vreg
@@ -630,7 +606,8 @@ class BlockCloner:
 
     # Control-flow nodes carry block-id targets (not register operands); these
     # are remapped into the caller's block space during inlining. A new node
-    # with jump targets must be added here.
+    # with jump targets must be registered with `map_block_targets` in
+    # mir/nodes.py.
     def _clone_instruction(self, instr: MIRInstruction) -> MIRInstruction:
         """Clone an instruction with all operands and block-ids remapped.
 
@@ -641,9 +618,8 @@ class BlockCloner:
         registry (mir/nodes.py); remaps block-id targets into the caller's block
         space; and copies the one constant list field (LookupTable.values).
 
-        InlineAsm and any node missing from the operand registry raise — the old
-        deepcopy fallback silently aliased callee vregs and caused id collisions,
-        so failing loudly is the right call.
+        InlineAsm and any node missing from the operand registry raise rather
+        than risk aliasing callee vregs.
         """
         if isinstance(instr, InlineAsm):
             raise NotImplementedError(
@@ -1086,8 +1062,7 @@ class FunctionInliner:
 
         # Result vregs in the caller's space — one per return value.
         # Multi-return callees (e.g. `-> u8, u8` or `-> u8, u16`) plumb each
-        # Return.values[i] into call.returns[i]; previously only [0] was
-        # emitted, silently dropping the second value.
+        # Return.values[i] into call.returns[i].
         result_vregs = list(call.returns)
 
         # Exit-boundary SetMode: switches back to the caller's mode at
@@ -1309,9 +1284,7 @@ class FunctionInliner:
                     # type (e.g. u8 → u16), we need a TypeConvert so the high
                     # bytes get zero/sign-extended properly. A plain Move does
                     # a bit-copy and leaves the high byte garbage from whatever
-                    # was last in A — observed as bogus walkmap reads after
-                    # implicit inlining of test_map(x: u8, y: u16) in
-                    # classickong.r65. The non-inlined call path handles this
+                    # was last in A. The non-inlined call path handles this
                     # via emit_outgoing_stack_argument's source_size < param_size
                     # branch; the inline path must mirror it.
                     from r65.compiler.codegen.type_utils import get_type_size
@@ -1346,8 +1319,10 @@ class FunctionInliner:
         # XBA on A, Move to DBR uses PHA/PLB, Move to D uses TCD — so
         # if we set A first then load another register through A, the
         # A-param value is clobbered before the body uses it. Matches the
-        # non-inlined emit_call_args convention (see MEMORY.md "Call Arg
-        # A-Coalescence"). Stable sort: False (non-A) sorts before True (A).
+        # non-inlined order in `CallSelector.arg_sort_key`
+        # (codegen/call_select.py: 'A last'); see docs/abi-models.md,
+        # "Argument Setup Preserves an A-Resident Value". Stable sort: False
+        # (non-A) sorts before True (A).
         register_instrs.sort(
             key=lambda m: getattr(m.dest, 'name', '') == 'A'
         )

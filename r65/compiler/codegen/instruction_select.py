@@ -222,8 +222,8 @@ class InstructionSelector:
                 comment_parts.append("X")
             comment = f"Set {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (8-bit mode)"
             self.emitter.emit_instr(Opcode.SEP_IMMEDIATE, Immediate(mask), comment=comment)
-            # Emit .ACCU/.INDEX AFTER the instruction so the peephole optimizer
-            # sees the actual SEP before the directive (prevents false redundancy)
+            # Directive after the instruction: WLA-DX sizes the immediates
+            # that follow by it
             if mask & M_FLAG:
                 self.emitter.emit_accu_mode(8)
             if mask & X_FLAG:
@@ -239,8 +239,8 @@ class InstructionSelector:
                 comment_parts.append("X")
             comment = f"Clear {'+'.join(comment_parts)} flag{'s' if len(comment_parts) > 1 else ''} (16-bit mode)"
             self.emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(mask), comment=comment)
-            # Emit .ACCU/.INDEX AFTER the instruction so the peephole optimizer
-            # sees the actual REP before the directive (prevents false redundancy)
+            # Directive after the instruction: WLA-DX sizes the immediates
+            # that follow by it
             if mask & M_FLAG:
                 self.emitter.emit_accu_mode(16)
             if mask & X_FLAG:
@@ -284,10 +284,9 @@ class InstructionSelector:
 
         Asks _get_opcode_for_location, which is pure -- it computes, it does not
         emit -- rather than re-deriving the mode, so this sees the same D=S /
-        SET_DBR / spill-offset adjustments the real store will. Reading
-        OPCODE_VARIANTS through that one path is why this replaces a
-        hand-maintained list of what STX/STY cannot do: such a list has to be
-        kept in sync with the opcode table, and had already drifted out of it.
+        SET_DBR / spill-offset adjustments the real store will, and the
+        answer comes from OPCODE_VARIANTS rather than a list kept in sync by
+        hand.
         """
         from r65.compiler.codegen.errors import InstructionSelectionError
         try:
@@ -438,13 +437,13 @@ class InstructionSelector:
 
     def _ensure_xba_state_normal(self, comment: str = None):
         """Ensure A and B are in normal positions (A=A, B=B)."""
-        # XBA requires 8-bit mode for B register operations
+        # B is only a separate 8-bit register in m8
         self._ensure_m8_mode()
         self.xba_manager.ensure_normal(comment)
 
     def _ensure_xba_state_swapped(self, comment: str = None):
         """Ensure A and B are swapped (A=B, B=A)."""
-        # XBA requires 8-bit mode for B register operations
+        # B is only a separate 8-bit register in m8
         self._ensure_m8_mode()
         self.xba_manager.ensure_swapped(comment)
 
@@ -959,7 +958,7 @@ class InstructionSelector:
 
         # Perform operation
         if op == '!':
-            # Logical NOT: convert to 0 or 1, then XOR with 1
+            # Logical NOT: 1 if zero, else 0
             self._emit_immediate(Opcode.CMP_IMMEDIATE, 0, "Check if zero")
             self._emit_branch(Opcode.BEQ, "+", "Branch if zero")
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 0, "Was non-zero, result = 0")
@@ -1123,10 +1122,7 @@ class InstructionSelector:
 
         Also reflect the M-flag change in the emitter's tracked mode so
         subsequent `_ensure_mX_mode` calls within this block see the new
-        mode. Without this the codegen kept tracking the pre-SetMode
-        mode and skipped a needed SEP/REP for the next mode-sensitive
-        op (notably u16 stores after an exit-boundary SEP inserted by
-        the inliner).
+        mode.
 
         Args:
             instr: SetMode instruction
@@ -1206,10 +1202,9 @@ class InstructionSelector:
         # 2. Restore scratch register WRAM contents (reverse order of prologue saves)
         self._emit_interrupt_scratch_restores()
 
-        # 3. Restore CPU registers (reverse order of prologue: PHP [REP] PHA PHX PHY PHD PHB)
-        # Pop order: PLB PLD PLY PLX [REP #$20] PLA PLP
-        # CRITICAL: PLA must be in m16 mode to restore the full 16-bit A (including
-        # the hidden high byte). PLP comes LAST to restore the original processor mode.
+        # 3. Pull what the prologue pushed, in reverse (PHA PHX PHY PHD PHB ->
+        # PLB PLD PLY PLX PLA). PLA runs in m16 to restore the hidden high
+        # byte; RTI then restores P from the CPU-pushed frame.
         # Only restore registers that were actually saved (based on analysis).
         mir_func = self.current_function
         modified = getattr(mir_func, 'interrupt_modified_regs', None) if mir_func else None
@@ -1224,7 +1219,7 @@ class InstructionSelector:
         """Pull the CPU registers the interrupt prologue pushed, then RTI.
 
         `modified` is the saved set (None for all of them). Mirrors
-        FunctionGenerator._emit_interrupt_register_saves.
+        FunctionCodeGenerator._emit_interrupt_register_saves.
         """
         restore_all = modified is None
         if restore_all or 'DBR' in modified:
@@ -1243,7 +1238,7 @@ class InstructionSelector:
         if restore_all or 'A' in modified:
             self._force_accu_mode(16, "Force 16-bit A for full restore")
             self._emit_implied(Opcode.PLA, "Restore A (full 16-bit, includes hidden high byte)")
-        # PHP/PLP eliminated — RTI restores P from the CPU-pushed stack frame
+        # No PLP: RTI restores P from the CPU-pushed stack frame
 
         # 4. Return from interrupt
         self._emit_implied(Opcode.RTI)
@@ -1297,8 +1292,8 @@ class InstructionSelector:
         """
         Get a safe temporary location for instruction selection.
 
-        Tries to use a scratch register from the pool first, falls back to
-        a dedicated stack slot if no scratch is available.
+        Returns a free scratch register; raises InstructionSelectionError if
+        none is free.
 
         Args:
             size: Size in bytes (1 or 2)
@@ -1414,9 +1409,8 @@ class InstructionSelector:
         immediate_opcode = OPCODE_VARIANTS[operation]['IMMEDIATE']
 
         if isinstance(right_operand, MIRImmediate):
-            # Use the operand value directly - any necessary masking for 8-bit mode
-            # is handled by the caller (select_binary_op) for memory-to-memory operations
-            # For 16-bit ops with hardware registers, the full value is needed
+            # Use the operand value directly: select_binary_op switches to
+            # m16 for any immediate above $FF, so the value is emitted as is
             value = right_operand.value
             self._emit_immediate(immediate_opcode, value)
         else:
@@ -1750,12 +1744,8 @@ class InstructionSelector:
         Create new location offset from given location.
 
         Byte *offset* of an indexed location is still indexed: `label,X` offset
-        by 2 is `label+2,X`, not `label+2`. Dropping `index_register` here made
-        every byte after the first read element 0 of the array — so a multi-byte
-        value at `arr[i]` was assembled from one byte of element i and the rest
-        of element 0, with no diagnostic. A 3-byte `far *T` field in an indexed
-        struct is the case that surfaced it (see docs/pointers-memory.md), but
-        every byte-wise access to an indexed multi-byte value was affected.
+        by 2 is `label+2,X`, never `label+2`. (A STACK location has no index
+        register; stack-relative addressing takes none.)
 
         `LocationResolver.offset_location` is the same computation over the full
         location size; this one narrows to a single byte for byte-wise emission.
@@ -1929,7 +1919,7 @@ class InstructionSelector:
         2. Zero fill, small, non-WRAM: STZ loop (~6 cycles/byte)
         3. Zero fill, small, WRAM: LDA #0 + STA loop (no STZ long on 65816)
         4. Non-zero u16 fill: 16-bit A mode STA loop (~13 cycles/element)
-        5. Non-zero u8 fill: 8-bit LDA + STA loop (unchanged)
+        5. Non-zero u8 fill: 8-bit LDA + STA loop
 
         Args:
             instr: MemoryFill instruction
@@ -1986,7 +1976,7 @@ class InstructionSelector:
             self._force_accu_mode(8, "Restore 8-bit A")
 
         else:
-            # === Non-zero u8 fill: current 8-bit loop (unchanged) ===
+            # === Non-zero u8 fill: 8-bit loop ===
             self._emit_immediate(Opcode.LDA_IMMEDIATE, fill_value & BYTE_MASK)
             self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
 
@@ -2028,7 +2018,7 @@ class InstructionSelector:
         # Load count - 1 into A
         self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
 
-        # Load source address (ROM data label) - use raw emission for label operand
+        # Source address: the ROM data label as an immediate
         self.emitter.emit_instr(Opcode.LDX_IMMEDIATE, Address(rom_label))
 
         # Load destination address

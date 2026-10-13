@@ -8,7 +8,7 @@ return value collection, and built-in function expansion.
 Includes hardware register spill/reload around calls based on liveness
 and callee's #[preserves()] attribute.
 
-Region-based spilling (Phase 2):
+Region-based spilling:
 Instead of spilling around each call, we identify "clobber regions" -
 maximal sequences of calls where a register is live but not used. We save
 once at the start of the region and restore once at the end, reducing
@@ -48,8 +48,8 @@ class ActiveRegionState:
     """
     Tracks active clobber regions during code generation.
 
-    For each hardware register (X, Y), tracks whether we're currently inside
-    a clobber region (have saved but not yet restored).
+    For X, Y (and A when it is bound to a vreg), tracks whether we're currently
+    inside a clobber region (have saved but not yet restored).
 
     Also tracks the current "spill offset" - the number of bytes pushed onto
     the stack for spilling. This is used to adjust stack-relative accesses
@@ -143,7 +143,7 @@ class CallInstructionSelector(BaseSelector):
     Manages generation of function calls, built-in expansions,
     and indirect call trampolines.
 
-    Uses region-based spilling (Phase 2): instead of spilling around each call,
+    Uses region-based spilling: instead of spilling around each call,
     identifies "clobber regions" and saves once at region start, restores once
     at region end.
     """
@@ -393,7 +393,7 @@ class CallInstructionSelector(BaseSelector):
         else:
             self._emit_return_value_collection(instr)
 
-        # Step 5.5: Caller cleanup of PHA-pushed args (if spill fallback was used)
+        # Step 5.5: Caller cleanup of PHA-pushed stack args
         # Done after return value collection so A/X/Y return values are safely
         # stored in their virtual register destinations before we clobber A.
         if stack_bytes_pushed > 0:
@@ -523,7 +523,7 @@ class CallInstructionSelector(BaseSelector):
         # Collect return values
         self._emit_return_value_collection(instr)
 
-        # Caller cleanup of PHA-pushed args (if spill fallback was used)
+        # Caller cleanup of PHA-pushed stack args
         if stack_bytes_pushed > 0:
             returns_in_x = self._call_returns_in_x(instr)
             returns_in_a = self._call_returns_in_a(instr)
@@ -804,10 +804,9 @@ class CallInstructionSelector(BaseSelector):
         3. Load 16-bit address (offset +0) into Y
 
         Equivalent to ``_set_dbr_from_far_self`` followed by
-        ``_load_y_addr_from_far_self``. Kept for back-compat / SOLO chain
-        members; the chain-aware emit_trait_dispatch path calls the two
-        helpers directly so it can skip the DBR-set step on MIDDLE/END
-        chain members.
+        ``_load_y_addr_from_far_self``. Used for direct (non-dispatch) calls
+        with a far self (``ABIModel._emit_self_y``); dispatch calls the two
+        helpers separately to skip the DBR set on MIDDLE/END chain members.
         """
         self._set_dbr_from_far_self(arg, stack_bytes_pushed)
         self._load_y_addr_from_far_self(arg, stack_bytes_pushed)
@@ -866,9 +865,6 @@ class CallInstructionSelector(BaseSelector):
         # That destination's prior value is dead — spilling it would PHX a
         # value the TAX immediately overwrites, and the matching PLX at the
         # region end would then clobber the just-captured return value.
-        # Seen in classickong.r65 level-4 fireball spawn: the X-allocated
-        # mod8() result was being PLX'd over after TAX, so the second
-        # fireball indexed `fireball_spawn_x[$DF52]` and read junk.
         for return_vreg in instr.returns:
             dest_loc = self.parent._get_operand_location(return_vreg)
             if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
@@ -940,10 +936,9 @@ class CallInstructionSelector(BaseSelector):
         """
         Compute which hardware registers need reloading after this call.
 
-        Uses region-based analysis for X/Y: only returns registers where this call
-        is the LAST clobbering call in the region.
-
-        For A register: uses per-call spilling - reload if it was spilled for this call.
+        Region-based for X/Y, and for A when bound to a vreg: only returns
+        registers where this call is the LAST clobbering call in the region.
+        Otherwise A is per-call: reload if it was spilled for this call.
 
         Args:
             instr: The Call instruction
@@ -1155,7 +1150,8 @@ class CallInstructionSelector(BaseSelector):
         """Emit stack argument via STA d,S into caller's outgoing area.
 
         Writes the argument value to a fixed stack offset without moving SP.
-        Replaces PHA-based pushing with caller-owned outgoing args convention.
+        No current ABI takes this path: Default and Pascal push every stack
+        arg via PHA (``emit_pha_stack_argument``).
 
         IMPORTANT: When source value is smaller than parameter type, we must
         zero-extend. For example, an 8-bit loop variable passed to a u16
@@ -1237,11 +1233,7 @@ class CallInstructionSelector(BaseSelector):
             self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u8 arg")
 
     def emit_pha_stack_argument(self, arg, arg_loc, param_size: int):
-        """Emit stack argument via PHA (fallback when region spills are active).
-
-        Pushes the argument value onto the stack. Used when region-based spills
-        (PHY/PHX) have pushed bytes between the frame and SP, making the outgoing
-        area inaccessible to the callee at fixed offsets.
+        """Push one stack argument via PHA (Default and Pascal pass every stack arg this way).
 
         Source locations are auto-adjusted for current stack displacement by
         _emit_load -> _get_opcode_for_location. The caller updates the tracker
@@ -1733,8 +1725,8 @@ class CallInstructionSelector(BaseSelector):
         """
         Switch to callee's entry mode before making the call.
 
-        The callee expects to receive arguments in its entry mode.
-        Default caller mode is m8, so we only need to switch if callee expects m16.
+        The callee expects to receive arguments in its entry mode. Pin the
+        accumulator to the callee's entry width, in either direction.
 
         Args:
             instr: Call instruction with callee mode info
@@ -1844,26 +1836,16 @@ class CallInstructionSelector(BaseSelector):
             raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}", source_loc=self.parent._current_source_loc)
 
     def _dp_offset_for_indirect_call(self, func_ptr_vreg: VirtualRegister):
-        """Return the DP offset for a JML [d] far-indirect-call fast path,
-        or None if the fast path doesn't apply.
+        """Return the scratch address for a JML [abs] far-indirect-call fast
+        path, or None if the fast path doesn't apply.
 
         Fires only for SCRATCH locations: the fn pointer lives in zeropage
         scratch slots (DP=$0000 by default), so JML [<scratch_addr>] reads
         the 3-byte target directly from zeropage. No D-state coupling.
 
-        The brief also described a STACK-under-D=S variant. That case is
-        deferred — the existing call sequence emits a PLD before the call
-        (``_emit_d_restore_before_call``) which restores D to the caller's
-        original (non-S) value before we get to emit the call instruction.
-        At the JML [d] site, D is no longer S, so a stack-offset DP read
-        would point at the wrong memory. Re-establishing D=S before the
-        JML is possible but trades some of the savings for new prologue
-        and forces the callee to receive D=S (incorrect for callees that
-        perform DP-relative loads). Because real R65 code that calls into
-        a far fn pointer overwhelmingly does so through scratch promotion
-        (when scratch registers are available), the SCRATCH-only fast
-        path captures the common case; the STACK case stays on the
-        existing trampoline. See docs/future-work.md.
+        Only SCRATCH qualifies: JML [abs] reads its pointer from bank 0 at an
+        absolute address, never D-relative, so a stack slot cannot be
+        addressed this way. See docs/future-work.md.
 
         Hardware-resident pointers and MEMORY locations also return None.
         """
@@ -1875,14 +1857,17 @@ class CallInstructionSelector(BaseSelector):
         return None
 
     def _emit_dp_indirect_far_call(self, dp_offset: int, comment: str = ""):
-        """Emit the JML [d] fast-path sequence for a far indirect call.
+        """Emit the JML [abs] fast-path sequence for a far indirect call.
 
-        Sequence (16 cycles total):
+        Sequence (14 cycles total):
 
             PHK                ; push current PBR              (3 cyc)
             PEA <ret-1         ; push 16-bit return-1          (5 cyc)
-            JML [<dp_offset>]  ; long indirect through DP      (8 cyc)
+            JML [<dp_offset>]  ; absolute indirect long        (6 cyc)
         ret:
+
+        JML [abs] reads the pointer from $00:abs, which is the zeropage
+        scratch slot only while D=0.
 
         The callee's RTL pops 3 bytes (lo, hi, pbr) and increments — control
         returns to ``ret`` with the original PBR restored. Same calling
@@ -1894,16 +1879,13 @@ class CallInstructionSelector(BaseSelector):
 
         Caller has already verified preconditions:
           - is_far == True
-          - pointer is DP-addressable (SCRATCH, or STACK under D=S)
+          - the pointer is in a scratch slot
         """
         from r65.compiler.codegen.asm_nodes import Immediate, Address
 
         ret_label = self.parent._get_unique_label()
 
-        # PHK pushes the current PBR (1 byte). No m-mode dependency: PHK
-        # always pushes 1 byte. The PEA below requires m=8 to push 2 bytes
-        # — wait, PEA is mode-independent (always pushes 16 bits). Good,
-        # no _ensure_m8_mode needed here.
+        # PHK and PEA push 1 and 2 bytes whatever M is, so no mode pin is needed.
         phk_comment = (
             f"Push PBR for far indirect call ({comment})"
             if comment else "Push PBR for far indirect call"
@@ -1930,15 +1912,14 @@ class CallInstructionSelector(BaseSelector):
         """
         Generate trampoline for indirect function call through function pointer.
 
-        Far indirect calls have a fast path: when the pointer is DP-addressable
-        (a scratch slot, or a stack slot under D=S), the call lowers to
-        PHK / PEA / JML [d] (16 cycles, ~7 bytes). Otherwise, fall through to
+        Far indirect calls have a fast path: when the pointer is in a scratch
+        slot, the call lowers to PHK / PEA / JML [abs] (14 cycles, ~7 bytes). Otherwise, fall through to
         the generic RTS/RTL trampoline below (~78 cycles, ~30 bytes).
-        Near indirect calls always use the generic trampoline (no JML [d] for
-        16-bit pointers; the existing JMP_INDIRECT only reads 2 bytes from the
+        Near indirect calls always use the generic trampoline (no JML [abs] for
+        16-bit pointers; JMP_INDIRECT only reads 2 bytes from the
         current bank, which would not synthesize a proper near JSR).
 
-        See docs/register_memory_config.md §1.5 for the fast-path rationale.
+        See docs/register_memory_config.md §2.5 for the fast-path rationale.
 
         The 65816 RTS/RTL instructions pop an address and add 1 before jumping.
         For a proper call, we need TWO addresses on the stack:
@@ -1987,8 +1968,8 @@ class CallInstructionSelector(BaseSelector):
         from r65.compiler.codegen.asm_nodes import StackOffset, Immediate, Address
         from r65.compiler.codegen.register_alloc import PhysicalLocation
 
-        # Fast path: PHK / PEA / JML [d] for far indirect calls when the
-        # pointer is DP-addressable. Saves ~62 cycles vs the trampoline.
+        # Fast path: PHK / PEA / JML [abs] for far indirect calls when the
+        # pointer is in a scratch slot. Saves ~64 cycles vs the trampoline.
         if is_far:
             dp_offset = self._dp_offset_for_indirect_call(func_ptr_vreg)
             if dp_offset is not None:
@@ -2339,9 +2320,7 @@ class CallInstructionSelector(BaseSelector):
         before TAX/TAY so the B register's stale contents don't leak into
         the high byte of the index register. Without this, an x16 TAX of
         a u8 return value produces X = (B << 8) | A, where B is whatever
-        the callee happened to leave it as — often non-zero. Symptom seen
-        in classickong.r65 level-4: the X-allocated mod8() result was
-        contaminated by B, sending `LDA $7ED5F2,X` to a random address.
+        the callee happened to leave it as — often non-zero.
         """
         if source_reg == 'A' and dest_reg in ('X', 'Y') and source_size == 1:
             self.parent._ensure_m16_mode()
@@ -2354,10 +2333,9 @@ class CallInstructionSelector(BaseSelector):
     def _emit_return_store(self, source_reg: str, dest_loc, return_size: int = 1):
         """Store return value from register to memory.
 
-        Hardening rather than a fix: HIR already rejects a 1-byte return value
-        bound to X or Y (`hir/builder.py`: "does not fit return register X,
-        which holds 2 byte(s)"), so this cannot currently reach the width
-        hazard. Routing through the shared helper keeps it that way.
+        HIR rejects a 1-byte return value bound to X or Y (`hir/builder.py`:
+        "does not fit return register X, which holds 2 byte(s)"), so the width
+        hazard is unreachable; routing through the shared helper keeps it so.
         """
         if source_reg in STORE_MNEMONICS:
             self._emit_store_from_reg(source_reg, dest_loc,
@@ -2373,7 +2351,6 @@ class CallInstructionSelector(BaseSelector):
 
         Built-in categories:
         - Processor control: NOP([count])
-        - Mode control: SEP(flags), REP(flags)
         - Arithmetic: mul(a, b), div(a, b), mod(a, b) - call runtime library
         - Shifts: shl(a, n), shr(a, n) - call runtime library
 
@@ -2628,11 +2605,8 @@ class CallInstructionSelector(BaseSelector):
             loop { let c = s[i]; if c == 0 { break; } sink(c); i++; }
 
         dereferences `s` in the header block, which sits *before* the call's
-        block in the block map but *after* it across the back edge. Walking
-        the block map linearly answers "no more derefs", the caller then emits
-        PHD without TSC/TCD, and D stays at the caller's value for every
-        remaining iteration — so the next `[dp],Y` reads direct page instead
-        of the frame slot.
+        block in the block map but *after* it across the back edge, so the
+        search follows CFG successors (back edges included), not listing order.
 
         Args:
             call_instr: The current Call instruction
@@ -2692,7 +2666,7 @@ class CallInstructionSelector(BaseSelector):
         """Save ptr-bank DBR and set DBR to code bank before a call.
 
         Under SET_DBR strategy, DBR is set to the far pointer's bank.
-        Callees expect DBR to be the code bank (bank 0 for LoROM), so we
+        Callees expect DBR to be the program bank ($00, or $80 under FastROM), so we
         save DBR (PHB), push code bank (PHK), and pop it into DBR (PLB).
         """
         self._emit_instr(Opcode.PHB, comment="Save ptr-bank DBR before call")

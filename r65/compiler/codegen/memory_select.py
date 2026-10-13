@@ -16,8 +16,6 @@ from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.type_utils import is_far_ptr
 from r65.compiler.hir.types import PointerTypeInfo
 
-# Mode flag constants
-
 
 is_far_pointer_type = is_far_ptr
 
@@ -28,10 +26,6 @@ class MemoryOperationSelector(BaseSelector):
     Manages generation of load/store instructions with proper
     addressing modes for direct and indirect memory access.
     """
-
-    # ========================================================================
-    # Emission Helpers
-    # ========================================================================
 
     # ========================================================================
     # Y-Self Save/Restore for Trait Methods
@@ -279,10 +273,8 @@ class MemoryOperationSelector(BaseSelector):
             self._ensure_m8_mode()
             value_masked = value & 0xFF
             # Use STZ for storing zero (more efficient than LDA #0; STA)
-            # But STZ doesn't support stack-relative or 24-bit long addressing
-            # STZ doesn't support stack-relative or LONG addressing modes.
-            # Under SET_DBR, ROM labels, HW registers, and RAM are forced to LONG
-            # because DBR may not match the target bank.
+            # STZ has no stack-relative or long form: under SET_DBR, ROM, hw
+            # and RAM targets are forced long because DBR may not be their bank.
             is_long_under_set_dbr = False
             if (self.parent.current_function and
                 self.parent.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR and
@@ -369,7 +361,9 @@ class MemoryOperationSelector(BaseSelector):
         - near pointers use (zp) or (zp),Y addressing modes
         - far pointers use [zp] or [zp],Y addressing modes
         - Stack-located near pointers use (d,S),Y addressing mode
-        - Stack-located far pointers are copied to temp DP location first
+        - Stack-located far pointers use the function's far-pointer strategy:
+          [dp],Y under D=S, (d,S),Y under SET_DBR, else a PHB/PLB bracket
+          around (d,S),Y
         - Field offset is loaded into Y for indexed indirect addressing
 
         Args:
@@ -905,7 +899,8 @@ class MemoryOperationSelector(BaseSelector):
         """
         Access memory through a far pointer using DBR manipulation.
 
-        Primary approach for far pointers on the stack:
+        Fallback when the function has no far-pointer strategy (neither D=S
+        nor SET_DBR):
         1. PHB - save current DBR
         2. Load bank byte from pointer, PHA, PLB - set DBR to pointer's bank
         3. Use (d,S),Y stack-relative indirect (DBR provides the bank)
@@ -920,7 +915,7 @@ class MemoryOperationSelector(BaseSelector):
             index_register: Optional index register ('Y' for (d,S),Y)
 
         Returns:
-            Tuple of (Opcode, operand)
+            (None, None): the access is emitted here.
         """
         if index_register and index_register != 'Y':
             raise InstructionSelectionError(
@@ -1363,10 +1358,8 @@ class MemoryOperationSelector(BaseSelector):
             # Save current DBR
             self._emit_instr(Opcode.PHB, None, "Save DBR")
 
-            # Load bank byte from far pointer
-            # But first save A since we need it. Use XBA + PHA + XBA to save high byte,
-            # then PHA to save low byte.
-            # Actually simpler: push A (8-bit low byte) then handle high byte after
+            # Save A's low byte; its high byte stays in B, which the m8
+            # bank-byte load does not touch.
             self._emit_instr(Opcode.PHA, None, "Save A low byte")
 
             # Load bank byte (account for PHB+PHA = +2 on stack)
@@ -1519,7 +1512,8 @@ class MemoryOperationSelector(BaseSelector):
         Get opcode and operand for stack-relative indirect addressing.
 
         The 65816 has (d,S),Y addressing mode for near pointers on the stack.
-        For far pointers, use _emit_far_ptr_access_via_dbr instead.
+        Far pointers go through _emit_far_ptr_access_via_set_dbr,
+        _via_d_equals_s or _via_dbr instead.
 
         Args:
             mnemonic: Base mnemonic ('LDA' or 'STA')

@@ -49,11 +49,9 @@ class MIRBuilder:
     """
     Lowers HIR to MIR.
 
-    Multi-pass transformation:
-    1. Create MIR program structure
-    2. Lower each function to MIR CFG
-    3. Track register aliases
-    4. Allocate virtual registers
+    Lowers one function at a time: vregs are allocated and register aliases
+    recorded during lowering, then `check_register_aliases` runs on each
+    finished function.
     """
 
     def __init__(self, abi_kind=None):
@@ -72,15 +70,6 @@ class MIRBuilder:
         self.assign_lowerer = AssignmentLowerer(self)
         self.cond_lowerer = ConditionLowerer(self)
         self.static_init_lowerer = StaticInitLowerer(self)
-
-        # X-index reuse cache: when consecutive accesses target the same
-        # (array, index) — e.g. `enemy[i].x = ex; enemy[i].y = ey;` — X already
-        # holds `index * element/struct size` (the field offset is folded into
-        # the address constant, not X), so the scaled-index computation and the
-        # Move-into-X can be skipped for the 2nd..Nth access. Holds
-        # (id(array_symbol), id(index_symbol)) for which X is currently valid,
-        # or None. Conservatively invalidated (block change, any X clobber,
-        # write to the index variable).
 
         # ROM data section tracking for array literals
         self._rom_data_counter = 0
@@ -113,10 +102,10 @@ class MIRBuilder:
         self._current_source_loc = None
 
     # ========================================================================
-    # Context Property Accessors (for gradual migration)
+    # Context Property Accessors
     # ========================================================================
-    # These properties delegate to ctx for backward compatibility during
-    # the refactoring process. They will be removed once all code uses ctx.
+    # Delegates to `self.ctx`, so lowerers and builder code share one state
+    # object.
 
     @property
     def current_function(self) -> Optional[MIRFunction]:
@@ -333,10 +322,8 @@ class MIRBuilder:
         # before the parameter is used.
         param_usage_counts = self._count_param_usages(hir_func)
 
-        # CRITICAL: Process A register parameters FIRST, before X/Y parameters.
-        # Saving X/Y to memory requires TXA/TYA which clobbers A.
-        # If A holds a parameter that's used later, we must save it first.
-        # Process in two passes: first A, then X/Y.
+        # Save A-bound params first (B is read via XBA and X/Y via TXA/TYA,
+        # both through A), then B, then X/Y.
 
         def process_register_param(param, hw_reg):
             """Process a register-bound parameter."""
@@ -510,13 +497,9 @@ class MIRBuilder:
                     param_size = self._get_type_size(param.param_type)
                     current_offset += param_size
 
-            # Note: Far pointer stack params require x16 mode for [dp],Y addressing
-            # In the simplified mode system, X/Y are always 16-bit (x16 mode),
-            # so no validation is needed - far pointer params always work
-
         # If this is an entry point function, call __init_start() to initialize static data
-        # Note: The SEI/CLC/XCE/REP sequence for switching to native mode is now
-        # emitted in the prologue (function_gen.py) BEFORE frame allocation
+        # (The native-mode switch is emitted by FunctionGenerator.emit_prologue,
+        # before frame allocation.)
         if hir_func.is_entry:
             if self.has_init_start:
                 # Emit call to __init_start()
@@ -549,7 +532,7 @@ class MIRBuilder:
                 elif handler_mode.m_mode == ModeState.M16:
                     rep_mask |= 0x20
 
-                # X is always x16 in the new design
+                # X is always x16
                 rep_mask |= 0x10
 
                 if sep_mask:
@@ -1279,12 +1262,9 @@ class MIRBuilder:
             return HardwareRegister(expr.name)
 
         elif isinstance(expr, HIRFunctionAddress):
-            # Function address - load function pointer into virtual register
-            # The actual address will be resolved during linking
-            # For now, we create a virtual register and store a symbolic reference
+            # Function address: a Move from a FunctionPointer, resolved by the
+            # assembler.
             vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, f"fn_ptr_{expr.function_name}")
-            # We'll emit a special "load function address" operation
-            # The function name will be resolved during code generation
             func_ptr = FunctionPointer(function_name=expr.function_name)
             self.emit(Move(dest=vreg, source=func_ptr, type_info=expr.expr_type))
             return vreg
@@ -1787,9 +1767,6 @@ class MIRBuilder:
 
         return result
 
-    # Note: Call-related helper methods (_emit_call_with_mode_transition,
-    # _lower_call_arguments, _get_argument_mechanism) moved to lowerers/call.py
-
     def _create_offset_memloc(
         self,
         base_memloc: MemoryLocation,
@@ -1850,7 +1827,8 @@ class MIRBuilder:
             this way (`POOL[i].arr`) is rebased onto its plane, and the term
             takes the plane's stride.
 
-        terms is empty for the first two shapes, whose code is unchanged.
+        terms is empty for a bare identifier. A field access passes through
+        its base's terms (so `ROWS[i].name` carries `i`).
 
         reuse_base_key is a stable, hashable identity for the array base — the
         "array" half of an x-index reuse key (see x_index_reuse_key). It is
@@ -1865,7 +1843,6 @@ class MIRBuilder:
         """
         if isinstance(array_expr, HIRIdentifier):
             sym = array_expr.symbol
-            # id(sym) preserves the exact pre-existing top-level key.
             return self.get_memory_location(sym), id(sym), []
 
         if isinstance(array_expr, HIRFieldAccess) and not getattr(array_expr, 'auto_deref', False):
@@ -2426,7 +2403,8 @@ class MIRBuilder:
         Count how many times each register-bound parameter is read in the body.
 
         This is needed to determine if register-aliased parameters need to be
-        saved to a vreg at function entry (if used more than once).
+        saved to a vreg at function entry (if read at all: intermediate code
+        may clobber the register first).
 
         Returns:
             Dict mapping symbol id to usage count

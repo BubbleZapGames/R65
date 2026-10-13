@@ -93,7 +93,7 @@ class SymbolTable:
         )
 
         # Add hardware registers
-        # A, X, Y, B are mode-dependent; STATUS, D, DBR, PBR, S are fixed
+        # A's width follows the m flag (B exists only in m8); X/Y are always 16-bit
         # B is only valid in m8 mode (type checker enforces this)
         for reg in REGISTERS.values():
             global_scope.symbols[reg.name] = Symbol(

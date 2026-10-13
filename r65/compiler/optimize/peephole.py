@@ -5,7 +5,8 @@ Peephole optimization for R65 assembly code.
 Applies local optimizations to AsmNode instruction sequences to eliminate
 redundant operations and improve code quality.
 
-Uses typed Opcode enum for efficient pattern matching without string parsing.
+Pattern matching uses the typed Opcode enum; a few helpers
+(`_is_indexed_addressing`, `_reads_register`) match on opcode names.
 """
 
 import itertools
@@ -200,8 +201,7 @@ class OptimizationStats:
 # inline-asm node, so we have to peek at the text to decide whether it
 # represents inert metadata or actual bytes.
 #
-# Mode directives (`.ACCU` / `.INDEX`) are carried by typed `ModeChange`
-# nodes; they don't appear inside RawAsm anymore.
+# Mode directives (`.ACCU` / `.INDEX`) are `ModeChange` nodes, not RawAsm.
 _TRANSPARENT_RAWASM_PREFIXES = (
     '.ASC', '.ASCII',
 )
@@ -233,8 +233,8 @@ def _mode_switch_residue(node):
     A switch can carry other flags with the M bit: `REP #$21` is the mode
     switch plus the carry clear the frame setup folded into it, and
     `REP #$30` also sets 16-bit X/Y. Dropping such a switch because A is
-    already the right width drops those too — an interrupt prologue lost
-    its carry clear that way and allocated its frame off by one. Returns
+    already the right width drops those too (for example the carry clear
+    an interrupt prologue's frame allocation depends on). Returns
     the replacement nodes: none for a bare `#$20`, CLC/SEC for carry
     alone, else the switch without its M bit.
     """
@@ -318,9 +318,8 @@ class PeepholeOptimizer:
         # Strip and re-emit mode directives once up-front. This drops
         # the mid-block `.ACCU` / `.INDEX` directives codegen pairs with
         # SEP/REP/PLP/RTI and reduces them to a clean stream where the
-        # asm-mode dataflow is the sole source of truth. Individual
-        # passes below no longer need to keep `.ACCU` directives in
-        # sync when they rewrite SEP/REP — the final normalize call
+        # asm-mode dataflow is the sole source of truth. Passes need
+        # not keep `.ACCU` in sync with SEP/REP; the final normalize
         # regenerates them after all optimizations settle.
         nodes = normalize_mode_directives(nodes, call_exit_modes, entry_modes)
 
@@ -503,8 +502,7 @@ class PeepholeOptimizer:
                 i += 1
                 continue
 
-            # Skip hardware registers - stores have side effects (I/O)
-            # SNES hardware ranges: $2100-$213F (PPU), $4200-$437F (CPU I/O)
+            # Skip `#[hw]` locations (stores are I/O side effects)
             if self._is_hardware_register(store_operand):
                 optimized.append(node)
                 i += 1
@@ -658,12 +656,11 @@ class PeepholeOptimizer:
             if (next_node.opcode in STORE_A_OPCODES and
                 next_node.operand == store_operand and
                 not self._is_indexed_addressing(next_node.opcode)):
-                # But only if the overwriting store also covers the adjacent byte,
-                # or there's no adjacent byte to worry about
+                # Mode switches end the scan, so the overwriting store has
+                # this store's width and covers N+1 too. Reads of N+1 were
+                # checked on earlier iterations.
                 if adjacent_operand is None:
                     return True
-                # In m16, the overwriting store also writes N+1, so it's still dead
-                # But we need to check that no read of N+1 happened between us and here
                 return True
 
             # Read from same location = store is not dead
@@ -791,7 +788,7 @@ class PeepholeOptimizer:
         redundant iff every path into i already arrives in m8 (and
         symmetrically for REP). The dataflow's CFG-aware mode tracking
         catches non-adjacent redundancies (e.g. across label
-        boundaries) that the previous linear walk missed.
+        boundaries).
 
         Any trailing `.ACCU` directive codegen paired with the removed
         SEP/REP is left in the stream — the final
@@ -827,11 +824,7 @@ class PeepholeOptimizer:
 
             if target_mode is not None and info.unique_mode_at(i) == target_mode:
                 # Already in the target mode on every path → SEP/REP is
-                # a no-op. Drop it. Any trailing `.ACCU` directive
-                # codegen paired with it is left in place; the final
-                # `normalize_mode_directives` call at the end of
-                # `optimize()` strips and regenerates mid-block
-                # directives from the asm-mode dataflow.
+                # a no-op. Drop it.
                 self.stats.redundant_mode_changes_eliminated += 1
                 optimized.extend(_mode_switch_residue(node))
                 i += 1
@@ -1040,7 +1033,9 @@ class PeepholeOptimizer:
         The mode information is computed by `compute_modes()` over the
         full asm node list. SEP/REP/PLP/RTI are the only inputs that
         drive the dataflow; `.ACCU` directives are advisory metadata
-        for WLA-DX and are deliberately not consulted here.
+        for WLA-DX and are not consulted for the dataflow, but a
+        following `.ACCU` is taken as codegen's declared intent when
+        choosing a mode fix's width.
 
         Insertions and eliminations are interleaved with re-computation
         so that a fix at one join properly clears the linearly-
@@ -1357,10 +1352,9 @@ class PeepholeOptimizer:
 
         # Build label -> BRA target map: for each label immediately followed
         # by a BRA (skipping other labels/directives), record the BRA target.
-        # RawAsm nodes (inline asm or data directives like .DB) count as
-        # executable code and stop the scan. WLA-DX mode-tracking directives
-        # like `.ACCU 8` (also emitted as RawAsm by function_gen.py) emit no
-        # code and are transparent.
+        # Opaque RawAsm (inline asm, data) stops the scan.
+        # `_rawasm_is_transparent` passes only string directives. ModeChange
+        # nodes are not instructions and are skipped.
         label_to_bra_target: dict[str, str] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
@@ -1558,7 +1552,7 @@ class PeepholeOptimizer:
                                 i += 1
                                 continue
 
-                            # Verify last instruction of body is INX/INY
+                            # Verify last instruction of body is INX/INY/DEX/DEY
                             last_body_instr = None
                             for bn in reversed(body_nodes):
                                 if isinstance(bn, Instruction):
@@ -1717,7 +1711,8 @@ class PeepholeOptimizer:
                 DEX/DEY
                 BNE LABEL
 
-        Saves 2 bytes and 2 cycles per iteration (CPX/CPY eliminated).
+        Saves 3 bytes and 3 cycles per iteration (CPX/CPY #imm with 16-bit
+        index).
         Only applies when the counter register is not read in the body.
         """
         from r65.compiler.codegen.asm_nodes import (
@@ -1899,8 +1894,8 @@ class PeepholeOptimizer:
         Pattern: Label / SEP|REP / body / BCC|BNE Label
         When the back-edge arrives in the target mode already (body doesn't change
         it back), hoisting the SEP/REP before the label makes it execute once
-        instead of every iteration. The cross-block mode pass then eliminates
-        the now-redundant in-loop copy.
+        instead of every iteration. The in-loop copy is removed here, and the
+        label's anchored `.ACCU` is retagged.
 
         ``.ACCU`` / ``.INDEX`` directives that codegen paired with the
         SEP/REP are not tracked here — they're regenerated from the
@@ -2058,8 +2053,8 @@ class PeepholeOptimizer:
         """
         Eliminate unreachable code after unconditional control flow (RTS, RTI, RTL, BRA, JMP).
 
-        After an unconditional transfer, any instructions before the next referenced
-        label are dead code. Removes instructions, directives, and unreferenced labels.
+        Drops Instructions after an unconditional transfer until the next Label or
+        non-instruction node, both of which are kept.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Label, Directive
 
@@ -2156,8 +2151,8 @@ class PeepholeOptimizer:
         Replace BRA to a return instruction with the return instruction itself.
 
         Pattern: BRA label / ... / label: RTS → RTS (inline the return)
-        Saves 1 cycle and allows subsequent dead code elimination of the
-        now-unreferenced label.
+        Saves the BRA (2 bytes and 3 cycles) and allows subsequent dead code
+        elimination of the now-unreferenced label.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Label, RawAsm
 
@@ -2166,8 +2161,8 @@ class PeepholeOptimizer:
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
                 # Find first instruction after label. Stop at inline asm /
-                # data directives (opaque RawAsm) but skip past WLA-DX mode
-                # directives like `.ACCU 8` (transparent RawAsm).
+                # data directives (opaque RawAsm) but skip non-instruction
+                # nodes (ModeChange, comments) and transparent string RawAsm.
                 j = i + 1
                 while j < len(nodes):
                     nj = nodes[j]

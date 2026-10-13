@@ -40,11 +40,10 @@ _CACHE_PATH = GRAMMAR_PATH.with_suffix(".parser.lark_cache")
 def _build_lark() -> Lark:
     """Build the Lark parser, reusing serialized LALR tables when possible.
 
-    Constructing the tables costs ~0.6s, which dominated every compiler
-    invocation — and the e2e suite starts a fresh process per test, so the
-    in-process `Parser._lark_cache` never helped it. Loading them back is
-    ~0.05s. Lark invalidates the cache itself when the grammar or the options
-    change, so there is no staleness to manage here.
+    Building the LALR tables costs ~0.6s per process (the e2e suite starts
+    one per test, so the in-process `Parser._lark_cache` does not help it);
+    loading them back is ~0.05s. Lark invalidates the cache itself when the
+    grammar or the options change, so there is no staleness to manage here.
     """
     try:
         return Lark(GRAMMAR, cache=str(_CACHE_PATH), **_LARK_OPTIONS)
@@ -614,10 +613,10 @@ class ASTBuilder(Transformer):
     def _reject_derive_on_type(self, attrs, items, idx, source_loc):
         """Reject `#[derive(...)]` on a type declaration, naming the type.
 
-        Types accept attributes now (so `#[soa]` can reach a struct), which means
-        `#[derive(Clone)] struct Point` parses instead of failing. Without this
-        it would reach the HIR attribute processor, which has no type name to put
-        in the hint. The heuristic at `_check_derive_before_decl` still covers
+        Type declarations accept attributes (`#[soa]` on a struct), so
+        `#[derive(Clone)] struct Point` parses; reject it here, where the type
+        name is known for the hint (the HIR attribute processor has none). The
+        source scan in `Parser._check_rust_feature_hints` covers
         `enum`/`trait`/`type`, which take no attributes.
         """
         for attr in attrs:
@@ -702,8 +701,9 @@ class ASTBuilder(Transformer):
     def impl_decl(self, tree):
         """Impl block declaration: impl StructName { methods and constants }
 
-        Near/far is per-method, driven by each method's self pointer
-        (`*self` vs `far *self`).
+        Near/far is per method: far (JSL/RTL) by default, `near fn` for
+        JSR/RTS. The self-pointer spelling (`*self` / `far *self`) is a
+        separate axis.
         """
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
 
@@ -834,7 +834,8 @@ class ASTBuilder(Transformer):
         return ('self_param', is_far, False)
 
     def self_by_value(self, items):
-        """Bare `self` — by value, in a register. Newtypes only (checked in HIR)."""
+        """Bare `self`: the value in A (newtype, fieldless enum) or the element
+        index in X (#[soa] struct, tagged enum). HIR checks it matches the type."""
         return ('self_param', False, True)
 
     @v_args(tree=True)
@@ -1762,7 +1763,7 @@ class ASTBuilder(Transformer):
                 binding = pattern_item[2]
                 is_pointer = True
         else:
-            # Fallback for direct token (shouldn't happen with new grammar)
+            # Bare token; the let-pattern rules reduce to a tuple, so not expected
             name = pattern_item.value
 
         # Type annotation (optional) - comes after pattern
@@ -1835,7 +1836,7 @@ class ASTBuilder(Transformer):
         return ast.ReturnStmt(values=values, source_loc=self._make_source_loc(tree.meta))
 
     def return_tuple(self, items):
-        """Return tuple: (expr, expr, ...)."""
+        """Multi-value return: `return a, b;` (no parentheses)."""
         # Filter out punctuation tokens
         return [item for item in items if not isinstance(item, LarkToken)]
 
@@ -2591,7 +2592,6 @@ class ASTBuilder(Transformer):
         value = items[1]
         source_loc = self._make_source_loc(tree.meta)
 
-        # Convert lvalue to appropriate target
         if isinstance(lvalue, ast.Identifier):
             target = lvalue
         else:
@@ -2706,7 +2706,7 @@ class ASTBuilder(Transformer):
 
     @v_args(tree=True)
     def tuple_assign_stmt(self, tree):
-        """Tuple assignment statement: (a, b) = expr; or (a) = expr;"""
+        """Multi-value assignment: `a, b = expr;` (two or more identifier/register targets, no parentheses)."""
         items = self._filter_tokens(tree.children)
         # All items except the last are targets, the last is the value
         targets = list(items[:-1])
@@ -2801,8 +2801,9 @@ class ASTBuilder(Transformer):
     def multi_return_type(self, items):
         """Multi-return type: a comma-separated type list, e.g. `u8, u16`.
 
-        Registers are assigned to each value at codegen time from the types and
-        the function's mode, so no register names appear in the source.
+        Registers are assigned to each value during MIR lowering
+        (codegen/constants.get_return_registers) from the types and the
+        function's mode, so no register names appear in the source.
         """
         element_types = [item for item in items if not isinstance(item, LarkToken)]
         return ast.MultiReturnType(element_types=element_types)
@@ -3187,7 +3188,9 @@ class Parser:
                         "R65 has no tuple type; use separate variables or a struct")
 
         # Procedural macro / derive attributes on declarations that don't accept
-        # attributes in the grammar (e.g. `#[derive(Debug)] struct S { ... }`).
+        # attributes in the grammar (e.g. `#[derive(Debug)] enum E { ... }`;
+        # structs/unions/newtypes take attributes and are handled by
+        # `_reject_derive_on_type`).
         # The attribute parses as a stray `#`, and the next decl token is what
         # trips the parser. Scan the preceding source for an unmatched
         # #[derive(...)] / #[proc_macro...] and emit a targeted hint.
@@ -3245,8 +3248,6 @@ class Parser:
 
         return None
 
-
-# ParseError is now imported from r65.compiler.errors
 
 # Module-level parser instance - Lark LALR table construction is expensive,
 # so we reuse the same parser for all parse calls

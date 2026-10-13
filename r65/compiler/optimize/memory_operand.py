@@ -18,12 +18,11 @@ addressing mode LDA does, so the emitted code is the hand-written form::
     ADC G_VX                     ;      LDA $01,S / CLC / ADC $03,S
     STA G_X
 
-The win is mostly indirect. Instruction selection could already emit
-``ADC G_VX`` — it is the *second* load that did the damage: with ``%1``
-materialized, its ``LDA`` clobbered A between ``%0``'s definition and its
-use, so hardware-register coalescence could not keep ``%0`` in A, and both
-values fell into stack slots. Deleting the load restores ``%0``'s
-coalescence and, in a function with nothing else to spill, the frame too.
+The win is mostly indirect: a materialized ``%1`` load clobbers A between
+``%0``'s definition and its use, so hardware-register coalescence cannot
+keep ``%0`` in A, and both values spill to stack slots. Deleting the load
+restores ``%0``'s A residency and, in a function with nothing else to
+spill, the frame too.
 
 Moving a read later is only legal if nothing between the load and its use
 can change what it reads. The pass allows only loads and register-to-
@@ -167,8 +166,8 @@ class MemoryOperandFolder:
         return False
 
     def _try_fold(self, instr, out: List, pending: Dict[int, int]):
-        """`(rewritten instr, load position)` if *instr*'s right operand is a
-        pending load, else None."""
+        """`(rewritten instr, positions to delete)` if *instr*'s right operand
+        is a pending load, else None."""
         if isinstance(instr, BinaryOp):
             if instr.op not in _FOLDABLE_OPS:
                 return None

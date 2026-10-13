@@ -107,12 +107,16 @@ class StackSlotAllocator:
         [arg2]          <- param_offsets[1] = base + prologue + frame_size
         [arg1]          <- param_offsets[0] = base + prologue + frame_size
         [return addr]
-        [saved regs]    <- prologue_stack_bytes
-        [local N]       <- local_slots[N] = N
+        [pre-frame pushes]   far-self PHB/PHY
+        [local N]       <- post_frame_prologue_bytes + 1 + N
         ...
-        [local 1]       <- local_slots[0] = 1
+        [local 0]       <- post_frame_prologue_bytes + 1
+        [post-frame pushes]  DBR, preserves, far-ptr PHD/PHB
         S ->
         Low addresses
+
+    The frame is allocated before the #[preserves] pushes, so preserved
+    registers sit nearest S.
 
     Parameters have fixed positions (above return addr) but their S-relative
     offsets change when we allocate a frame. This allocator computes final
@@ -136,7 +140,7 @@ class StackSlotAllocator:
         Args:
             mir_func: MIR function to allocate slots for
             preassigned: Stack parameters with their base offsets
-            prologue_stack_bytes: Bytes pushed by prologue (return addr + saved regs)
+            prologue_stack_bytes: Bytes pushed by the prologue (excludes the return address)
             instr_liveness: Optional InstructionLivenessAnalyzer for call-liveness analysis
             pre_allocated_vregs: Vregs already allocated externally (scratch params,
                 loop-promoted hw vregs, ...), excluded from local slot allocation
@@ -468,10 +472,9 @@ class StackSlotAllocator:
         don't interfere.  Replace all uses of *dest* with *src*, remove the
         Move, and propagate register hints.
 
-        This recovers the zero-cost aliasing that was previously done in
-        builder.py (reusing the same vreg for ``let x = y``).  The builder
-        now always allocates a fresh vreg so that independent mutations
-        don't corrupt each other; this pass merges them back when safe.
+        The builder gives ``let x = y`` a fresh vreg so independent mutations
+        cannot alias; this pass merges the two back when their lifetimes don't
+        interfere.
 
         Must run BEFORE hw-coalescence so the hw pass sees simplified MIR.
         """
@@ -537,10 +540,10 @@ class StackSlotAllocator:
                             # dest's uses: src's range now extends through
                             # dest's, and the next Move in this same sweep
                             # would test interference against the old,
-                            # shorter range. `let clip = g; let mut want =
-                            # 0; ... want = clip;` coalesced want into clip
-                            # that way, and want's `= 0` overwrote clip.
-                            # Recompute before looking at another Move.
+                            # shorter range (e.g. `let clip = g; let mut want
+                            # = 0; ... want = clip;` would merge want into clip
+                            # and let `= 0` overwrite it). Recompute before
+                            # looking at another Move.
                             self.liveness_analyzer = LivenessAnalyzer(self.func)
                             self.liveness_analyzer.analyze()
                             continue  # re-examine same index
@@ -581,13 +584,10 @@ class StackSlotAllocator:
         Find vregs that can stay in hardware registers without spilling.
 
         A vreg is hw-coalesceable if:
-        1. Its only definition is a Move from a hardware register
-        2. All uses are in the same block as the def
-        3. The hardware register is not clobbered between def and last use
-
-        For the return-only case, clobber checking is limited to Calls.
-        For non-return uses, full clobber analysis checks all instruction types
-        that route through the hardware register during codegen.
+        1. It has exactly one def that leaves the value in a register: a Move
+           from A/B/X/Y, a node `defines_in_a`, or a Call/TraitDispatch return
+        2. That register is not clobbered between the def and every use,
+           across blocks via liveness
 
         Uses a two-pass approach for A/B interdependency:
         - Pass 1: Find coalesceable vregs where no instruction clobbers the register
@@ -718,7 +718,8 @@ class StackSlotAllocator:
                     # Call with exactly 1 return vreg: the return value is in A.
                     # Track as defined-in-A for coalescence (e.g., result = func()).
                     # A Call clobbers all registers, so no other vreg can be live
-                    # in A after the Call — no all_uses_consume_a filter needed.
+                    # in A after the Call — so its uses need no
+                    # `_use_reads_a_in_place` filter (`defines_in_a` excludes calls).
                     if len(instr.returns) == 1:
                         ret_vreg = instr.returns[0]
                         if type(ret_vreg) is VirtualRegister:
@@ -747,9 +748,6 @@ class StackSlotAllocator:
                             vreg_uses.setdefault(var.id, []).append(instr)
 
         # Build candidate list: (vreg_id, def_instr, hw_reg, uses)
-        # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
-        # where all uses are Return, Move, Compare, Store (as source), or as
-        # the LEFT operand of a BinaryOp (chained arithmetic).
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -759,18 +757,8 @@ class StackSlotAllocator:
                 continue
             uses = vreg_uses.get(vreg_id, [])
 
-            # ALU-def vregs: only safe if the value is consumed by Move,
-            # Return, Compare, Store (as value source), as the LEFT
-            # operand of a BinaryOp (chained arithmetic), or as a Call
-            # argument (pushed via PHA or stored via STA from A).
-            # - Move variants just read A (STA/TAX/TAY preserve A).
-            # - Store from our vreg emits STA directly from A (preserves A).
-            # - Compare emits CMP which reads A without modifying it.
-            # - BinaryOp-left reads A first (no clobber), then overwrites A
-            #   with the result — safe because the clobber analysis handles it
-            #   (the BinaryOp at max_use_idx is not scanned for clobbers).
-            # - Call arg: codegen reads A for PHA/STA; emit_call_args ensures
-            #   A-resident args are processed before other args clobber A.
+            # A def `defines_in_a` is only safe if every use reads A in place
+            # (see `_use_reads_a_in_place` for the accepted uses).
             if defines_in_a(def_instr):
                 if not all(self._use_reads_a_in_place(use, vreg_id) for use in uses):
                     continue
@@ -1087,6 +1075,8 @@ class StackSlotAllocator:
             uses: List of instructions that use the vreg
             instr_positions: Map from instruction id to (block_id, instr_idx)
             noop_instrs: Set of instruction ids to skip (from previous pass)
+            coalesced_id_to_hw: vreg id -> register for vregs already coalesced
+                (lets Moves between them count as no-ops)
 
         Returns:
             True if the register is not clobbered in the range
@@ -1409,6 +1399,8 @@ class StackSlotAllocator:
         X/Y are only modified by:
         - Move to X/Y (LDX, LDY, TAX, TAY, TXY, TYX)
         - BinaryOp with dest=HardwareRegister X/Y (INX, DEX, INY, DEY)
+        - LoadIndirect/StoreIndirect (`LDY #offset` unless Y is already the
+          index at offset 0)
         - Calls that don't preserve X/Y (handled in caller)
         """
         instr_type = type(instr)

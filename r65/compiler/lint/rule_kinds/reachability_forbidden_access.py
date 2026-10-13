@@ -46,11 +46,7 @@ Two deliberate limits:
 * The exemption covers only the init prologue — accesses **before the first
   loop** in the function. Forced blank is established once during init, in
   straight-line code; the first loop is the game loop, running with the screen
-  on. So neither the loop body nor anything textually after it is exempt: a
-  ``main`` that blanks up in init cannot silence a PPU write down in its game
-  loop, nor one placed after the loop. This is the position sensitivity the
-  guard needs — "OK to write at the very top, not once the loop begins" — and
-  it is a strict tightening (it can only add warnings, never hide one).
+  on. So neither the loop body nor anything textually after it is exempt.
 
 Init-reachable functions are also exempt, automatically — no config entry.
 A function reachable from an entry point *only* through calls that precede the

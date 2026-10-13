@@ -7,8 +7,7 @@ byte load of that value's high byte.
 
 The 65816 is little-endian, so the high byte of a 16-bit value at address
 N lives at N+1 — reading it costs one instruction, no shift and no mode
-switch. What the compiler emitted instead was the generic lowering of
-each step in turn::
+switch. Lowered step by step, it is::
 
     REP #$20        ; 16-bit A for the load
     LDA $20         ; the whole word
@@ -29,9 +28,8 @@ address, so there is nothing there to rewrite the load into. Recognising
 the whole `Load → Shr 8 → Trunc` chain needs a place where all three are
 visible at once, which is MIR.
 
-Folding the chain also deletes the two intermediate virtual registers,
-which is where most of the win actually comes from: they were each
-getting a stack slot and a spill.
+Folding the chain also deletes two intermediate virtual registers that
+would each need a stack slot, which is where most of the win comes from.
 
 Correctness note on signedness: an arithmetic shift right by 8 puts bits
 15..8 into 7..0 and fills the top with sign, and a logical shift fills it
@@ -59,9 +57,9 @@ def _type_size(type_info) -> Optional[int]:
 def _addressed_by_label(loc: MemoryLocation) -> bool:
     """True if instruction selection reaches this location as ``label+offset``.
 
-    `_resolve_operand` tests `rom_label` *before* it tests `address`, so a
-    ROM symbol carrying a label is addressed through its offset no matter
-    what `address` holds.
+    `InstructionSelector._get_operand_location` tests `rom_label` *before*
+    it tests `address`, so a ROM symbol carrying a label is addressed
+    through its offset no matter what `address` holds.
     """
     return bool(
         loc.symbol is not None
@@ -73,10 +71,8 @@ def _addressed_by_label(loc: MemoryLocation) -> bool:
 def _addressing_is_unambiguous(loc: MemoryLocation) -> bool:
     """True if it is clear which field addresses this location.
 
-    Every location the compiler builds today is reached either by label or
-    by number, never both — across a whole classickong build, every ROM
-    location has a label and no address, and every location with an address
-    has no label. `_high_byte_of` relies on that: it bumps one field and
+    Every location the compiler builds is reached either by label or by
+    number, never both. `_high_byte_of` relies on that: it bumps one field and
     would silently read the wrong byte if the other were the live one.
 
     Rather than carry an untestable branch for a case that cannot occur,
@@ -188,9 +184,10 @@ class ByteExtractOptimizer:
         if not isinstance(shift.dest, VirtualRegister):
             return None
 
-        # ... truncated to a single byte. `is_narrowing_convert` is the same
-        # predicate instruction selection and the register allocator use, so
-        # all three agree on what counts as a two-to-one-byte cast (and it
+        # ... truncated to a single byte. `is_narrowing_convert` is built on
+        # `convert_operand_widths`, the width rule that instruction selection
+        # and the register allocator share, so all three agree on what
+        # counts as a two-to-one-byte cast (and it
         # rules out pointer conversions, which have their own emitter).
         if not (isinstance(cast.source, VirtualRegister)
                 and cast.source.id == shift.dest.id):

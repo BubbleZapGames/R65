@@ -12,7 +12,10 @@ Two flavors of `ModeChange` in the input:
     these to assert WLA-DX's view of the mode at function and block
     entries based on MIR-derived knowledge. The asm-level dataflow
     can't reconstruct this — it doesn't see across JSR/JSL — so we
-    *preserve* these directives and use them to seed the dataflow.
+    *preserve* these directives and use them to seed the dataflow,
+    unless the in-file CFG proves a different mode at a non-function
+    label, in which case the anchor is rewritten
+    (`_reconcile_anchors_with_cfg`).
 
   - **Mid-block** — directives codegen emitted next to the SEP/REP
     that triggered them. Peephole may have moved, removed, or
@@ -52,9 +55,7 @@ def _mode_directive_kind(node: AsmNode) -> Optional[Tuple[str, int]]:
     """If ``node`` is a `.ACCU N` or `.INDEX N` mode directive, return
     a tuple of (flag, bits) — e.g. (``"ACCU"``, 8). Otherwise return None.
 
-    Mode directives flow through the canonical typed `ModeChange` node;
-    `Directive(".ACCU", ...)` and `RawAsm(".ACCU N")` are no longer
-    used for mode tracking.
+    Mode directives are always typed `ModeChange` nodes.
     """
     if isinstance(node, ModeChange):
         return (node.flag, node.bits)
@@ -126,7 +127,7 @@ def _classify_directives(
 
 
 # ---------------------------------------------------------------------------
-# Mode-after-node helper
+# WLA-DX directive semantics
 # ---------------------------------------------------------------------------
 
 
@@ -276,6 +277,8 @@ def normalize_mode_directives(
          REP/PLP/RTI which peephole may have rewritten).
       2. Build a stripped node list that keeps the anchored directives
          in place but drops everything else.
+      2b. Rewrite anchors that the in-file CFG contradicts
+         (``_reconcile_anchors_with_cfg``).
       3. Run ``compute_modes`` on the stripped list, seeded with the
          anchored directives so the dataflow knows the runtime mode at
          function and block entries.

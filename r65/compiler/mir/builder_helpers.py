@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 MIR Builder helper classes.
-
-Extracted from MIRBuilder to improve modularity and reduce file size.
 """
 
 from typing import Dict, Any, TYPE_CHECKING

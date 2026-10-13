@@ -2,8 +2,8 @@
 """
 Call lowerer: HIR function/method calls → MIR instructions.
 
-Handles function calls, method calls (rotate), mode transitions,
-and argument passing mechanisms (register, variable-bound, stack).
+Handles function calls, built-in methods (rotate_left/right, len(),
+bank_byte()), callee mode metadata, and argument passing mechanisms (register, variable-bound, stack).
 """
 
 from typing import TYPE_CHECKING, Union, Optional, List, Any
@@ -33,8 +33,8 @@ class CallLowerer:
     Handles:
     - Direct function calls
     - Indirect function calls (function pointers)
-    - Method calls (rotate_left, rotate_right)
-    - Mode transitions for cross-mode calls
+    - Built-in methods: rotate_left/right, len(), bank_byte()
+    - Callee entry/exit modes on the Call, for cross-mode calls
     - Argument passing mechanisms (register, variable, stack)
 
     Calls back to builder.lower_expression() for sub-expression recursion.
@@ -212,9 +212,7 @@ class CallLowerer:
         """
         Lower method call (e.g., value.rotate_left(3) or array.len()).
 
-        Currently supports:
-        - rotate_left, rotate_right methods on integers
-        - len() method on arrays
+        Built-in methods: rotate_left/right, len(), bank_byte()
 
         Args:
             call_expr: HIRMethodCall expression
@@ -318,23 +316,19 @@ class CallLowerer:
         # Create argument list with self as first argument
         args = []
 
-        # Self parameter: a trait method takes `self` in Y — that is the trait
-        # ABI, and the callee reads its fields off Y whether the pointer is near
-        # or far (a far one also wants the bank in DBR, which
-        # `_emit_self_y` handles). Anything else pushes self on the stack.
-        #
-        # This used to require `far` as well, so a *directly* called near trait
-        # method had its receiver pushed while the callee read Y — it ran on
-        # whatever Y happened to hold. Only the `*dyn` path was correct, because
-        # its dispatcher loads Y itself.
+        # Self parameter: register-bound self first (a newtype payload in A,
+        # or an `#[soa]`/tagged-enum element index in X). A pointer self of a
+        # trait method goes in Y — the trait ABI, whether the pointer is near
+        # or far (a far one also wants the bank in DBR, which `_emit_self_y`
+        # handles). Any other pointer self is pushed on the stack.
         self_param = func_decl.parameters[0]  # First parameter is self
         from r65.compiler.hir.types import PointerTypeInfo
         from r65.compiler.hir.nodes import RegisterBinding
         _self_is_far = isinstance(self_param.param_type, PointerTypeInfo) and self_param.param_type.is_far
         _is_trait = getattr(func_decl, 'is_trait_method', False)
         if isinstance(self_param.binding, RegisterBinding):
-            # Newtype `self` by value: the payload rides in a register, so this is
-            # an ordinary register argument — no pointer, nothing on the stack.
+            # Register-bound `self` (newtype payload, or #[soa]/tagged-enum
+            # index): an ordinary register argument — nothing on the stack.
             args.append(Argument(
                 value=self_vreg,
                 mechanism=ArgumentMechanism.REGISTER,
@@ -525,8 +519,9 @@ class CallLowerer:
         """
         Emit function call.
 
-        Mode transitions are now automatic - the callee's prologue handles
-        REP #$20 for m16 entry mode, and epilogue handles SEP #$20 to restore.
+        Emits the Call with the callee's entry/exit modes. Call selection
+        switches the caller to the callee's entry mode and back to m8 after
+        an m16 return.
 
         Args:
             func_decl: Function being called

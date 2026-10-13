@@ -56,10 +56,9 @@ class SourceLocation:
         """Check if this location is from an included file."""
         return self.included_from is not None
 
-    # Backwards compatibility alias
     @property
     def file(self) -> str:
-        """Alias for file_path for backwards compatibility."""
+        """Alias for file_path."""
         return self.file_path
 
 
@@ -366,7 +365,7 @@ def format_error(message: str, source_loc: Optional[SourceLocation] = None,
           --> game.r65:10:5
            |
         10 |     fn bad(x:
-           |           ^ expected identifier or type
+           |           ^
            |
         hint: check for missing closing parenthesis
 

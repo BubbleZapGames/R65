@@ -71,8 +71,9 @@ _VREG_DEF_ATTR = '_chain_vreg_def_map'
 
 
 def analyze_trait_dispatch_chains(mir_program, call_graph):
-    """Detect runs of TraitDispatch on the same far-self vreg and assign
-    ChainRole values to coalesce DBR brackets.
+    """Detect runs of TraitDispatch on the same self vreg and assign
+    ChainRole values: far-self runs coalesce the DBR bracket, near-self runs
+    the LDY reload.
 
     Args:
         mir_program: MIRProgram to analyze (mutated in place).
@@ -117,9 +118,9 @@ def _analyze_function_chains(func, call_graph, func_map, cyclic_funcs):
 
 def _extended_path(func, entry_block_id, visited_blocks,
                    call_graph, func_map, cyclic_funcs, kind):
-    """Like ``_straight_line_path`` but additionally bridges across simple
-    if/else diamonds where both arms satisfy ``kind.instr_ok`` and don't
-    redefine the chain root self vreg.
+    """Walk a straight-line path from ``entry_block_id``, also bridging
+    simple if/else diamonds where both arms satisfy ``kind.instr_ok`` and
+    don't redefine the chain root self vreg.
 
     The diamond rule: when the straight-line walk terminates at a block
     ``A`` because ``A`` has two successors, accept the rejoin ``C`` as
@@ -130,9 +131,7 @@ def _extended_path(func, entry_block_id, visited_blocks,
       - ``C`` has exactly two predecessors and they are exactly
         ``{S1, S2}``.
       - Neither ``S1`` nor ``S2`` has further branching (each is a
-        single-block arm) and each arm body is DBR-independent (no
-        RAM access, no near deref, no nested TraitDispatch, no call
-        to a non-DBR-independent function).
+        single-block arm) and each arm satisfies ``kind.instr_ok``.
       - Neither ``S1`` nor ``S2`` is a back-edge into earlier path
         (we never revisit a block already in the path or
         ``visited_blocks``).
@@ -141,10 +140,9 @@ def _extended_path(func, entry_block_id, visited_blocks,
     BEFORE ``C`` (in arm order S1 then S2). When the chain pass walks
     the resulting flat instruction list, instructions from BOTH arms
     appear between any chain-head dispatch in or before ``A`` and any
-    chain-tail dispatch in ``C``. ``_between_is_dbr_independent``
-    already rejects any TraitDispatch, RAM access, near deref, or
-    self-vreg redef inside the gap — these constraints subsume the
-    soundness conditions for the diamond.
+    chain-tail dispatch in ``C``. ``_between_satisfies`` applies
+    ``kind.instr_ok`` to the gap and rejects a redefinition of self,
+    which subsumes the diamond's conditions.
 
     Loops, multi-arm switches, and any join with topology that doesn't
     match the strict diamond pattern are rejected — the walker
@@ -166,10 +164,8 @@ def _extended_path(func, entry_block_id, visited_blocks,
             if next_block is None:
                 break
             if len(next_block.predecessors) != 1:
-                # Try to bridge a diamond rejoin reached from another
-                # arm. Today the straight-line rule rejects any block
-                # with >1 predecessor; the diamond extension only
-                # applies when the *current* block has 2 successors.
+                # A join is only entered as a diamond rejoin (below),
+                # so stop.
                 break
             if next_block.predecessors[0] != cur_id:
                 break
@@ -350,7 +346,7 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
         # Assign roles
         if len(run_indices) >= 2:
             # For FAR chains, additionally compute the Y-elision flag.
-            # DBR-bracket coalescing (set above by role) and Y elision are
+            # DBR-bracket coalescing (set below by role) and Y elision are
             # orthogonal — each FAR chain may have both, only DBR
             # coalescing, or neither. NEAR chains use ChainRole alone for
             # Y-elision; the FAR-only flag doesn't apply.
@@ -464,7 +460,7 @@ def _chain_self_root(vreg: VirtualRegister, func: MIRFunction) -> VirtualRegiste
     Note on MIR shapes: HIRTypeCast lowering in
     `mir/lowerers/expression.py` emits a plain `Move` for same-size
     reinterpretation casts and a `TypeConvert` for size-changing or
-    pointer↔integer casts (see lower_type_cast at ~line 274).
+    pointer↔integer casts (see `ExpressionLowerer.lower_type_cast`).
     Trait-pointer-to-trait-pointer casts are same-size and therefore
     arrive as a `Move`, which the walker follows.
 
@@ -909,7 +905,7 @@ def _far_chain_can_elide_y(flat, run_indices, call_graph, func_map,
     do NOT imply Y-preservation: a function may be DBR-independent but
     still clobber Y (e.g. with ``Y = 0``). Conversely, a function may
     preserve Y but not be DBR-independent (e.g. it does a non-LONG RAM
-    read that requires DBR=$00). The two predicates are independent.
+    read that requires the caller's DBR). The two predicates are independent.
     """
     # Every method's impl set must preserve Y.
     seen_methods: set = set()

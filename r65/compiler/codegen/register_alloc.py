@@ -49,13 +49,14 @@ class PhysicalLocation:
     # For SCRATCH: zero-page address
     scratch_addr: Optional[int] = None
 
-    # For STACK: stack offset from frame pointer
+    # For STACK: S-relative offset (`d,S`) as of frame base; the stack tracker
+    # adds live push displacement
     stack_offset: Optional[int] = None
 
     # For MEMORY: absolute address
     memory_addr: Optional[int] = None
 
-    # For MEMORY: ROM label (used for #[rom] data accessed directly from ROM)
+    # For MEMORY: ROM label (immutable statics, which live in ROM)
     memory_label: Optional[str] = None
 
     # For IMMEDIATE: constant value
@@ -290,11 +291,9 @@ class RegisterAllocator:
 
     Allocation priority:
     1. Hardware registers (A, X, Y) - for explicitly bound variables or temporaries
-    2. Scratch registers (designated zero-page locations, call-graph aware)
+    2. Scratch registers, only for vregs not live across any call (scratches
+       are caller-save)
     3. Stack slots (spill when scratch exhausted, with reuse optimization)
-
-    Call-graph aware: Variables that live across calls cannot use scratches
-    that callees might use.
     """
 
     def __init__(self,
@@ -494,8 +493,8 @@ class RegisterAllocator:
                 self.allocations[vreg.id] = location
                 return location
 
-        # Fallback: sequential allocation (shouldn't happen if allocate_all called)
-        # This is for backwards compatibility if slot allocation fails
+        # Fallback when allocate_all gave this vreg no slot: sequential
+        # allocation (counts slots, not bytes)
         stack_offset = self.stack_base_offset + len([
             loc for loc in self.allocations.values()
             if loc.kind == LocationKind.STACK
@@ -682,7 +681,7 @@ class RegisterAllocator:
             preassigned = self._build_preassigned_params()
 
             # Collect vregs already allocated externally (e.g. scratch params,
-            # pull-promoted hw regs) so the slot allocator doesn't reserve
+            # loop-promoted hw regs) so the slot allocator doesn't reserve
             # stack frame space for them.
             # `pre_allocated_hw` is a refined subset: vregs the register
             # allocator has *pinned to a hardware register*. The slot

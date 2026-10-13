@@ -22,8 +22,8 @@ from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 INTERRUPT_HW_PUSH_BYTES = 4
 
 # Maximum bytes an interrupt prologue auto-saves when preserve=True:
-#   PHA (1-2) + PHX (2) + PHY (2) + PHD (2) + PHB (1) + PHP (1) = 9-10
-# We use 10 (worst-case: A in m16 mode = 2 bytes)
+#   PHA (1-2) + PHX (2) + PHY (2) + PHD (2) + PHB (1) = 8-9
+# P is not pushed (RTI restores it); 10 over-approximates the m16 worst case.
 INTERRUPT_AUTO_SAVE_BYTES = 10
 
 # Small per-function allowance for spill slots created by codegen

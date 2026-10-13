@@ -32,8 +32,7 @@ alone: `#[ram]` statics live in bank $7E behind long addressing (there is no
 INC long), ROM is read-only, a `#[hw]` register must see exactly the accesses
 written, and `abs,Y` has no INC form.
 
-This replaces the asm peephole that matched `LDA / CLC / ADC #1 / STA` after
-instruction selection, which saw neither indexed operands nor 16-bit ones.
+Done in MIR so indexed and 16-bit operands are seen.
 """
 
 from typing import Dict, List

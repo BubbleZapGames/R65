@@ -2,9 +2,9 @@
 """
 HIR Builder - transforms AST to HIR with name resolution and desugaring.
 
-Uses a two-pass algorithm:
-1. First pass: Declare all top-level symbols
-2. Second pass: Build HIR nodes with resolved references
+Passes: 0 collect `*dyn` traits; 1 declare top-level symbols; 1.5 resolve
+tagged-enum payloads and declare plane symbols; 2 build HIR bodies; 3 pad
+payload unions and expand planed statics into planes.
 """
 
 import dataclasses
@@ -32,8 +32,8 @@ from r65.compiler.hir.lang_items import (
 class SelfForm(Enum):
     """How a method receives its receiver. One form per type, not per method."""
     POINTER = 'pointer'        # struct/union: `*self`, stack-passed (or SELF_Y)
-    VALUE_IN_A = 'value_in_a'  # newtype: the 1-2 byte payload rides in A
-    INDEX_IN_X = 'index_in_x'  # #[soa] struct: a u16 element index rides in X
+    VALUE_IN_A = 'value_in_a'  # newtype or fieldless enum: the 1-2 byte value rides in A
+    INDEX_IN_X = 'index_in_x'  # #[soa] struct, tagged enum, #[soa] payload: a u16 element index rides in X
 
 
 class HIRBuilder:
@@ -60,7 +60,7 @@ class HIRBuilder:
         # Include paths for searching (resolved to absolute paths)
         self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
         self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
-        self.auto_bank_mode = False  # True when in #[bank(auto)] mode (NOT default for backward compatibility)
+        self.auto_bank_mode = False  # True when in #[bank(auto)] mode; declarations start in explicit bank 0
         self.expression_builder = ExpressionBuilder(
             self.symbol_table, self.const_evaluator, self.type_resolver,
             self.cfg_evaluator, self.source_dir, self.include_paths
@@ -104,7 +104,7 @@ class HIRBuilder:
         self.expression_builder.enum_storage = self._enum_storage
         self.expression_builder.tagged_enums = self._tagged_enums
         self.expression_builder.enum_payloads = self._enum_payloads
-        self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
+        self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> implementing struct names, in impl order
         self._trait_impl_locs: Dict[tuple, Any] = {}  # (trait_name, struct_name) -> source_loc
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
         self._dyn_used_traits: Set[str] = set()  # trait names used with *dyn
@@ -159,7 +159,7 @@ class HIRBuilder:
         # Pass 1: Declare all top-level symbols (filtered by cfg)
         # Also track bank directives to maintain ordering
         self.current_bank = 0  # Reset to default bank
-        self.auto_bank_mode = False  # Default is explicit bank 0 for backward compatibility
+        self.auto_bank_mode = False  # Declarations start in explicit bank 0 until a #[bank] directive
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 stack_attr = self._stack_attribute(decl)
@@ -194,7 +194,7 @@ class HIRBuilder:
         # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
         self.current_bank = 0  # Reset for second pass
-        self.auto_bank_mode = False  # Default is explicit bank 0 for backward compatibility
+        self.auto_bank_mode = False  # Declarations start in explicit bank 0 until a #[bank] directive
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
                 continue  # Skip stack directives, already processed
@@ -231,9 +231,10 @@ class HIRBuilder:
                 hir_decl = self._build_declaration(decl)
                 hir_decls.append(hir_decl)
 
-        # Third pass: expand every #[soa] static into one array per field. Runs
-        # after the loop above so every element struct's HIRStructDecl exists,
-        # and so the whole program is in hand.
+        # Pass 3: pad payload unions, then expand every planed static (#[soa]
+        # struct or tagged enum) into its planes. Runs after the loop above so
+        # every element struct's HIRStructDecl exists, and so the whole program
+        # is in hand.
         self._pad_enum_payloads()
         self._expand_soa_statics(hir_decls)
 
@@ -925,7 +926,7 @@ class HIRBuilder:
         - self.field = value;     -> HIRExprStmt with HIRAssignment to HIRFieldAccess
         - STATIC = value;         -> HIRExprStmt with HIRAssignment to HIRIdentifier
 
-        These trivial functions should always be inlined to eliminate call overhead.
+        These get a #[inline] hint (size-gated, not `always`).
 
         Returns:
             True if function matches a getter/setter pattern.
@@ -1094,13 +1095,9 @@ class HIRBuilder:
 
         - a newtype answers for its payload, so returning `Q10` leaves the CPU
           in m16 exactly as `i16` does;
-        - a near pointer and a near `fn()` pointer are two bytes and ride in A
-          like any other 16-bit value. Answering m8 for them made the epilogue
-          `SEP #$20` and move a single byte, so the pointer's high byte was
-          dropped on the way out and the caller — which reads this same field
-          through `callee_exit_m_mode` — stored one byte on the way in. The far
-          forms are three bytes and are rejected by the type checker before
-          this matters;
+        - a near pointer and a near `fn()` pointer are two bytes in A; the
+          caller reads this field via `callee_exit_m_mode`, so both sides must
+          agree. Far forms are 3 bytes and the type checker rejects them first;
         - an enum is one byte until a variant exceeds 255, and two after.
 
         A multi-return keeps m8: its values are mapped to A/B/X/Y by
@@ -1194,15 +1191,8 @@ class HIRBuilder:
         """
         Validate that a register binding type matches the register's supported types.
 
-        Register type rules:
-        - A: u8, i8, u16, i16 (accumulator, supports both 8-bit and 16-bit modes)
-        - B: u8, i8 (high byte of accumulator, 8-bit only in m8 mode)
-        - X: u16, i16 (index register, always 16-bit in R65)
-        - Y: u16, i16 (index register, always 16-bit in R65)
-        - D: u16 (direct page register, 16-bit)
-        - S: u16 (stack pointer, 16-bit)
-        - DBR: u8 (data bank register, 8-bit)
-        - PBR: u8 (program bank register, 8-bit, read-only)
+        Allowed types come from `registers.REGISTERS[name].types`; the hints
+        below explain the common mistakes.
         """
         if bound_type is None:
             return
@@ -1221,10 +1211,8 @@ class HIRBuilder:
             # Near pointers are 16-bit, treat like u16 for register validation
             type_name = 'u16'
         elif isinstance(payload, EnumTypeInfo):
-            # An enum is an integer of its own width — a value type, like the
-            # newtype over one that used to be the only spelling accepted here.
-            # `self` in an enum method arrives in A this way, so bare enums must
-            # bind too; see docs/enums.md.
+            # An enum is an integer of its own width. `self` in an enum method
+            # arrives in A this way (docs/enums.md).
             type_name = 'u16' if payload.size_bytes == 2 else 'u8'
         elif not isinstance(payload, BasicTypeInfo):
             raise HIRError(
@@ -1380,7 +1368,7 @@ class HIRBuilder:
 
     @staticmethod
     def _soa_wrap_single(var_type):
-        """Wrap a bare `#[soa]` struct type into a one-element array.
+        """Wrap a bare planed type (`#[soa]` struct or tagged enum) into a one-element array.
 
         `static mut PLAYER: Player;` is a pool of one, so every downstream path
         — plane synthesis, `PLAYER.hp`, `PLAYER.method()` — is the array path
@@ -1711,7 +1699,9 @@ class HIRBuilder:
         return self._get_type_size(field_type)
 
     def _plane_fields(self, decl: 'hir.HIRStaticDecl'):
-        """The `(field, aos_offset)` list *decl* splits into planes.
+        """The `(field, aos_offset, overlay)` triples *decl* splits into planes.
+
+        *overlay* is None or `(region plane name, element offset)`.
 
         `aos_offset` is where the plane would start in a packed
         array-of-structs layout. MIR inverts it by range to find the plane
@@ -2054,8 +2044,8 @@ class HIRBuilder:
         # at offset 0 on top of field data, which is why unions cannot implement
         # traits (see _declare_trait_impl).
         hir_fields = []
-        # An #[soa] element has no offset 0 to hold a TypeId — a *dyn handle
-        # over one carries the type in its high byte instead.
+        # An #[soa] element has no offset 0 to hold a TypeId, so `*dyn` over one
+        # is rejected (docs/soa.md, Known limits).
         has_type_id = (not struct.is_union
                        and not getattr(struct, 'is_soa', False)
                        and struct.name in self._struct_type_ids)
@@ -2086,7 +2076,7 @@ class HIRBuilder:
             # contiguous — a tag byte with the payload inline — which puts the
             # element stride multiply back on every tag read, so it stays
             # rejected there. Only a bare enum: an array of them would need a
-            # pair of planes per element, and was laid out as one enum.
+            # pair of planes per element.
             if (struct.is_soa and isinstance(field_type, ArrayTypeInfo)
                     and self._tagged_enum_of(field_type) is not None):
                 raise HIRError(
@@ -2132,11 +2122,9 @@ class HIRBuilder:
     def _enum_discriminants(self, enum: ast.EnumDecl):
         """Yield `(variant, discriminant)` for every variant, in order.
 
-        Both passes need these numbers: pass 1 to declare `Enum::Variant`
-        symbols, pass 2 to build the HIR variants. They used to be walked twice
-        by two copies of the same loop, which is a correctness hazard the moment
-        the rule stops being "add one" — as it does for a tagged enum, where an
-        explicit discriminant is rejected outright.
+        Both passes need these numbers (pass 1 for the `Enum::Variant` symbols,
+        pass 2 for the HIR variants); one generator keeps the rule, including
+        the tagged-enum ban on explicit discriminants, in one place.
         """
         tagged = self._enum_is_tagged(enum)
         current = 0
@@ -2212,7 +2200,7 @@ class HIRBuilder:
                      "type lists have no name to match on; wrap it in a struct",
             )
 
-        # The same built-in set `TypeResolver.resolve_type` splits on.
+        # The built-in names `TypeResolver.resolve_type` splits on, plus u24.
         if ast_type.name in ('u8', 'i8', 'u16', 'i16', 'u24', 'bool', 'void'):
             raise HIRError(
                 f"{where} is '{ast_type.name}', not a struct",
@@ -2533,7 +2521,7 @@ class HIRBuilder:
     def _declare_impl(self, impl: ast.ImplDecl):
         """First pass: declare impl block methods and constants."""
         # Apply #[cfg(...)] to the methods before anything reads them. Done once,
-        # in place, because impl.methods is walked from five separate places —
+        # in place, because impl.methods is walked from several places —
         # filtering at each would risk them disagreeing about what exists.
         impl.methods = [m for m in impl.methods
                         if self._should_include_declaration(m)]
@@ -2688,9 +2676,8 @@ class HIRBuilder:
 
         wrote_by_value = getattr(method, 'self_by_value', False)
 
-        # An associated function declares no self at all. One is still synthesized
-        # below (pre-existing behaviour), but there is no written form to disagree
-        # with, so neither check applies — it just follows the type's convention.
+        # An associated function declares no self, so there is no written form
+        # to check; return the type's form for the caller's (unused) binding.
         if not getattr(method, 'has_self', True):
             return form
 
@@ -2738,8 +2725,9 @@ class HIRBuilder:
     def _validate_self_register_conflict(self, impl, method, params, self_binding):
         """Reject a parameter that binds the register a by-value `self` occupies.
 
-        `self` rides in A, so neither A nor B is available to a parameter: B is
-        the accumulator's high byte, not a register of its own. Sharing either
+        A by-value `self` rides in A (newtype/enum) or X (planed index). In A,
+        neither A nor B is available to a parameter: B is the accumulator's high
+        byte, not a register of its own. Sharing either
         with `self` is an entanglement the author did not ask for, and codegen
         routes B/X/Y argument setup *through* A, so it is also a live hazard.
 
@@ -3300,7 +3288,7 @@ class HIRBuilder:
         else:
             struct_type = StructTypeInfo(name=impl.struct_name)
             self_type = PointerTypeInfo(pointee_type=struct_type, is_far=self_is_far)
-            self_binding = None  # Pointer self is stack-passed
+            self_binding = None  # Pointer self: stack-passed, or Y (SELF_Y) for a trait impl method
 
         self_param_symbol = Symbol(
             name='self',
@@ -3325,9 +3313,8 @@ class HIRBuilder:
             hir_param = self._build_parameter(param)
             hir_params.append(hir_param)
 
-        # Impl methods never ran this check — harmless while every self was a
-        # stack-passed pointer, but a by-value self occupies A, so a parameter
-        # binding A silently shares the register with it.
+        # A by-value self occupies A (or X), so a parameter binding that
+        # register would silently share it.
         self._validate_self_register_conflict(impl, method, hir_params, self_binding)
         self._validate_no_duplicate_register_bindings(hir_params, mangled_name)
 
@@ -4006,7 +3993,7 @@ class HIRBuilder:
             processed_attrs: List of processed attributes
 
         Returns:
-            Dictionary with keys: mode, preserves, interrupt, is_entry, is_used
+            Dictionary with keys: mode, preserves, interrupt, inline, is_entry, is_used, allow
         """
         result = {
             'mode': None,

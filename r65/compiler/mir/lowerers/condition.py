@@ -143,11 +143,9 @@ class ConditionLowerer:
                 # Complex expression - need to evaluate it first
                 value = self.builder.lower_expression(value_expr)
 
-            # Only use BIT if value is not in a hardware register
-            # BIT requires a memory operand
+            # A hardware-register value falls through. Memory, or a vreg
+            # testing its top bit, takes BitTest.
             if not isinstance(value, HardwareRegister):
-                # Value is in memory - can use BIT optimization
-                # Emit BitTest instruction
                 self.emit(BitTest(
                     value=value,
                     test_bit=bit_number,
@@ -157,8 +155,8 @@ class ConditionLowerer:
                 # Branch based on bit value
                 # BMI/BPL for bit 7, BVS/BVC for bit 6
                 if inverted:
-                    # Test is (value & mask) == 0, so bit is clear
-                    # Swap targets: if bit clear goto true, else goto false
+                    # Test is (value & mask) == 0, so bit is clear; the
+                    # inversion rides on the `_clear` comparison below
                     actual_true = true_target
                     actual_false = false_target
                 else:
@@ -539,7 +537,8 @@ class ConditionLowerer:
         Classify a flattened chain operand by how it reaches the accumulator.
 
         - 'imm'     : integer literal           → ORA #imm
-        - 'mem'     : static with a fixed addr   → ORA addr
+        - 'mem'     : has_explicit_location (static or promoted local,
+                       fixed or auto-allocated) → ORA addr
         - 'reg'     : hardware register / alias  → only safe as op0 (a load
                        into A); after op0 its value has been clobbered
         - 'complex' : needs lower_expression()   → would emit A-clobbering

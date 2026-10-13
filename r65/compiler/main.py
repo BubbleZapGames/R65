@@ -128,7 +128,7 @@ def _inject_builtin_traits(program):
 
     These traits are always available without explicit include.
     Currently injects:
-      - ToString: fn to_string(*self, buf: far *u8) -> u16
+      - ToString: fn to_string(far *self, buf: far *u8) -> u16
     """
     from r65.compiler.frontend.ast import (
         TraitDecl, ImplMethod, Parameter, BasicType, PointerType,
@@ -193,6 +193,11 @@ def compile_source(source: str, filename: str, output_file: str = None,
         include_paths: List of include search paths
         opt_level: Optimization level (0=none, 1=basic, 2=with implicit inlining)
         debug: Generate Mesen-compatible .dbg file (default False)
+        disable_scratch_params: Turn off scratch-register parameter promotion
+        disable_loop_promotion: Turn off loop register promotion
+        abi_model: Optional ABIModel instance (default: Default ABI)
+        lint, lint_only: Run the linter; lint_only stops after it
+        lint_allow, lint_deny, lint_config_path: Lint rule overrides and config file
     """
 
     def log(msg: str):
