@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf,
     HIRIdentifier,
 )
-from r65.compiler.hir.types import strip_newtype, BasicTypeInfo, PointerTypeInfo
+from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation, Move,
     Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Compare,
@@ -478,7 +478,6 @@ class ExpressionLowerer:
                 ptr_expr=ptr_expr,
                 index_expr=expr.index,
                 element_size=element_size,
-                element_type=element_type,
                 const_offset=base_field_offset,
                 result_type=element_type,
                 is_load=True, dest=result,
@@ -539,7 +538,7 @@ class ExpressionLowerer:
         # For indexed addressing, we need the index in Y register
         # If element_size > 1, multiply first
         if element_size > 1:
-            index_operand = self._compute_index_offset(index_operand, element_size, index_type)
+            index_operand = self.builder.scale_index(index_operand, element_size, index_type)
 
         # Move index to Y register for indirect indexed addressing
         y_reg = HardwareRegister('Y')
@@ -595,7 +594,7 @@ class ExpressionLowerer:
         if not self.builder.x_index_cache_hit(reuse_key):
             offset_operand = index_operand
             if element_size > 1:
-                offset_operand = self._compute_index_offset(index_operand, element_size, offset_type)
+                offset_operand = self.builder.scale_index(index_operand, element_size, offset_type)
             self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
             self.builder.x_index_cache_set(reuse_key)
         return MemoryLocation(
@@ -605,57 +604,6 @@ class ExpressionLowerer:
             index_register='X',
             offset=base_memloc.offset
         )
-
-    def _compute_index_offset(self, index_operand, element_size, element_type):
-        """Compute byte offset from array index.
-
-        When element_size > 1, the byte offset can exceed 255 even for u8 indices
-        (e.g., u8 index 200 * element_size 2 = 400). The shift/multiply must use
-        u16 to avoid 8-bit overflow.
-        """
-        # Widen to u16 when multiplying would overflow u8
-        offset_type = element_type
-        if element_size > 1 and self.builder._get_type_size(element_type) < 2:
-            offset_type = BasicTypeInfo('u16')
-            # Zero-extend the index operand to u16
-            if not isinstance(index_operand, Immediate):
-                extended = self.ctx.alloc_vreg(offset_type, "idx_ext")
-                self.emit(TypeConvert(
-                    dest=extended,
-                    source=index_operand,
-                    source_type=element_type,
-                    target_type=offset_type
-                ))
-                index_operand = extended
-
-        offset_vreg = self.ctx.alloc_vreg(offset_type, "array_offset")
-
-        # Use shift for power-of-2 sizes
-        if element_size & (element_size - 1) == 0:
-            shift_amount = 0
-            temp = element_size
-            while temp > 1:
-                shift_amount += 1
-                temp >>= 1
-
-            self.emit(BinaryOp(
-                dest=offset_vreg,
-                left=index_operand,
-                right=Immediate(shift_amount),
-                op='<<',
-                type_info=offset_type
-            ))
-        else:
-            # Non-power-of-2: use multiplication
-            self.emit(BinaryOp(
-                dest=offset_vreg,
-                left=index_operand,
-                right=Immediate(element_size),
-                op='*',
-                type_info=offset_type
-            ))
-
-        return offset_vreg
 
     # ========================================================================
     # Field Access
@@ -859,8 +807,7 @@ class ExpressionLowerer:
         result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{symbol.name}")
 
         # Create symbolic address immediate (resolved in codegen)
-        addr_immediate = Immediate(0)
-        addr_immediate.symbol = symbol
+        addr_immediate = Immediate(0, symbol=symbol)
 
         self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
 
@@ -892,7 +839,7 @@ class ExpressionLowerer:
         Returns:
             VirtualRegister holding pointer to the array element
         """
-        from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
+        from r65.compiler.hir.types import ArrayTypeInfo
 
         array_index = expr.operand
         array_expr = array_index.array
@@ -971,44 +918,21 @@ class ExpressionLowerer:
             offset = base_offset + index_operand.value * element_size
 
             # Create symbolic address with offset (resolved in codegen)
-            addr_immediate = Immediate(offset)
-            addr_immediate.symbol = array_symbol
-            addr_immediate.symbol_offset = offset
+            addr_immediate = Immediate(offset, symbol=array_symbol)
 
             self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
         else:
             # Variable index: compute base + index * element_size at runtime
             # First, load base address (folded field offset rides on the symbol)
             base_addr = self.ctx.alloc_vreg(expr.expr_type, f"base_addr_{array_symbol.name}")
-            addr_immediate = Immediate(base_offset)
-            addr_immediate.symbol = array_symbol
-            addr_immediate.symbol_offset = base_offset
+            addr_immediate = Immediate(base_offset, symbol=array_symbol)
 
             self.emit(Move(dest=base_addr, source=addr_immediate, type_info=expr.expr_type))
 
-            # If element_size > 1, multiply index by element_size
-            if element_size > 1:
-                offset_type = BasicTypeInfo('u16')
-                offset_vreg = self._compute_index_offset(index_operand, element_size, offset_type)
-            else:
-                offset_vreg = index_operand
-                # Ensure offset is u16 for pointer arithmetic (16-bit add).
-                # A u8 index used directly in a m16 ADC would read 2 bytes
-                # from a 1-byte stack slot, picking up junk in the high byte.
-                idx_payload = strip_newtype(offset_vreg.type_info) if isinstance(
-                    offset_vreg, VirtualRegister) else None
-                if (isinstance(offset_vreg, VirtualRegister) and
-                        isinstance(idx_payload, BasicTypeInfo) and
-                        idx_payload.name in ('u8', 'i8')):
-                    from r65.compiler.mir.nodes import TypeConvert
-                    extended = self.ctx.alloc_vreg(BasicTypeInfo('u16'), f"idx_ext")
-                    self.emit(TypeConvert(
-                        dest=extended,
-                        source=offset_vreg,
-                        source_type=offset_vreg.type_info,
-                        target_type=BasicTypeInfo('u16')
-                    ))
-                    offset_vreg = extended
+            # index * element_size as a u16 byte offset (a u8 index is
+            # widened, so the 16-bit add never reads junk in its high byte)
+            offset_vreg = self.builder.scale_index(
+                index_operand, element_size, array_index.index.expr_type)
 
             # Add base + offset
             self.emit(BinaryOp(
@@ -1045,9 +969,7 @@ class ExpressionLowerer:
         else:
             offset = base_memloc.offset
         offset += const
-        addr_immediate = Immediate(offset)
-        addr_immediate.symbol = symbol
-        addr_immediate.symbol_offset = offset
+        addr_immediate = Immediate(offset, symbol=symbol)
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{symbol.name}_elem")
         if total is None:
@@ -1071,7 +993,6 @@ class ExpressionLowerer:
         .base (field_offset its field's), or the indexed pointer itself
         (field_offset 0). element_size is the size of what is indexed.
         """
-        from r65.compiler.hir.types import BasicTypeInfo
 
         ptr_type = expr.expr_type
 
@@ -1100,28 +1021,10 @@ class ExpressionLowerer:
                 ))
             return result
 
-        # Variable index: scale to byte offset, then add to (base + field_offset).
-        if element_size > 1:
-            offset_type = BasicTypeInfo('u16')
-            offset_vreg = self._compute_index_offset(
-                index_operand, element_size, offset_type
-            )
-        else:
-            offset_vreg = index_operand
-            # Match the u8→u16 widening done on the static-array path: a m16
-            # ADC against a 1-byte stack slot would read junk in the high byte.
-            if (isinstance(offset_vreg, VirtualRegister) and
-                    isinstance(strip_newtype(offset_vreg.type_info), BasicTypeInfo) and
-                    strip_newtype(offset_vreg.type_info).name in ('u8', 'i8')):
-                from r65.compiler.mir.nodes import TypeConvert
-                extended = self.ctx.alloc_vreg(BasicTypeInfo('u16'), "idx_ext")
-                self.emit(TypeConvert(
-                    dest=extended,
-                    source=offset_vreg,
-                    source_type=offset_vreg.type_info,
-                    target_type=BasicTypeInfo('u16')
-                ))
-                offset_vreg = extended
+        # Variable index: scale to a u16 byte offset, then add to
+        # (base + field_offset).
+        offset_vreg = self.builder.scale_index(
+            index_operand, element_size, index_expr.expr_type)
 
         # Fold the field offset into the base pointer first so the final add
         # is a single (vreg + vreg) op — no triple-add MIR node exists.
@@ -1210,9 +1113,7 @@ class ExpressionLowerer:
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"addr_of_{symbol.name}_{field_access.field_name}")
 
-        addr_immediate = Immediate(field_offset)
-        addr_immediate.symbol = symbol
-        addr_immediate.symbol_offset = field_offset
+        addr_immediate = Immediate(field_offset, symbol=symbol)
 
         self.emit(Move(dest=result, source=addr_immediate, type_info=expr.expr_type))
         result.symbol = symbol

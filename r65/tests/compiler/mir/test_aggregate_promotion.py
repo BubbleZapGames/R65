@@ -442,3 +442,16 @@ class TestStructDecompositionWithScalarFields:
         ''')
         func = get_mir_function(mir, 'test_func')
         assert not func.has_promoted_locals
+
+
+def test_runtime_array_literal_element_is_an_error():
+    """A runtime element of a promoted local's literal is rejected, not zeroed."""
+    from r65.compiler.errors import MIRLoweringError
+    with pytest.raises(MIRLoweringError, match="element of local array `a`"):
+        build_mir('''
+            #[lowram] static mut IN: u8;
+            fn test_func() {
+                let x: u8 = IN;
+                let a: [u8; 3] = [x, 1, 2];
+            }
+        ''')

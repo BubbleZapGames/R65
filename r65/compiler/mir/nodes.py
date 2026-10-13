@@ -28,6 +28,9 @@ class VirtualRegister:
     type_info: Any  # TypeInfo from HIR
     hint: Optional[str] = None  # Optional name hint for debugging
     register_hint: Optional[str] = None  # Optional hardware register hint ('X', 'Y') for loop variables
+    # The static whose address this vreg holds (`&ARR[i]`, `&S.field`), so a
+    # later `as far *T` can take that static's bank; None otherwise.
+    symbol: Any = field(default=None, compare=False, repr=False)
 
     def __repr__(self):
         if self.hint:
@@ -68,10 +71,19 @@ class HardwareRegister:
 
 @dataclass
 class Immediate:
-    """Immediate value (constant)."""
+    """Immediate value (constant), or with `symbol` set, the address of that
+    static or function plus `value` bytes (resolved in codegen)."""
     value: int
+    symbol: Any = field(default=None, compare=False, repr=False)
+
+    @property
+    def symbol_offset(self) -> int:
+        """Byte offset from `symbol`'s address: the value itself."""
+        return self.value
 
     def __repr__(self):
+        if self.symbol is not None:
+            return f"#{self.symbol.name}+{self.value}"
         return f"#{self.value}"
 
 
@@ -367,19 +379,13 @@ class Move(MIRInstruction):
     Move between registers or load immediate.
 
     dest = source
-
-    persist_16bit_mode: If True and dest is A with u16 type, keep A in m16 mode
-    after the move (don't emit trailing SEP #$20). Used for `let x @ A : u16 = expr;`
-    where the binding should keep A in 16-bit mode for its scope.
     """
     dest: Union[VirtualRegister, HardwareRegister]
     source: Union[VirtualRegister, HardwareRegister, Immediate]
     type_info: Any  # TypeInfo for size
-    persist_16bit_mode: bool = False  # Keep m16 mode after 16-bit load to A
 
     def __repr__(self):
-        persist = " [persist_m16]" if self.persist_16bit_mode else ""
-        return f"{self.dest} = Move {self.source} : {self.type_info}{persist}"
+        return f"{self.dest} = Move {self.source} : {self.type_info}"
 
 
 @dataclass
@@ -1067,6 +1073,11 @@ BLOCK_TARGET_FIELDS: Dict[type, Tuple[str, ...]] = {
 }
 
 
+# Instructions that end a basic block: the edge-carrying ones above plus the
+# two returns.
+TERMINATOR_TYPES: Tuple[type, ...] = (Return, ReturnFromInterrupt, *BLOCK_TARGET_FIELDS)
+
+
 def iter_block_targets(instr):
     """Yield every block id *instr* can transfer control to."""
     for name in BLOCK_TARGET_FIELDS.get(type(instr), ()):
@@ -1280,6 +1291,13 @@ class MIRFunction:
     # Maps parameter index to scratch zero-page address for promoted stack params
     scratch_param_addrs: Dict[int, int] = field(default_factory=dict)
 
+    # Scratch bytes the function's locals must avoid (set by the param
+    # promotion pass): every function's scratch-param bytes, shared program
+    # wide since a caller's scratch params persist while its callees run, and
+    # the bytes of the trait methods this function dispatches (FixedStack).
+    global_scratch_param_bytes: Set[int] = field(default_factory=set)
+    trait_dispatch_scratch_bytes: Set[int] = field(default_factory=set)
+
     # HW-promoted parameter registers (populated by fixedstack_params pre-pass)
     # Maps parameter index to hw register name for auto-promoted params
     hw_param_regs: Dict[int, str] = field(default_factory=dict)
@@ -1287,10 +1305,6 @@ class MIRFunction:
     # Loop-promoted hardware register vregs (populated by loop_register_promotion)
     # Maps hw register name ('X', 'Y') to the vreg pre-allocated to that register
     loop_promoted_hw_vregs: Dict[str, 'VirtualRegister'] = field(default_factory=dict)
-
-    # Caller-owned outgoing argument area size (max across all call sites)
-    # Computed before codegen; included in frame allocation
-    max_outgoing_arg_bytes: int = 0
 
     # Pascal ABI: total parameter bytes for callee cleanup
     pascal_total_param_bytes: int = 0

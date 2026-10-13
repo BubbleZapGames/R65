@@ -95,10 +95,6 @@ class LoweringContext:
         """Get hardware register alias for a symbol, if any."""
         return self.current_function.alias_tracker.get_alias(symbol)
 
-    def add_alias(self, symbol, hw_reg: HardwareRegister):
-        """Add a hardware register alias for a symbol."""
-        self.current_function.alias_tracker.add_alias(symbol, hw_reg)
-
     def set_current_block(self, block: BasicBlock):
         """Set the current block for instruction emission.
 
@@ -115,10 +111,8 @@ class LoweringContext:
     # ========================================================================
 
     def new_block(self) -> BasicBlock:
-        """Create a new basic block and add to current function."""
-        block = self.cfg_builder.new_block()
-        self.current_function.blocks[block.block_id] = block
-        return block
+        """Create a new basic block in the current function."""
+        return self.cfg_builder.new_block()
 
     def add_cfg_edge(self, from_block: BasicBlock, to_block: BasicBlock):
         """Add an edge in the control flow graph."""

@@ -400,7 +400,6 @@ class AssignmentLowerer:
                 ptr_expr=ptr_expr,
                 index_expr=array_index.index,
                 element_size=element_size,
-                element_type=element_type,
                 const_offset=base_field_offset,
                 result_type=element_type,
                 is_load=False, source=value,
@@ -452,14 +451,10 @@ class AssignmentLowerer:
             if isinstance(index_operand, Immediate):
                 index_operand = Immediate(index_operand.value * element_size)
             else:
-                # Delegate to the read path's _compute_index_offset so writes
-                # stay symmetric with reads: it widens a u8/i8 index to u16
-                # before the shift. A raw `index << log2(size)` sized as the
-                # u8 index overflows whenever index * element_size > 255
-                # (e.g. ptr[150] of u16), corrupting the store address.
-                index_operand = self.builder.expr_lowerer._compute_index_offset(
-                    index_operand, element_size, index_type
-                )
+                # The same scaling as the read path: a u8 index widens to
+                # u16 before the shift, or ptr[150] of u16 would overflow.
+                index_operand = self.builder.scale_index(
+                    index_operand, element_size, index_type)
 
         # Lower the pointer expression to get the pointer value
         ptr_operand = self.builder.lower_expression(array_index.array)

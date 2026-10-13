@@ -179,10 +179,7 @@ class StaticInitLowerer:
         else:
             data = self._extract_initializer_bytes(
                 initializer, size, f"initializer of static `{name}`")
-        label = f"__{name}_data"
-        self.builder._rom_data_sections.append(
-            ROMDataRef(label=label, data=data, element_size=size))
-        static_decl.symbol.rom_label = label
+        self._emit_rom_init(static_decl, None, data, size, skip_copy=True)
 
     def _is_function_pointer_init(self, initializer: HIRExpression) -> bool:
         """Check if initializer is a function pointer (identifier or address-of function)."""
@@ -393,60 +390,52 @@ class StaticInitLowerer:
         Example: [1, 2, 3, 4] stores data in ROM and copies to RAM.
         Also handles arrays of struct literals like [Card { ... }, Card { ... }].
         """
-        from r65.compiler.hir.types import ArrayTypeInfo, StructTypeInfo
-
-        # Get element type and size
-        array_type = static_decl.var_type
-        if isinstance(array_type, ArrayTypeInfo):
-            element_size = self.builder._get_type_size(array_type.element_type)
-            element_type = array_type.element_type
-        else:
-            element_size = 1  # Default to 1 byte
-            element_type = None
-
         # An #[soa] field plane pads a 3- or 7-byte element to its stride
         # (`soa_stride`), so the table must too or the index would walk off
         # the data.
-        stride = getattr(static_decl, 'soa_stride', None) or element_size
-        padding = [0] * (stride - element_size)
+        data_bytes, element_size = self.array_literal_bytes(
+            literal_expr, static_decl.var_type,
+            f"element of static array `{static_decl.name}`",
+            stride=getattr(static_decl, 'soa_stride', None))
+        self._emit_rom_init(static_decl, mem_loc, data_bytes, element_size, skip_copy)
 
-        # Extract constant values from all elements without emitting
-        # instructions: scalars, and aggregates (struct, array, string) at
-        # any depth.
+    def array_literal_bytes(self, literal_expr: HIRArrayLiteralExpr, array_type,
+                            what: str, stride: Optional[int] = None):
+        """The ROM bytes of an array literal of type *array_type*, and its
+        element size. Each element is padded to *stride* when that is given."""
+        from r65.compiler.hir.types import ArrayTypeInfo
+        if isinstance(array_type, ArrayTypeInfo):
+            element_size = self.builder._get_type_size(array_type.element_type)
+        else:
+            element_size = 1
+        padding = [0] * ((stride or element_size) - element_size)
         data_bytes = []
         for elem in literal_expr.elements:
-            data_bytes.extend(self._extract_initializer_bytes(
-                elem, element_size,
-                f"element of static array `{static_decl.name}`"
-            ))
+            data_bytes.extend(self._extract_initializer_bytes(elem, element_size, what))
             data_bytes.extend(padding)
+        return data_bytes, element_size
 
-        # Create ROM data reference using variable name
+    @staticmethod
+    def string_literal_bytes(string_literal: HIRStringLiteral, array_type) -> List[int]:
+        """The bytes of a string literal, zero-padded to its array's size."""
+        from r65.compiler.hir.types import ArrayTypeInfo
+        data_bytes = list(string_literal.processed_bytes)
+        if isinstance(array_type, ArrayTypeInfo):
+            data_bytes += [0] * (array_type.size - len(data_bytes))
+        return data_bytes
+
+    def _emit_rom_init(self, static_decl: HIRStaticDecl, mem_loc: Optional[MemoryLocation],
+                       data_bytes: List, element_size: int, skip_copy: bool):
+        """Lay *data_bytes* out under the static's `__NAME_data` label. A ROM
+        static (*skip_copy*) is read in place, so its symbol takes the label;
+        a RAM static is copied from it, and `&` of it stays the RAM address."""
         label = f"__{static_decl.name}_data"
-
-        rom_data = ROMDataRef(
-            label=label,
-            data=data_bytes,
-            element_size=element_size
-        )
+        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=element_size)
         self.builder._rom_data_sections.append(rom_data)
-
-        # Store ROM label in symbol for code generation to use (ROM statics only).
-        # For RAM/zeropage statics, the rom_label is only for initialization -
-        # address-of should use the runtime address, not the ROM data label.
         if skip_copy:
-            if hasattr(static_decl.symbol, 'rom_label'):
-                static_decl.symbol.rom_label = label
-            else:
-                setattr(static_decl.symbol, 'rom_label', label)
-
-        # Emit block copy instruction (unless this is ROM storage)
-        if not skip_copy:
-            self.emit(BlockCopy(
-                dest=mem_loc,
-                rom_data=rom_data,
-                count=len(data_bytes)
-            ))
+            static_decl.symbol.rom_label = label
+        else:
+            self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
     def _aggregate_field_info(self, struct_decl):
         """Map an aggregate's fields to (offset, size) and return its total size.
@@ -495,8 +484,6 @@ class StaticInitLowerer:
         For structs implementing traits, the __type_id field at offset 0 is
         auto-initialized with the struct's TypeId value from the symbol table.
         """
-        from r65.compiler.frontend import ast
-
         # Find struct definition
         struct_decl = struct_expr.struct_decl
         if struct_decl is None:
@@ -547,53 +534,11 @@ class StaticInitLowerer:
         """
         Emit BlockCopy instruction for string literal initialization.
 
-        String literals are converted to byte arrays. The processed_bytes field
-        contains the escape-sequence-processed byte values from type checking.
-        Zero-padding is applied to match the declared array size.
+        The processed_bytes field holds the escape-processed bytes from type
+        checking; they are zero-padded to the declared array size.
         """
-        from r65.compiler.hir.types import ArrayTypeInfo
-
-        # Get the array size from the declared type
-        array_type = static_decl.var_type
-        if isinstance(array_type, ArrayTypeInfo):
-            array_size = array_type.size
-        else:
-            # Shouldn't happen if type checking passed
-            array_size = len(string_literal.processed_bytes)
-
-        # Get processed bytes (escape sequences already handled by type checker)
-        data_bytes = list(string_literal.processed_bytes)
-
-        # Zero-pad to match array size
-        while len(data_bytes) < array_size:
-            data_bytes.append(0)
-
-        # Create ROM data reference using variable name
-        label = f"__{static_decl.name}_data"
-
-        rom_data = ROMDataRef(
-            label=label,
-            data=data_bytes,
-            element_size=1  # Strings are always u8 arrays
-        )
-        self.builder._rom_data_sections.append(rom_data)
-
-        # Store ROM label in symbol for code generation to use (ROM statics only).
-        # For RAM/zeropage statics, the rom_label is only for initialization -
-        # address-of should use the runtime address, not the ROM data label.
-        if skip_copy:
-            if hasattr(static_decl.symbol, 'rom_label'):
-                static_decl.symbol.rom_label = label
-            else:
-                setattr(static_decl.symbol, 'rom_label', label)
-
-        # Emit block copy instruction (unless this is ROM storage)
-        if not skip_copy:
-            self.emit(BlockCopy(
-                dest=mem_loc,
-                rom_data=rom_data,
-                count=len(data_bytes)
-            ))
+        data_bytes = self.string_literal_bytes(string_literal, static_decl.var_type)
+        self._emit_rom_init(static_decl, mem_loc, data_bytes, 1, skip_copy)
 
     def _emit_struct_literal_init(
         self,
@@ -607,72 +552,5 @@ class StaticInitLowerer:
 
         Example: Player { x: 10, y: 20, health: 100 } stores data in ROM and copies to RAM.
         """
-        from r65.compiler.hir.types import StructTypeInfo
-        from r65.compiler.hir import HIRStructDecl
-        from r65.compiler.frontend import ast
-
-        # Get struct definition to know field sizes and offsets
-        struct_decl = struct_expr.struct_decl
-        if struct_decl is None:
-            # Look up from symbol table
-            symbol = self.builder._hir_program.symbol_table.lookup(struct_expr.struct_name)
-            if symbol:
-                struct_decl = symbol.definition
-
-        if struct_decl is None:
-            raise MIRLoweringError(f"Cannot find struct definition for {struct_expr.struct_name}", source_loc=self.builder._current_source_loc)
-
-        field_info, total_size = self._aggregate_field_info(struct_decl)
-
-        # Create byte array for struct data
-        data_bytes = [0] * total_size
-
-        # Fill in field values at their offsets
-        for field_init in struct_expr.fields:
-            if field_init.name not in field_info:
-                continue
-
-            offset, field_size = field_info[field_init.name]
-            field_bytes = self._extract_initializer_bytes(
-                field_init.value, field_size,
-                f"initializer for field `{struct_expr.struct_name}.{field_init.name}`"
-            )
-
-            # Store as little-endian bytes at the field's offset
-            for i in range(field_size):
-                data_bytes[offset + i] = field_bytes[i]
-
-        # Auto-initialize __type_id for structs implementing traits
-        if '__type_id' in field_info:
-            type_id_sym = self.builder._hir_program.symbol_table.lookup(
-                f"{struct_expr.struct_name}::TYPE_ID"
-            )
-            if type_id_sym:
-                data_bytes[0] = type_id_sym.const_value & 0xFF
-
-        # Create ROM data reference using variable name
-        label = f"__{static_decl.name}_data"
-
-        rom_data = ROMDataRef(
-            label=label,
-            data=data_bytes,
-            element_size=1  # Struct is treated as a block of bytes
-        )
-        self.builder._rom_data_sections.append(rom_data)
-
-        # Store ROM label in symbol for code generation to use (ROM statics only).
-        # For RAM/zeropage statics, the rom_label is only for initialization -
-        # address-of should use the runtime address, not the ROM data label.
-        if skip_copy:
-            if hasattr(static_decl.symbol, 'rom_label'):
-                static_decl.symbol.rom_label = label
-            else:
-                setattr(static_decl.symbol, 'rom_label', label)
-
-        # Emit block copy instruction (unless this is ROM storage)
-        if not skip_copy:
-            self.emit(BlockCopy(
-                dest=mem_loc,
-                rom_data=rom_data,
-                count=len(data_bytes)
-            ))
+        data_bytes = self._extract_struct_literal_bytes(struct_expr)
+        self._emit_rom_init(static_decl, mem_loc, data_bytes, 1, skip_copy)

@@ -23,8 +23,8 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
     Load, Store, Move, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
-    SetMode, MemoryFill, BlockCopy, AggregateCopy, ROMDataRef,
-    InlineAsm,
+    MemoryFill, BlockCopy, AggregateCopy, ROMDataRef,
+    InlineAsm, TERMINATOR_TYPES,
 )
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -32,7 +32,7 @@ from r65.compiler.mir.register_tracker import RegisterAliasTracker
 from r65.compiler.mir.register_alias_check import check_register_aliases
 from r65.compiler.mir.cfg import CFGBuilder
 from r65.compiler.mir.mode_tracker import reanalyze_function as _reanalyze_modes
-from r65.compiler.mir.builder_helpers import TypeSizeCalculator
+from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.mir.context import LoweringContext
 from r65.compiler.mir.lowerers.expression import ExpressionLowerer
 from r65.compiler.mir.lowerers.match import MatchLowerer
@@ -40,8 +40,10 @@ from r65.compiler.mir.lowerers.call import CallLowerer
 from r65.compiler.mir.lowerers.assignment import AssignmentLowerer
 from r65.compiler.mir.lowerers.condition import ConditionLowerer
 from r65.compiler.mir.lowerers.static_init import StaticInitLowerer
-from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
-from r65.compiler.errors import MIRLoweringError
+from r65.compiler.mir.lowerers.multiply import compute_scaled_index
+from r65.compiler.typeck.processor_mode import ProcessorMode, XModeState
+from r65.compiler.errors import MIRLoweringError, InternalCompilerError
+from r65.compiler.typeck.type_utils import TypeUtils
 from r65.compiler.hir.nodes import walk_hir
 
 
@@ -183,9 +185,6 @@ class MIRBuilder:
         self._rom_data_counter = 0
         self._rom_data_sections = []
 
-        # Clear type size cache to prevent stale id()-based entries
-        TypeSizeCalculator.clear_cache()
-
         # Store reference to HIR program for symbol table lookups
         self._hir_program = hir_program
 
@@ -215,8 +214,13 @@ class MIRBuilder:
             mir_functions.append(init_func)
             self.has_init_start = True
 
-        # Lower each function
+        # Lower each function. A const fn returning an aggregate has no
+        # runtime form (an aggregate is never returned by value): every call
+        # to it is folded.
         for decl in hir_program.declarations:
+            if (isinstance(decl, HIRFunctionDecl) and decl.is_const and
+                    TypeUtils.is_aggregate_type(decl.return_type)):
+                continue
             if isinstance(decl, HIRFunctionDecl) and decl.body:
                 mir_func = self.lower_function(decl)
                 check_register_aliases(mir_func)
@@ -517,29 +521,6 @@ class MIRBuilder:
         # in emit_prologue BEFORE frame allocation. This is critical because stack
         # frame allocation uses stack-relative addressing that would corrupt saved
         # registers if the pushes came after frame allocation.
-        if hir_func.interrupt_attr:
-            # Set the handler's mode (interrupts can fire from any mode)
-            # Force the handler's inferred mode using SEP/REP
-            if hir_func.mode_attr and self.current_mode.is_fully_known():
-                # Generate SEP/REP to force handler's mode
-                # We don't know the incoming mode, so we just set all bits explicitly
-                handler_mode = self.current_mode
-                sep_mask = 0
-                rep_mask = 0
-
-                if handler_mode.m_mode == ModeState.M8:
-                    sep_mask |= 0x20
-                elif handler_mode.m_mode == ModeState.M16:
-                    rep_mask |= 0x20
-
-                # X is always x16
-                rep_mask |= 0x10
-
-                if sep_mask:
-                    self.emit(SetMode(mask=sep_mask, is_set=True))
-                if rep_mask:
-                    self.emit(SetMode(mask=rep_mask, is_set=False))
-
         # Lower function body
         if hir_func.body:
             self.lower_block(hir_func.body)
@@ -628,8 +609,9 @@ class MIRBuilder:
             # Multi-assignment statement
             self.assign_lowerer.lower_multi_assignment(stmt)
         else:
-            # Unsupported statement type (placeholder for future expansion)
-            pass
+            raise InternalCompilerError(
+                f"no MIR lowering for statement {type(stmt).__name__}",
+                getattr(stmt, 'source_loc', None))
 
     def lower_let_statement(self, stmt: HIRLetStmt):
         """
@@ -666,22 +648,11 @@ class MIRBuilder:
                         len(self.current_block.instructions),
                         value=init_value, source_loc=stmt.source_loc)
                 else:
-                    # Check if this is a u16 @ A binding that should keep m16 mode
-                    persist_mode = False
-                    from r65.compiler.hir.types import strip_newtype
-                    bound_payload = strip_newtype(stmt.var_type) if stmt.var_type else None
-                    if (stmt.binding.register_name == "A" and
-                        bound_payload is not None and
-                        hasattr(bound_payload, 'name') and
-                        bound_payload.name in ('u16', 'i16')):
-                        persist_mode = True
-
                     # Move to hardware register if not already there
                     self.emit(Move(
                         dest=hw_reg,
                         source=init_value,
                         type_info=stmt.var_type,
-                        persist_16bit_mode=persist_mode
                     ))
 
         else:
@@ -842,17 +813,25 @@ class MIRBuilder:
             self._emit_clone_init(stmt, mem_loc, initializer)
             return
 
+        fill_value = None
         if isinstance(initializer, HIRArrayFillExpr):
-            # Array fill: [0; 16] → MemoryFill
+            fill_value = self.static_init_lowerer._extract_constant_value(initializer.fill_value)
+            if fill_value is None:
+                # An aggregate fill value (`[[7; 2]; 3]`) is no single value
+                # to store: copy it as the literal it expands to.
+                initializer = HIRArrayLiteralExpr(
+                    elements=[initializer.fill_value] * initializer.count,
+                    source_loc=initializer.source_loc,
+                )
+
+        if fill_value is not None:
+            # Array fill of a constant scalar: [0; 16] → MemoryFill
             from r65.compiler.hir.types import ArrayTypeInfo
             array_type = stmt.var_type
             if isinstance(array_type, ArrayTypeInfo):
                 element_size = self._get_type_size(array_type.element_type)
             else:
                 element_size = 1
-            fill_value = self.static_init_lowerer._extract_constant_value(initializer.fill_value)
-            if fill_value is None:
-                fill_value = 0
             self.emit(MemoryFill(
                 dest=mem_loc,
                 fill_value=fill_value,
@@ -883,62 +862,25 @@ class MIRBuilder:
 
     def _emit_inline_array_literal(self, stmt, mem_loc, literal_expr, label_prefix):
         """Emit ROMDataRef + BlockCopy for an inline array literal initializer."""
-        from r65.compiler.hir.types import ArrayTypeInfo
-
-        array_type = stmt.var_type
-        if isinstance(array_type, ArrayTypeInfo):
-            element_size = self._get_type_size(array_type.element_type)
-        else:
-            element_size = 1
-
-        data_bytes = []
-        for elem in literal_expr.elements:
-            if isinstance(elem, HIRStructLiteralExpr):
-                struct_bytes = self.static_init_lowerer._extract_struct_literal_bytes(elem)
-                data_bytes.extend(struct_bytes)
-            else:
-                value = self.static_init_lowerer._extract_constant_value(elem)
-                if value is None:
-                    value = 0
-                if element_size == 1:
-                    data_bytes.append(value & 0xFF)
-                elif element_size == 2:
-                    data_bytes.append(value & 0xFF)
-                    data_bytes.append((value >> 8) & 0xFF)
-                else:
-                    for i in range(element_size):
-                        data_bytes.append((value >> (i * 8)) & 0xFF)
-
-        label = f"__{label_prefix}_data"
-        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=element_size)
-        self.current_function.local_rom_data.append(rom_data)
-        self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
+        data_bytes, element_size = self.static_init_lowerer.array_literal_bytes(
+            literal_expr, stmt.var_type, f"element of local array `{stmt.name}`")
+        self._emit_inline_rom_copy(mem_loc, data_bytes, element_size, label_prefix)
 
     def _emit_inline_string_literal(self, stmt, mem_loc, string_literal, label_prefix):
         """Emit ROMDataRef + BlockCopy for an inline string literal initializer."""
-        from r65.compiler.hir.types import ArrayTypeInfo
-
-        array_type = stmt.var_type
-        if isinstance(array_type, ArrayTypeInfo):
-            array_size = array_type.size
-        else:
-            array_size = len(string_literal.processed_bytes)
-
-        data_bytes = list(string_literal.processed_bytes)
-        while len(data_bytes) < array_size:
-            data_bytes.append(0)
-
-        label = f"__{label_prefix}_data"
-        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=1)
-        self.current_function.local_rom_data.append(rom_data)
-        self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
+        data_bytes = self.static_init_lowerer.string_literal_bytes(string_literal, stmt.var_type)
+        self._emit_inline_rom_copy(mem_loc, data_bytes, 1, label_prefix)
 
     def _emit_inline_struct_literal(self, stmt, mem_loc, struct_expr, label_prefix):
         """Emit ROMDataRef + BlockCopy for an inline struct literal initializer."""
         data_bytes = self.static_init_lowerer._extract_struct_literal_bytes(struct_expr)
+        self._emit_inline_rom_copy(mem_loc, data_bytes, 1, label_prefix)
 
-        label = f"__{label_prefix}_data"
-        rom_data = ROMDataRef(label=label, data=data_bytes, element_size=1)
+    def _emit_inline_rom_copy(self, mem_loc, data_bytes, element_size, label_prefix):
+        """Copy *data_bytes* into a promoted local from the function's own ROM
+        data, emitted next to its body."""
+        rom_data = ROMDataRef(label=f"__{label_prefix}_data", data=data_bytes,
+                              element_size=element_size)
         self.current_function.local_rom_data.append(rom_data)
         self.emit(BlockCopy(dest=mem_loc, rom_data=rom_data, count=len(data_bytes)))
 
@@ -1327,10 +1269,9 @@ class MIRBuilder:
             return self._lower_inline_string_literal(expr)
 
         else:
-            # Unsupported expression type (placeholder)
-            # Allocate placeholder virtual register
-            vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, "unsupported")
-            return vreg
+            raise InternalCompilerError(
+                f"no MIR lowering for expression {type(expr).__name__}",
+                getattr(expr, 'source_loc', None))
 
     def _lower_status_flag_read(self, expr: HIRStatusFlagAccess) -> VirtualRegister:
         """
@@ -1893,7 +1834,6 @@ class MIRBuilder:
         and a u16 operand holding the sum of the variable ones (None if every
         index is constant).
         """
-        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
         from r65.compiler.mir.nodes import BinaryOp, HardwareRegister, Immediate, Move
         from r65.compiler.hir.types import BasicTypeInfo
 
@@ -1917,8 +1857,7 @@ class MIRBuilder:
                 held = self.ctx.alloc_vreg(index.expr_type, 'idx')
                 self.emit(Move(dest=held, source=operand, type_info=index.expr_type))
                 operand = held
-            scaled = compute_scaled_index(operand, stride, index.expr_type,
-                                          self.ctx, self.emit, self.call_lowerer)
+            scaled = self.scale_index(operand, stride, index.expr_type)
             if total is None:
                 total = scaled
             else:
@@ -1949,7 +1888,6 @@ class MIRBuilder:
         on every pass. Always pushes a (possibly empty) frame; the loop
         lowerer pops it.
         """
-        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
         from r65.compiler.mir.nodes import Move
 
         hoisted: Dict[Any, Any] = {}
@@ -1994,9 +1932,7 @@ class MIRBuilder:
                     held = self.ctx.alloc_vreg(index.expr_type, 'idx')
                     self.emit(Move(dest=held, source=operand, type_info=index.expr_type))
                     operand = held
-                hoisted[key] = compute_scaled_index(operand, stride, index.expr_type,
-                                                    self.ctx, self.emit,
-                                                    self.call_lowerer)
+                hoisted[key] = self.scale_index(operand, stride, index.expr_type)
         self._hoisted_index_terms.append(hoisted)
 
     def multi_index_memloc(self, base_memloc, terms, last_index, last_operand,
@@ -2163,7 +2099,6 @@ class MIRBuilder:
         ptr_expr,
         index_expr,
         element_size: int,
-        element_type,
         const_offset: int,
         result_type,
         is_load: bool,
@@ -2185,12 +2120,10 @@ class MIRBuilder:
                 auto-deref, the operand of an explicit ``*p``).
             index_expr: HIR expression for the array index.
             element_size: Byte size of one array element.
-            element_type: Element type, passed to :func:`compute_scaled_index`
-                so it can widen narrow indices before scaling.
             const_offset: Compile-time byte offset to add to the base
                 address — outer field + any inner field offset.
             result_type: ``type_info`` for the emitted Load/Store; usually
-                equals ``element_type`` for plain element access, or the
+                the element type for plain element access, or the
                 field type for ``arr[i].field`` access.
             is_load: ``True`` to emit ``LoadIndirect``, ``False`` to emit
                 ``StoreIndirect``.
@@ -2201,7 +2134,6 @@ class MIRBuilder:
         Returns:
             ``dest`` (for loads) or ``source`` (for stores).
         """
-        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
         from r65.compiler.mir.nodes import (
             BinaryOp, HardwareRegister, Immediate, LoadIndirect, Move,
             StoreIndirect,
@@ -2232,12 +2164,7 @@ class MIRBuilder:
         # Variable index → Y = scaled_index + const_offset. memory_select
         # doesn't combine an explicit `offset` with an existing
         # index_register, so the constant lives inside the Y value.
-        # compute_scaled_index widens narrow indices to u16 and handles
-        # non-power-of-2 sizes, always returning a u16 operand.
-        scaled = compute_scaled_index(
-            index_operand, element_size, element_type, self.ctx, self.emit,
-            self.call_lowerer,
-        )
+        scaled = self.scale_index(index_operand, element_size, index_expr.expr_type)
         u16 = BasicTypeInfo('u16')
         if const_offset != 0:
             sum_vreg = self.ctx.alloc_vreg(u16, 'arr_off')
@@ -2300,7 +2227,6 @@ class MIRBuilder:
         store lowerers, which differ only in load-vs-store and which type drives
         ``result_type`` (element field type for loads, assigned type for stores).
         """
-        from r65.compiler.mir.lowerers.multiply import compute_scaled_index
         from r65.compiler.mir.nodes import (
             HardwareRegister, Immediate, Load, MemoryLocation, Move, Store,
         )
@@ -2316,7 +2242,6 @@ class MIRBuilder:
                 ptr_expr=ptr_expr,
                 index_expr=array_index_expr.index,
                 element_size=self._get_type_size(array_index_expr.expr_type),
-                element_type=array_index_expr.expr_type,
                 const_offset=base_field_offset + field_offset,
                 result_type=result_type,
                 is_load=is_load, dest=dest, source=source,
@@ -2388,9 +2313,8 @@ class MIRBuilder:
         if not self.x_index_cache_hit(reuse_key):
             # The scaled index is a byte offset (u16), NOT the struct type —
             # sizing the Move as the struct corrupts the index high byte.
-            scaled_operand = compute_scaled_index(
-                index_operand, struct_size, struct_type, self.ctx, self.emit,
-                self.call_lowerer)
+            scaled_operand = self.scale_index(
+                index_operand, struct_size, array_index_expr.index.expr_type)
             self.emit(Move(dest=HardwareRegister('X'), source=scaled_operand,
                            type_info=BasicTypeInfo('u16')))
             self.x_index_cache_set(reuse_key)
@@ -2441,18 +2365,13 @@ class MIRBuilder:
 
     def _block_has_terminator(self) -> bool:
         """
-        Check if current block already has a terminator instruction.
-
-        Terminator instructions: Return, ReturnFromInterrupt, Jump, CondBranch
-
-        Returns:
-            True if block ends with terminator, False otherwise
+        Check if current block already ends with a terminator
+        (`TERMINATOR_TYPES`).
         """
         if not self.current_block or not self.current_block.instructions:
             return False
 
-        last_instr = self.current_block.instructions[-1]
-        return isinstance(last_instr, (Return, ReturnFromInterrupt, Jump, CondBranch))
+        return isinstance(self.current_block.instructions[-1], TERMINATOR_TYPES)
 
     def jump_to(self, block: BasicBlock):
         """End the current block with a Jump to *block* and record the edge.
@@ -2645,9 +2564,14 @@ class MIRBuilder:
 
         return ['A', 'X', 'Y']
 
+    def scale_index(self, index_operand, element_size: int, index_type):
+        """`index * element_size` as a u16 byte offset; see compute_scaled_index."""
+        return compute_scaled_index(index_operand, element_size, index_type,
+                                    self.ctx, self.emit, self.call_lowerer)
+
     def _get_type_size(self, type_info) -> int:
-        """Get size in bytes for a type. Delegates to TypeSizeCalculator."""
-        return TypeSizeCalculator.get_size(type_info)
+        """Get size in bytes for a type."""
+        return get_unified_type_size(type_info)
 
     def _try_eval_const_condition(self, expr: HIRExpression) -> Optional[bool]:
         """Try to evaluate a condition expression at compile time for dead code elimination."""

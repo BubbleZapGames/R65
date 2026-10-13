@@ -47,10 +47,7 @@ def _hw(v, name=None) -> bool:
 
 
 def _size(type_info) -> int:
-    try:
-        return get_type_size(type_info) if type_info is not None else 1
-    except Exception:
-        return 1
+    return get_type_size(type_info) if type_info is not None else 1
 
 
 def _wide(instr) -> bool:

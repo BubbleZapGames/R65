@@ -6,9 +6,9 @@ Determines which virtual registers are live (in use) at each program point,
 enabling optimizations like stack slot reuse and better register allocation.
 """
 
-import sys
 from typing import Set, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+from r65.compiler.errors import InternalCompilerError
 from r65.compiler.mir.nodes import (
     CallBase,
     MIRInstruction, VirtualRegister, HardwareRegister,
@@ -93,12 +93,17 @@ class LivenessAnalyzer:
             self.liveness[block_id] = LivenessInfo()
             self._compute_use_def(block)
 
-        # Iterative dataflow analysis (backward)
+        # Iterative dataflow analysis (backward). The sets only grow, so a
+        # fixpoint is reached; running out of iterations means a bug.
         changed = True
         iterations = 0
-        max_iterations = 100  # Safety limit
+        max_iterations = 100
 
-        while changed and iterations < max_iterations:
+        while changed:
+            if iterations == max_iterations:
+                raise InternalCompilerError(
+                    f"liveness of '{self.func.name}' did not converge after "
+                    f"{max_iterations} iterations")
             changed = False
             iterations += 1
 
@@ -127,9 +132,6 @@ class LivenessAnalyzer:
                 # Check for convergence
                 if info.live_in != old_live_in or info.hw_live_in != old_hw_live_in:
                     changed = True
-
-        if iterations >= max_iterations:
-            print(f"Warning: Liveness analysis did not converge after {max_iterations} iterations", file=sys.stderr)
 
         return self.liveness
 
@@ -650,8 +652,8 @@ class ClobberRegionAnalyzer:
         self.block_analyzer = instr_liveness.block_analyzer
         self.liveness = instr_liveness.liveness
 
-    def analyze_block(self, block_id: int, preserves_map: Dict[str, Set[str]] = None,
-                     include_a: bool = False) -> Dict[str, List[ClobberRegion]]:
+    def analyze_block(self, block_id: int, preserves_map: Dict[str, Set[str]] = None
+                      ) -> Dict[str, List[ClobberRegion]]:
         """
         Analyze clobber regions for a single basic block.
 
@@ -659,29 +661,23 @@ class ClobberRegionAnalyzer:
             block_id: Block ID to analyze
             preserves_map: Map from function name to set of preserved registers.
                           If None, assumes all calls clobber all registers.
-            include_a: If True, also analyze A register regions
 
         Returns:
-            Dictionary mapping register name ('A', 'X', 'Y') to list of ClobberRegions
+            Dictionary mapping register name ('X', 'Y') to list of ClobberRegions.
+            A has no regions: hardware liveness does not track it, so a value
+            in A is spilled by its vreg's liveness instead.
         """
         if preserves_map is None:
             preserves_map = {}
 
         block = self.func.blocks.get(block_id)
         if not block:
-            return {'A': [], 'X': [], 'Y': []} if include_a else {'X': [], 'Y': []}
+            return {'X': [], 'Y': []}
 
-        regions: Dict[str, List[ClobberRegion]] = {'X': [], 'Y': []}
-        if include_a:
-            regions['A'] = []
-
-        regs_to_analyze = ('A', 'X', 'Y') if include_a else ('X', 'Y')
-        for hw_reg in regs_to_analyze:
-            regions[hw_reg] = self._analyze_register_regions(
-                block, block_id, hw_reg, preserves_map
-            )
-
-        return regions
+        return {
+            hw_reg: self._analyze_register_regions(block, block_id, hw_reg, preserves_map)
+            for hw_reg in ('X', 'Y')
+        }
 
     def _analyze_register_regions(self, block: BasicBlock, block_id: int,
                                    hw_reg: str, preserves_map: Dict[str, Set[str]]
@@ -827,14 +823,13 @@ class ClobberRegionAnalyzer:
 
         return hw_reg in return_regs[:num_returns]
 
-    def analyze_function(self, preserves_map: Dict[str, Set[str]] = None,
-                        include_a: bool = False) -> Dict[int, Dict[str, List[ClobberRegion]]]:
+    def analyze_function(self, preserves_map: Dict[str, Set[str]] = None
+                         ) -> Dict[int, Dict[str, List[ClobberRegion]]]:
         """
         Analyze clobber regions for all blocks in a function.
 
         Args:
             preserves_map: Map from function name to set of preserved registers
-            include_a: If True, also analyze A register regions
 
         Returns:
             Dictionary mapping block_id to register regions
@@ -845,6 +840,6 @@ class ClobberRegionAnalyzer:
         result: Dict[int, Dict[str, List[ClobberRegion]]] = {}
 
         for block_id in self.func.blocks:
-            result[block_id] = self.analyze_block(block_id, preserves_map, include_a)
+            result[block_id] = self.analyze_block(block_id, preserves_map)
 
         return result

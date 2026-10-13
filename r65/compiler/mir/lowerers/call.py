@@ -18,7 +18,7 @@ from r65.compiler.mir.nodes import (
     Move, Store, Call, Argument, ArgumentMechanism, Rotate, BankByte,
     TraitDispatch, LoadIndirect,
 )
-from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo
+from r65.compiler.hir.types import ArrayTypeInfo, BasicTypeInfo, PointerTypeInfo
 from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
@@ -101,7 +101,8 @@ class CallLowerer:
         # it falls to the indirect path and the callee is emitted as a value load.
         is_direct_call = (isinstance(call_expr.func, HIRIdentifier)
                           and call_expr.func.symbol.kind in (SymbolKind.FUNCTION,
-                                                             SymbolKind.METHOD))
+                                                             SymbolKind.METHOD,
+                                                             SymbolKind.BUILTIN_FUNC))
         is_indirect_call = not is_direct_call
 
         if is_direct_call:
@@ -195,8 +196,8 @@ class CallLowerer:
                 return returns[0]
             return HardwareRegister('A') if is_tuple_return else None
 
-        # Direct call - handle mode transitions using helper
-        self._emit_call_with_mode_transition(func_decl, args, returns, call_expr.builtin_name)
+        # Direct call
+        self._emit_call(func_decl, args, returns, call_expr.builtin_name)
 
         # Return result (or None for void functions).
         # For tuple returns, the first element is always in A.
@@ -322,9 +323,7 @@ class CallLowerer:
         # or far (a far one also wants the bank in DBR, which `_emit_self_y`
         # handles). Any other pointer self is pushed on the stack.
         self_param = func_decl.parameters[0]  # First parameter is self
-        from r65.compiler.hir.types import PointerTypeInfo
         from r65.compiler.hir.nodes import RegisterBinding
-        _self_is_far = isinstance(self_param.param_type, PointerTypeInfo) and self_param.param_type.is_far
         _is_trait = getattr(func_decl, 'is_trait_method', False)
         if isinstance(self_param.binding, RegisterBinding):
             # Register-bound `self` (newtype payload, or #[soa]/tagged-enum
@@ -374,16 +373,18 @@ class CallLowerer:
                 )
                 returns.append(result_vreg)
 
-        # Emit call with mode transition handling
-        self._emit_call_with_mode_transition(func_decl, args, returns, None)
+        # Emit the call with the callee's entry/exit modes
+        self._emit_call(func_decl, args, returns, None)
 
         return returns[0] if returns else None
 
     def _lower_type_id_call(self, call_expr: HIRFunctionCall) -> VirtualRegister:
-        """Lower type_id() call on trait pointer — loads TypeId byte at offset 0."""
+        """Lower type_id() call on trait pointer — loads TypeId byte at offset 0
+        through the pointer, near or far."""
         method_info = call_expr.method_call_info
         self_arg = method_info['self_arg']
         self_vreg = self.builder.lower_expression(self_arg)
+        self_type = self_arg.expr_type
 
         result = self.builder.current_function.vreg_allocator.alloc(
             BasicTypeInfo('u8'), 'type_id'
@@ -391,7 +392,7 @@ class CallLowerer:
         self.emit(LoadIndirect(
             dest=result,
             pointer=self_vreg,
-            is_far=False,
+            is_far=isinstance(self_type, PointerTypeInfo) and self_type.is_far,
             type_info=BasicTypeInfo('u8'),
             offset=0,
         ))
@@ -499,7 +500,7 @@ class CallLowerer:
     # ========================================================================
 
 
-    def _emit_call_with_mode_transition(
+    def _emit_call(
         self,
         func_decl: HIRFunctionDecl,
         args: List[Argument],
@@ -560,7 +561,7 @@ class CallLowerer:
             mechanism, location = self._get_argument_mechanism(param, value)
             args.append(Argument(value=value, mechanism=mechanism,
                                  location=location, param_type=param.param_type))
-        self._emit_call_with_mode_transition(func_decl, args, returns)
+        self._emit_call(func_decl, args, returns)
 
     # ========================================================================
     # Argument Lowering
