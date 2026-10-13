@@ -12,6 +12,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, PULL_OPCODES
 from r65.compiler.codegen.asm_nodes import Address
 from r65.compiler.codegen.base_selector import BaseSelector
+from r65.compiler.codegen.type_utils import is_16bit_scalar
 
 
 class ControlFlowInstructionSelector(BaseSelector):
@@ -571,13 +572,9 @@ class ControlFlowInstructionSelector(BaseSelector):
             alias_tracker = getattr(self.current_function, 'alias_tracker', None)
             if alias_tracker:
                 a_binding_type = alias_tracker.get_register_binding_type('A')
-                if a_binding_type is not None:
-                    from r65.compiler.hir.types import strip_newtype
-                    a_binding_type = strip_newtype(a_binding_type)
-                if a_binding_type and hasattr(a_binding_type, 'name'):
-                    if a_binding_type.name in ('u16', 'i16'):
-                        # Entry function with u16 @ A binding - stay in m16 mode
-                        return
+                if is_16bit_scalar(a_binding_type):
+                    # Entry function with u16 @ A binding - stay in m16 mode
+                    return
 
         # Check current tracked mode vs required exit mode
         current_mode_bits = self.parent.emitter.get_accu_mode()

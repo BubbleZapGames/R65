@@ -18,7 +18,7 @@ from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.codegen.type_utils import get_type_size, pointer_element_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES, mnemonic, addressing_mode
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction, RawAsm
@@ -735,16 +735,6 @@ class FunctionCodeGenerator:
         def _is_xy(operand):
             return _xy_register(operand) is not None
 
-        def _get_pointer_elem_size(type_info):
-            """Mirror of InstructionSelector._get_pointer_element_size."""
-            if hasattr(type_info, 'pointee_type') and type_info.pointee_type is not None:
-                from r65.compiler.hir.unified_type_utils import get_unified_type_size
-                try:
-                    return get_unified_type_size(type_info.pointee_type)
-                except Exception:
-                    return 0
-            return 0
-
         def _binary_op_preserves_a_mode(instr):
             """True iff codegen for this BinaryOp emits INX/INY/DEX/DEY.
 
@@ -760,7 +750,7 @@ class FunctionCodeGenerator:
             if not isinstance(instr.right, MIRImmediate):
                 return False
             # Apply pointer-element-size scaling (matches codegen).
-            elem_size = _get_pointer_elem_size(instr.type_info)
+            elem_size = pointer_element_size(instr.type_info)
             scaled = instr.right.value * elem_size if elem_size > 1 else instr.right.value
             if scaled != 1:
                 return False  # Will use TXA/TYA + ADC, switches to m16

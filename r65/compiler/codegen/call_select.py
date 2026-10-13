@@ -33,6 +33,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.abi import StackStateTracker
+from r65.compiler.codegen.type_utils import scalar_width
 
 
 class SpillInfo(NamedTuple):
@@ -2300,22 +2301,11 @@ class CallInstructionSelector(BaseSelector):
         callee_return_type = getattr(instr, 'callee_return_type', None)
         if callee_return_type is None:
             return [1] * len(instr.returns)
-        from r65.compiler.hir.types import MultiReturnTypeInfo, PointerTypeInfo, strip_newtype
+        from r65.compiler.hir.types import MultiReturnTypeInfo
         types = (callee_return_type.element_types
                  if isinstance(callee_return_type, MultiReturnTypeInfo)
                  else [callee_return_type])
-        sizes = []
-        for t in types:
-            # A newtype stringifies to its own name, so strip before the name
-            # test — otherwise a u8 newtype measures 2 bytes and loses the
-            # AND #$00FF zero-extend on an A->X/Y return transfer below.
-            t = strip_newtype(t)
-            if isinstance(t, PointerTypeInfo):
-                sizes.append(3 if t.is_far else 2)
-            else:
-                name = str(t)
-                sizes.append(1 if name in ('u8', 'i8', 'bool') else 2)
-        return sizes
+        return [scalar_width(t) or 2 for t in types]
 
     def _emit_pascal_return_value_collection(self, instr: Call, result_bytes: int):
         """Pull return value from stack result space (Pascal convention).

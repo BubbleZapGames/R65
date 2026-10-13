@@ -12,7 +12,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS, LOAD_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate
 from r65.compiler.codegen.base_selector import BaseSelector
-from r65.compiler.hir.types import PointerTypeInfo
+from r65.compiler.codegen.type_utils import is_far_ptr as is_far_pointer
 
 
 class MoveOperationSelector(BaseSelector):
@@ -51,7 +51,7 @@ class MoveOperationSelector(BaseSelector):
         is_u16 = self.parent._is_16bit(instr.type_info)
 
         # Check if this is a far pointer (3 bytes)
-        is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+        is_far_ptr = is_far_pointer(instr.type_info)
 
         # SPECIAL CASE: Far self D=S path — prologue PHB+PHY already captured
         # the self pointer (Y addr + DBR bank) to the stack. The MIR
@@ -298,12 +298,9 @@ class MoveOperationSelector(BaseSelector):
 
     def _move_function_pointer(self, func_ptr: FunctionPointer, dest_loc, type_info):
         """Move a function pointer address to memory."""
-        from r65.compiler.hir.types import FunctionTypeInfo
 
         func_name = func_ptr.function_name
-        is_far_ptr = False
-        if type_info and isinstance(type_info, FunctionTypeInfo):
-            is_far_ptr = type_info.is_far
+        is_far_ptr = is_far_pointer(type_info)
 
         if is_far_ptr:
             self._emit_far_function_pointer(func_name, dest_loc)
@@ -339,16 +336,13 @@ class MoveOperationSelector(BaseSelector):
     def _move_symbolic_address(self, instr: Move, dest_loc, src_operand: MIRImmediate, is_u16: bool):
         """Handle moving a symbolic address (variable or function address)."""
         from r65.compiler.hir.symbol_table import SymbolKind
-        from r65.compiler.hir.types import FunctionTypeInfo, PointerTypeInfo
 
         symbol = src_operand.symbol
 
         if symbol.kind == SymbolKind.FUNCTION:
             # Function pointer
             func_name = symbol.name
-            is_far_ptr = False
-            if instr.type_info and isinstance(instr.type_info, FunctionTypeInfo):
-                is_far_ptr = instr.type_info.is_far
+            is_far_ptr = is_far_pointer(instr.type_info)
 
             if is_far_ptr:
                 self._emit_far_function_pointer(func_name, dest_loc)
@@ -356,9 +350,7 @@ class MoveOperationSelector(BaseSelector):
                 self._emit_near_function_pointer(func_name, dest_loc)
         else:
             # Variable address - check if it's a far pointer
-            is_far_ptr = False
-            if instr.type_info and isinstance(instr.type_info, PointerTypeInfo):
-                is_far_ptr = instr.type_info.is_far
+            is_far_ptr = is_far_pointer(instr.type_info)
             offset = getattr(src_operand, 'symbol_offset', 0) or 0
             self._emit_variable_address(symbol, dest_loc, is_u16, is_far_ptr, offset)
 

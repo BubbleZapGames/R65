@@ -58,6 +58,7 @@ from r65.compiler.codegen.location_resolver import (
 )
 from r65.compiler.codegen.selector_context import SelectorContext
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
+from r65.compiler.codegen.type_utils import is_16bit_scalar, is_far_ptr, pointer_element_size
 
 
 class InstructionSelector:
@@ -1894,59 +1895,15 @@ class InstructionSelector:
 
     def _is_far_pointer(self, type_info) -> bool:
         """Check if type is a far pointer (24-bit / 3 bytes)."""
-        if hasattr(type_info, 'pointee_type'):
-            return getattr(type_info, 'is_far', False)
-        from r65.compiler.hir.types import FunctionTypeInfo
-        if isinstance(type_info, FunctionTypeInfo):
-            return type_info.is_far
-        return False
+        return is_far_ptr(type_info)
 
     def _get_pointer_element_size(self, type_info) -> int:
-        """Get the pointee element size for pointer types, or 0 for non-pointers.
-
-        Used to scale pointer arithmetic: ptr++ on *u16 should add 2, not 1.
-        """
-        if hasattr(type_info, 'pointee_type') and type_info.pointee_type is not None:
-            from r65.compiler.hir.unified_type_utils import get_unified_type_size
-            try:
-                return get_unified_type_size(type_info.pointee_type)
-            except Exception:
-                return 0
-        return 0
+        """The pointee size `ptr++` steps by, or 0 for a non-pointer."""
+        return pointer_element_size(type_info)
 
     def _is_16bit(self, type_info) -> bool:
-        """
-        Check if type is 16-bit.
-
-        Args:
-            type_info: Type information
-
-        Returns:
-            True if 16-bit type (u16, i16, near pointer, or near function pointer)
-        """
-        # Strip first: a newtype also has a `.name`, so the duck-typed check
-        # below would read `Q10` and conclude 8-bit.
-        from r65.compiler.hir.types import strip_newtype
-        type_info = strip_newtype(type_info)
-        # An enum's name says nothing about its width: it is two bytes once a
-        # variant exceeds 255.
-        from r65.compiler.hir.types import EnumTypeInfo
-        if isinstance(type_info, EnumTypeInfo):
-            return type_info.size_bytes == 2
-        if hasattr(type_info, 'name'):
-            return type_info.name in ('u16', 'i16')
-        # Near pointers are 16-bit (far pointers are 24-bit)
-        if hasattr(type_info, 'pointee_type'):
-            return not getattr(type_info, 'is_far', False)
-        # Near function pointers are 16-bit (far function pointers are 24-bit)
-        from r65.compiler.hir.types import FunctionTypeInfo
-        if isinstance(type_info, FunctionTypeInfo):
-            return not type_info.is_far
-        return False
-
-    # ========================================================================
-    # Array Initialization Operations
-    # ========================================================================
+        """Whether *type_info* moves through A as one 16-bit value."""
+        return is_16bit_scalar(type_info)
 
     def _emit_indexed_store(self, base_addr: int, index_reg: str, comment: str = None):
         """Emit a store with indexed addressing: STA base,X or STA base,Y."""

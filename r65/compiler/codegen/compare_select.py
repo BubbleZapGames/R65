@@ -12,6 +12,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.base_selector import BaseSelector
+from r65.compiler.codegen.type_utils import is_16bit_scalar
 
 
 class CompareSelector(BaseSelector):
@@ -338,18 +339,7 @@ class CompareSelector(BaseSelector):
 
     def _is_16bit_type(self, type_info) -> bool:
         """Check if the type is a 16-bit type (u16 or i16)."""
-        if type_info is None:
-            return False
-        from r65.compiler.hir import BasicTypeInfo
-        from r65.compiler.hir.types import strip_newtype
-        type_info = strip_newtype(type_info)
-        if isinstance(type_info, BasicTypeInfo):
-            return type_info.name in ('u16', 'i16')
-        # An enum is two bytes once a variant exceeds 255.
-        from r65.compiler.hir.types import EnumTypeInfo
-        if isinstance(type_info, EnumTypeInfo):
-            return type_info.size_bytes == 2
-        return False
+        return is_16bit_scalar(type_info)
 
     def _prepare_right_operand(self, right, is_16bit: bool = False):
         """

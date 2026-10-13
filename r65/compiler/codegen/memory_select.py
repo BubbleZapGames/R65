@@ -12,26 +12,14 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
+from r65.compiler.codegen.type_utils import is_far_ptr
 from r65.compiler.hir.types import PointerTypeInfo
 
 # Mode flag constants
 M_FLAG = 0x20  # Accumulator size (0=16-bit, 1=8-bit)
 
 
-def is_far_pointer_type(type_info) -> bool:
-    """True for the 3-byte pointer types: ``far *T`` and ``far fn()``.
-
-    Neither the 16-bit nor the 8-bit path can carry three bytes, and
-    ``_is_16bit`` answers False for both, so every caller that copies a
-    pointer has to ask this question explicitly or it silently moves only
-    the low byte.
-    """
-    from r65.compiler.hir.types import FunctionTypeInfo, strip_newtype
-    type_info = strip_newtype(type_info)
-    if isinstance(type_info, (PointerTypeInfo, FunctionTypeInfo)):
-        return getattr(type_info, 'is_far', False)
-    return False
-
+is_far_pointer_type = is_far_ptr
 
 class MemoryOperationSelector(BaseSelector):
     """

@@ -12,7 +12,7 @@ from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.hir.types import PointerTypeInfo
-from r65.compiler.codegen.type_utils import convert_operand_widths
+from r65.compiler.codegen.type_utils import convert_operand_widths, scalar_width
 
 
 class TypeConversionSelector(BaseSelector):
@@ -393,16 +393,8 @@ class TypeConversionSelector(BaseSelector):
         source_type = strip_newtype(instr.source_type)
         target_type = strip_newtype(instr.target_type)
 
-        # Get sizes
-        if isinstance(source_type, PointerTypeInfo):
-            source_size = 3 if source_type.is_far else 2
-        else:
-            source_size = 1 if str(source_type) in ['u8', 'i8', 'bool'] else 2
-
-        if isinstance(target_type, PointerTypeInfo):
-            target_size = 3 if target_type.is_far else 2
-        else:
-            target_size = 1 if str(target_type) in ['u8', 'i8', 'bool'] else 2
+        source_size = scalar_width(source_type) or 2
+        target_size = scalar_width(target_type) or 2
 
         # Near to far pointer: copy 2 bytes, add bank 0
         if source_size == 2 and target_size == 3:
