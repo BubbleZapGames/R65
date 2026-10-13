@@ -1098,41 +1098,10 @@ class MacroExpander:
         args: List[str],
         source_loc: Optional[SourceLocation]
     ) -> List[ast.Statement]:
-        """
-        Expand the built-in stringify! macro.
-
-        stringify!(arg1, arg2, ...) converts its arguments to a string literal.
-        The arguments are concatenated with spaces between them.
-
-        Args:
-            args: List of argument token strings
-            source_loc: Source location of invocation
-
-        Returns:
-            List containing a single statement with the string literal
-        """
-        # Join arguments with spaces
-        joined_args = ' '.join(args)
-        
-        # Create a string literal by wrapping in quotes and escaping
-        escaped_args = self._escape_string_literal(joined_args)
-        string_literal = f'"{escaped_args}"'
-        
-        # Parse as a simple expression statement
-        try:
-            wrapped = f"fn __stringify_expand__() {{ {string_literal}; }}"
-            program = parse(wrapped, "<stringify>")
-            
-            if program.items and isinstance(program.items[0], ast.FunctionDecl):
-                func = program.items[0]
-                if func.body.statements:
-                    return func.body.statements
-            return []
-        except Exception as e:
-            raise MacroError(
-                f"error expanding stringify!: {e}",
-                source_loc
-            )
+        """stringify!(a, b, ...) as a statement: its arguments, joined with
+        spaces, as a string literal."""
+        return [ast.ExprStmt(expr=self._expand_stringify_expr(args, source_loc),
+                             source_loc=source_loc)]
 
     def _escape_string_literal(self, text: str) -> str:
         """
@@ -1199,39 +1168,10 @@ class MacroExpander:
         args: List[str],
         source_loc: Optional[SourceLocation]
     ) -> List[ast.Statement]:
-        """
-        Expand the built-in symbol! macro in statement context.
-
-        symbol!(name) resolves an R65 identifier to its WLA-DX assembler label.
-
-        Args:
-            args: List of argument token strings (expects exactly one identifier)
-            source_loc: Source location of invocation
-
-        Returns:
-            List containing a single statement with the resolved string literal
-        """
-        if not args:
-            raise MacroError("symbol! requires exactly one identifier argument", source_loc)
-        name = args[0].strip()
-        resolved = self._resolve_assembler_symbol(name)
-        escaped = self._escape_string_literal(resolved)
-        string_literal = f'"{escaped}"'
-
-        try:
-            wrapped = f"fn __symbol_expand__() {{ {string_literal}; }}"
-            program = parse(wrapped, "<symbol>")
-
-            if program.items and isinstance(program.items[0], ast.FunctionDecl):
-                func = program.items[0]
-                if func.body.statements:
-                    return func.body.statements
-            return []
-        except Exception as e:
-            raise MacroError(
-                f"error expanding symbol!: {e}",
-                source_loc
-            )
+        """symbol!(name) as a statement: the identifier's WLA-DX label as a
+        string literal."""
+        return [ast.ExprStmt(expr=self._expand_symbol_expr(args, source_loc),
+                             source_loc=source_loc)]
 
     def _expand_symbol_expr(self, args: List[str], source_loc: Optional[SourceLocation]) -> ast.StringLiteral:
         """

@@ -73,6 +73,12 @@ def render_ast_type(node) -> str:
     return '<type>'
 
 
+
+def _tok(item):
+    """A Lark token's text, or *item* itself when it is already a value."""
+    return item.value if isinstance(item, LarkToken) else item
+
+
 class ASTBuilder(Transformer):
     """
     Lark Transformer that builds our AST from the parse tree.
@@ -343,7 +349,7 @@ class ASTBuilder(Transformer):
         return ast.FunctionDecl(
             attributes=attrs,
             is_far=is_far,
-            name=name.value if isinstance(name, LarkToken) else name,
+            name=_tok(name),
             params=params,
             return_type=return_type,
             body=body,
@@ -370,7 +376,7 @@ class ASTBuilder(Transformer):
         is_pointer, idx = self._take(items, idx, 'STAR')
 
         # Name
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         idx += 1
 
         # Check for binding (@ register or variable)
@@ -382,7 +388,7 @@ class ASTBuilder(Transformer):
             elif isinstance(binding_node, ast.Identifier):
                 binding = binding_node
             else:
-                binding = binding_node.value if isinstance(binding_node, LarkToken) else binding_node
+                binding = _tok(binding_node)
             idx += 1
 
         # Type is always last (this is the pointee type if is_pointer is True)
@@ -467,7 +473,7 @@ class ASTBuilder(Transformer):
         is_pointer, idx = self._take(items, idx, 'STAR')
 
         # Name
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         idx += 1
 
         # Type (optional - can be inferred for include_bytes!)
@@ -503,7 +509,7 @@ class ASTBuilder(Transformer):
         """Variable name - can be IDENT or REGISTER token."""
         items = self._filter_tokens(items, keep_types={'IDENT', 'REGISTER'})
         token = items[0]
-        return token.value if isinstance(token, LarkToken) else token
+        return _tok(token)
 
     @v_args(tree=True)
     def static_decl_safe_ptr_error(self, tree):
@@ -520,7 +526,7 @@ class ASTBuilder(Transformer):
         """Const declaration."""
         items = self._filter_tokens(tree.children)
         doc, idx = self._collect_doc_comments(items, 0)
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         const_type = items[idx + 1]
         value = items[idx + 2]
         return ast.ConstDecl(name=name, const_type=const_type, value=value,
@@ -548,7 +554,7 @@ class ASTBuilder(Transformer):
         loc = self._make_source_loc(tree.meta)
         attrs, idx = self._collect_attributes(items, idx)
         self._reject_derive_on_type(attrs, items, idx, loc)
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         inner_type = items[idx + 1]
         return ast.NewtypeDecl(
             name=name,
@@ -568,7 +574,7 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(tree.children, keep_types={'IDENT'})
         _, idx = self._collect_doc_comments(items, 0)
         _, idx = self._collect_attributes(items, idx)
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         types = [item for item in items[idx + 1:] if not isinstance(item, LarkToken)]
 
         # Give each positional field a name the author can rename.
@@ -606,7 +612,7 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
         attrs, idx = self._collect_attributes(items, idx)
         self._reject_derive_on_type(attrs, items, idx, source_loc)
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         fields = [item for item in items[idx + 1:] if isinstance(item, ast.StructField)]
         return ast.StructDecl(name=name, fields=fields, doc=doc, is_union=is_union,
                               attributes=attrs, source_loc=source_loc)
@@ -653,7 +659,7 @@ class ASTBuilder(Transformer):
         is_pointer, idx = self._take(items, idx, 'STAR')
 
         # Name
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         idx += 1
 
         # Type (this is the pointee type if is_pointer is True)
@@ -677,14 +683,14 @@ class ASTBuilder(Transformer):
         """Enum declaration."""
         items = self._filter_tokens(items)
         doc, idx = self._collect_doc_comments(items, 0)
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         variants = [item for item in items[idx + 1:] if isinstance(item, ast.EnumVariant)]
         return ast.EnumDecl(name=name, variants=variants, doc=doc)
 
     def enum_variant(self, items):
         """Enum variant."""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         value = items[1] if len(items) > 1 else None
         return ast.EnumVariant(name=name, value=value)
 
@@ -695,7 +701,7 @@ class ASTBuilder(Transformer):
         name a declared struct, and nothing at parse time knows what is declared.
         """
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         return ast.EnumVariant(name=name, value=None, payload_type=items[1])
 
     @v_args(tree=True)
@@ -711,7 +717,7 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
 
         # Struct name
-        struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        struct_name = _tok(items[idx])
         idx += 1
 
         # Collect methods, constants, and macros from remaining items
@@ -752,7 +758,7 @@ class ASTBuilder(Transformer):
         is_far = not is_near
 
         # Method name
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         idx += 1
 
         # Parameters (from impl_param_list)
@@ -850,7 +856,7 @@ class ASTBuilder(Transformer):
     def impl_const(self, items):
         """Associated constant in impl block: const NAME: type = value;"""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         const_type = items[1]
         value = items[2]
         return ast.ImplConst(name=name, const_type=const_type, value=value)
@@ -911,11 +917,11 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
 
         # Trait name (first IDENT)
-        trait_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        trait_name = _tok(items[idx])
         idx += 1
 
         # Struct name (second IDENT, after FOR which is filtered out)
-        struct_name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        struct_name = _tok(items[idx])
         idx += 1
 
         # Collect methods and constants from remaining items
@@ -945,7 +951,7 @@ class ASTBuilder(Transformer):
         doc, idx = self._collect_doc_comments(items, 0)
 
         # Trait name
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         idx += 1
 
         # Collect supertraits, methods, and constants
@@ -987,7 +993,7 @@ class ASTBuilder(Transformer):
         is_far = not is_near
 
         # Method name
-        name = items[idx].value if isinstance(items[idx], LarkToken) else items[idx]
+        name = _tok(items[idx])
         idx += 1
 
         # Parameters (from trait_param_list)
@@ -1046,14 +1052,14 @@ class ASTBuilder(Transformer):
     def trait_const(self, items):
         """Associated constant declaration in trait: const NAME: type;"""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         const_type = items[1]
         return ast.TraitConst(name=name, const_type=const_type)
 
     def type_alias(self, items):
         """Type alias."""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         aliased_type = items[1]
         return ast.TypeAlias(name=name, aliased_type=aliased_type)
 
@@ -1096,7 +1102,7 @@ class ASTBuilder(Transformer):
         return ast.FunctionDecl(
             attributes=attrs,
             is_far=is_far,
-            name=name.value if isinstance(name, LarkToken) else name,
+            name=_tok(name),
             params=params,
             return_type=return_type,
             body=None,
@@ -1125,7 +1131,7 @@ class ASTBuilder(Transformer):
             attributes=attrs,
             is_far=False,
             is_mut=is_mut,
-            name=name.value if isinstance(name, LarkToken) else name,
+            name=_tok(name),
             var_type=var_type,
             initializer=None,
             is_extern=True,
@@ -1707,7 +1713,7 @@ class ASTBuilder(Transformer):
     def pointer_pattern(self, items):
         """Pointer pattern: *IDENT or *IDENT @ binding"""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         binding = items[1] if len(items) > 1 else None
         return ('pointer', name, binding)
 
@@ -2190,14 +2196,14 @@ class ASTBuilder(Transformer):
         """Struct literal expression (e.g., Player { x: 10, y: 20 })."""
         # items: [struct_name, field_init, field_init, ...]
         items = self._filter_tokens(items)
-        struct_name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        struct_name = _tok(items[0])
         fields = [f for f in items[1:] if isinstance(f, ast.StructFieldInit)]
         return ast.StructLiteralExpr(struct_name=struct_name, fields=fields)
 
     def struct_field_init(self, items):
         """Struct field initializer (e.g., x: 10)."""
         items = self._filter_tokens(items)
-        name = items[0].value if isinstance(items[0], LarkToken) else items[0]
+        name = _tok(items[0])
         value = items[1]
         return ast.StructFieldInit(name=name, value=value)
 
@@ -2541,7 +2547,7 @@ class ASTBuilder(Transformer):
         """Field access."""
         items = self._filter_tokens(items, keep_types={'IDENT'})
         base = items[0]
-        field = items[1].value if isinstance(items[1], LarkToken) else items[1]
+        field = _tok(items[1])
         return ast.FieldAccess(base=base, field=field)
 
     @v_args(tree=True)
@@ -2671,7 +2677,7 @@ class ASTBuilder(Transformer):
         """Lvalue identifier."""
         items = self._filter_tokens(items)
         token = items[0]
-        identifier = token.value if isinstance(token, LarkToken) else token
+        identifier = _tok(token)
         return ast.Identifier(
             name=identifier,
             source_loc=self._source_loc_from_token(token),
@@ -2680,7 +2686,7 @@ class ASTBuilder(Transformer):
     def lvalue_register(self, items):
         """Lvalue register."""
         items = self._filter_tokens(items, keep_types={'REGISTER'})
-        return ast.Register(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
+        return ast.Register(name=_tok(items[0]))
 
     def lvalue_array(self, items):
         """Lvalue array index."""
@@ -2690,7 +2696,7 @@ class ASTBuilder(Transformer):
     def lvalue_field(self, items):
         """Lvalue field access."""
         items = self._filter_tokens(items, keep_types={'IDENT'})
-        return ast.FieldAccess(base=items[0], field=items[1].value if isinstance(items[1], LarkToken) else items[1])
+        return ast.FieldAccess(base=items[0], field=_tok(items[1]))
 
     @v_args(tree=True)
     def lvalue_newtype_field_error(self, tree):
@@ -2729,13 +2735,13 @@ class ASTBuilder(Transformer):
         """Tuple assignment target - identifier."""
         items = self._filter_tokens(items)
         token = items[0]
-        identifier = token.value if isinstance(token, LarkToken) else token
+        identifier = _tok(token)
         return ast.Identifier(name=identifier)
 
     def tuple_target_register(self, items):
         """Tuple assignment target - register."""
         items = self._filter_tokens(items, keep_types={'REGISTER'})
-        return ast.Register(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
+        return ast.Register(name=_tok(items[0]))
 
     # ========================================================================
     # Types
@@ -2744,7 +2750,7 @@ class ASTBuilder(Transformer):
     def type_basic(self, items):
         """Basic type (built-in types or user-defined type names)."""
         items = self._filter_tokens(items, keep_types={'TYPE_NAME', 'IDENT'})
-        return ast.BasicType(name=items[0].value if isinstance(items[0], LarkToken) else items[0])
+        return ast.BasicType(name=_tok(items[0]))
 
     def type_array(self, items):
         """Array type."""
