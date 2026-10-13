@@ -79,3 +79,84 @@ class TestLocalAggregatesE2E:
             0x7E0021: 105,  # 'i'
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestRuntimeArrayLiteralsE2E:
+    """A local literal's run-time elements are stored into their slots."""
+
+    def test_runtime_and_constant_elements(self, e2e):
+        """`[x, 1, 2]` (constants as immediates) and a literal whose constant
+        part is block-copied from ROM before its run-time elements land."""
+        result = e2e.run('''
+            #[zeropage(0x10)] static mut IN: u8;
+            #[zeropage(0x20)] static mut R: [u8; 6];
+
+            #[entry]
+            fn main() {
+                IN = 9;
+                let x: u8 = IN;
+                let a: [u8; 3] = [x, 1, 2];
+                let b: [u8; 8] = [1, 2, 3, x, 5, 6, 7, x];
+                R[0] = a[0]; R[1] = a[1]; R[2] = a[2];
+                R[3] = b[2]; R[4] = b[3]; R[5] = b[7];
+            }
+        ''', ExpectedState(memory={0x7E0020: [9, 1, 2, 3, 9, 9]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_runtime_fill(self, e2e):
+        """`[v; N]` stores v N times when short and replicates element 0
+        when long, evaluating v once either way."""
+        result = e2e.run('''
+            #[zeropage(0x10)] static mut COUNT: u8;
+            #[zeropage(0x20)] static mut R: [u8; 5];
+
+            fn next() -> u8 { COUNT = COUNT + 1; return COUNT + 6; }
+
+            #[entry]
+            fn main() {
+                COUNT = 0;
+                let a: [u8; 4] = [next(); 4];
+                let b: [u8; 20] = [next(); 20];
+                R[0] = a[0]; R[1] = a[3]; R[2] = b[0]; R[3] = b[19];
+                R[4] = COUNT;
+            }
+        ''', ExpectedState(memory={0x7E0020: [7, 7, 8, 8, 2]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_runtime_u16_elements(self, e2e):
+        """u16 run-time elements, in a literal and in a long fill."""
+        result = e2e.run('''
+            #[zeropage(0x10)] static mut IN: u16;
+            #[zeropage(0x20)] static mut R: [u16; 5];
+
+            #[entry]
+            fn main() {
+                IN = 0xBEEF;
+                let w: u16 = IN;
+                let a: [u16; 3] = [w, 0x1234, w];
+                let b: [u16; 12] = [w; 12];
+                R[0] = a[0]; R[1] = a[1]; R[2] = a[2];
+                R[3] = b[1]; R[4] = b[11];
+            }
+        ''', ExpectedState(memory={0x7E0020: [0xEF, 0xBE, 0x34, 0x12, 0xEF, 0xBE,
+                                              0xEF, 0xBE, 0xEF, 0xBE]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_runtime_struct_literal_fields(self, e2e):
+        """A promoted local struct's run-time field, and one inside its
+        nested array field."""
+        result = e2e.run('''
+            struct Rec { a: u8, b: u16, arr: [u8; 3] }
+
+            #[zeropage(0x10)] static mut IN: u8;
+            #[zeropage(0x20)] static mut R: [u8; 4];
+
+            #[entry]
+            fn main() {
+                IN = 5;
+                let x: u8 = IN;
+                let r = Rec { a: x, b: 300, arr: [4, x, 6] };
+                R[0] = r.a; R[1] = r.b as u8; R[2] = r.arr[1]; R[3] = r.arr[2];
+            }
+        ''', ExpectedState(memory={0x7E0020: [5, 44, 5, 6]}))
+        assert result.success, f"Failures: {result.failures}"

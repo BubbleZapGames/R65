@@ -444,14 +444,29 @@ class TestStructDecompositionWithScalarFields:
         assert not func.has_promoted_locals
 
 
-def test_runtime_array_literal_element_is_an_error():
-    """A runtime element of a promoted local's literal is rejected, not zeroed."""
+def test_runtime_array_literal_element_is_stored():
+    """A runtime element of a promoted local's literal is stored into its
+    slot after the constant part, not zeroed or rejected."""
+    instrs = get_mir_instructions(build_mir('''
+        #[lowram] static mut IN: u8;
+        fn test_func() {
+            let x: u8 = IN;
+            let a: [u8; 3] = [x, 1, 2];
+        }
+    '''), 'test_func')
+    stores = [i for i in instrs if isinstance(i, Store)]
+    assert [(s.dest.offset, type(s.source).__name__) for s in stores[-3:]] == [
+        (1, 'Immediate'), (2, 'Immediate'), (0, 'VirtualRegister')]
+
+
+def test_runtime_aggregate_element_is_an_error():
+    """A runtime aggregate element (another array) has no single value to store."""
     from r65.compiler.errors import MIRLoweringError
-    with pytest.raises(MIRLoweringError, match="element of local array `a`"):
+    with pytest.raises(MIRLoweringError, match="element of local array `b` is a run-time aggregate"):
         build_mir('''
             #[lowram] static mut IN: u8;
             fn test_func() {
-                let x: u8 = IN;
-                let a: [u8; 3] = [x, 1, 2];
+                let a: [u8; 2] = [IN, 1];
+                let b: [[u8; 2]; 2] = [a, a];
             }
         ''')

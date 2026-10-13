@@ -364,6 +364,12 @@ class AggregateCopy(MIRInstruction):
     Emitted for Clone: `dst.clone_from(&src)` and `let c = a.clone()` on auto/array
     aggregates. Both ends are static addresses (clone operands are force-promoted).
     count <= AGGREGATE_COPY_UNROLL_MAX unrolls to A-only LDA/STA; larger uses MVN.
+
+    The MVN form copies one byte at a time, ascending, so a copy whose dest
+    is k bytes above an overlapping src repeats its first k bytes through the
+    region: a run-time `[v; N]` local is element 0 replicated this way
+    (MIRBuilder._emit_runtime_fill). The unrolled form moves words and must
+    not overlap.
     """
     dest: MemoryLocation   # destination address
     src: MemoryLocation    # source address

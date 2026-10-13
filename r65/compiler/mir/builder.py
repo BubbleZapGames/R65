@@ -23,7 +23,7 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
     Load, Store, Move, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
-    MemoryFill, BlockCopy, AggregateCopy, ROMDataRef,
+    MemoryFill, BlockCopy, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX, ROMDataRef,
     InlineAsm, TERMINATOR_TYPES,
 )
 
@@ -39,7 +39,7 @@ from r65.compiler.mir.lowerers.match import MatchLowerer
 from r65.compiler.mir.lowerers.call import CallLowerer
 from r65.compiler.mir.lowerers.assignment import AssignmentLowerer
 from r65.compiler.mir.lowerers.condition import ConditionLowerer
-from r65.compiler.mir.lowerers.static_init import StaticInitLowerer
+from r65.compiler.mir.lowerers.static_init import StaticInitLowerer, RuntimeSlot
 from r65.compiler.mir.lowerers.multiply import compute_scaled_index
 from r65.compiler.typeck.processor_mode import ProcessorMode, XModeState
 from r65.compiler.errors import MIRLoweringError, InternalCompilerError
@@ -799,12 +799,25 @@ class MIRBuilder:
         if stmt.initializer is not None:
             self._emit_aggregate_init(stmt, mem_loc, unique_name)
 
+    # A run-time fill `[v; N]` of up to this many elements is N stores of v;
+    # a longer one initialises element 0 and replicates it with one MVN
+    # (~25 cycles + 7 per byte and ~17 bytes of code, against ~4-5 cycles and
+    # 3 bytes per store).
+    RUNTIME_FILL_UNROLL_MAX = 8
+    # A literal mixing run-time and constant elements stores up to this many
+    # constant bytes as immediates (~6 cycles and 5 bytes each) instead of
+    # block-copying its constant image from ROM (~25 cycles + 7 per byte).
+    INLINE_CONST_STORE_MAX = 4
+
     def _emit_aggregate_init(self, stmt: HIRLetStmt, mem_loc: MemoryLocation, label_prefix: str):
         """
         Emit inline initialization code for a promoted aggregate local.
 
         Reuses patterns from StaticInitLowerer but emits directly into
-        the current function's block (not __init_start).
+        the current function's block (not __init_start). The initializer runs
+        as code, so its elements may be run-time values: the constant bytes
+        are laid out as for a static, then each run-time element is stored
+        into its slot (_emit_inline_image).
         """
         initializer = stmt.initializer
 
@@ -817,8 +830,12 @@ class MIRBuilder:
         if isinstance(initializer, HIRArrayFillExpr):
             fill_value = self.static_init_lowerer._extract_constant_value(initializer.fill_value)
             if fill_value is None:
+                if self._emit_runtime_fill(stmt, mem_loc, initializer, label_prefix):
+                    return
                 # An aggregate fill value (`[[7; 2]; 3]`) is no single value
-                # to store: copy it as the literal it expands to.
+                # to store, nor is a short run-time one: initialise it as the
+                # literal it expands to (whose run-time elements all share
+                # the fill's one expression, evaluated once).
                 initializer = HIRArrayLiteralExpr(
                     elements=[initializer.fill_value] * initializer.count,
                     source_loc=initializer.source_loc,
@@ -860,11 +877,39 @@ class MIRBuilder:
                 type_info=stmt.var_type
             ))
 
+    def _emit_runtime_fill(self, stmt, mem_loc, fill_expr, label_prefix) -> bool:
+        """Lower `[v; N]` with run-time parts in v and N over
+        RUNTIME_FILL_UNROLL_MAX: initialise element 0, then copy it upward
+        with an overlapping AggregateCopy one element above its source,
+        whose ascending MVN replicates the element through the array.
+        Returns False, emitting nothing, for any other fill."""
+        from r65.compiler.hir.types import ArrayTypeInfo
+        if fill_expr.count <= self.RUNTIME_FILL_UNROLL_MAX:
+            return False
+        element_type = stmt.var_type.element_type if isinstance(stmt.var_type, ArrayTypeInfo) else None
+        element_size = self._get_type_size(element_type) if element_type is not None else 1
+        element_bytes = self.static_init_lowerer._extract_initializer_bytes(
+            fill_expr.fill_value, element_size, f"element of local array `{stmt.name}`",
+            allow_runtime=True)
+        if not any(isinstance(b, RuntimeSlot) for b in element_bytes):
+            return False
+        self._emit_inline_image(mem_loc, element_bytes, element_size, label_prefix)
+        count = (fill_expr.count - 1) * element_size
+        # Only the MVN form copies byte by byte; the unrolled one moves words.
+        if count <= AGGREGATE_COPY_UNROLL_MAX:
+            raise InternalCompilerError(
+                f"fill replication of {count} bytes would take the unrolled copy")
+        self.emit(AggregateCopy(
+            dest=self._create_offset_memloc(mem_loc, element_size, mem_loc.symbol),
+            src=mem_loc, count=count))
+        return True
+
     def _emit_inline_array_literal(self, stmt, mem_loc, literal_expr, label_prefix):
-        """Emit ROMDataRef + BlockCopy for an inline array literal initializer."""
+        """Initialise a promoted local from an array literal."""
         data_bytes, element_size = self.static_init_lowerer.array_literal_bytes(
-            literal_expr, stmt.var_type, f"element of local array `{stmt.name}`")
-        self._emit_inline_rom_copy(mem_loc, data_bytes, element_size, label_prefix)
+            literal_expr, stmt.var_type, f"element of local array `{stmt.name}`",
+            allow_runtime=True)
+        self._emit_inline_image(mem_loc, data_bytes, element_size, label_prefix)
 
     def _emit_inline_string_literal(self, stmt, mem_loc, string_literal, label_prefix):
         """Emit ROMDataRef + BlockCopy for an inline string literal initializer."""
@@ -872,9 +917,58 @@ class MIRBuilder:
         self._emit_inline_rom_copy(mem_loc, data_bytes, 1, label_prefix)
 
     def _emit_inline_struct_literal(self, stmt, mem_loc, struct_expr, label_prefix):
-        """Emit ROMDataRef + BlockCopy for an inline struct literal initializer."""
-        data_bytes = self.static_init_lowerer._extract_struct_literal_bytes(struct_expr)
-        self._emit_inline_rom_copy(mem_loc, data_bytes, 1, label_prefix)
+        """Initialise a promoted local from a struct literal."""
+        data_bytes = self.static_init_lowerer._extract_struct_literal_bytes(
+            struct_expr, allow_runtime=True)
+        self._emit_inline_image(mem_loc, data_bytes, 1, label_prefix)
+
+    def _emit_inline_image(self, mem_loc, data_bytes, element_size, label_prefix):
+        """Initialise a promoted local from its literal's bytes.
+
+        All-constant bytes are block-copied from ROM. Otherwise the constant
+        bytes are stored first — as immediates when there are at most
+        INLINE_CONST_STORE_MAX, else as a ROM copy with the run-time slots
+        zeroed — and then each RuntimeSlot's expression is evaluated (once per
+        distinct expression, in order) and stored at its offset.
+        """
+        from r65.compiler.hir.types import BasicTypeInfo
+        slots = {}  # RuntimeSlot -> offset of its first byte, in order
+        for offset, byte in enumerate(data_bytes):
+            if isinstance(byte, RuntimeSlot):
+                slots.setdefault(byte, offset)
+        if not slots:
+            self._emit_inline_rom_copy(mem_loc, data_bytes, element_size, label_prefix)
+            return
+
+        constant = [(offset, byte) for offset, byte in enumerate(data_bytes)
+                    if not isinstance(byte, RuntimeSlot)]
+        if (len(constant) <= self.INLINE_CONST_STORE_MAX
+                and all(isinstance(byte, int) for _, byte in constant)):
+            for offset, byte in constant:
+                self.emit(Store(source=Immediate(byte),
+                                dest=self._create_offset_memloc(mem_loc, offset, mem_loc.symbol),
+                                type_info=BasicTypeInfo('u8')))
+        else:
+            image = [0 if isinstance(byte, RuntimeSlot) else byte for byte in data_bytes]
+            self._emit_inline_rom_copy(mem_loc, image, element_size, label_prefix)
+
+        values = {}  # id(expr) -> its lowered value
+        for slot, offset in slots.items():
+            value_type = getattr(slot.expr, 'expr_type', None)
+            source_loc = getattr(slot.expr, 'source_loc', None) or self._current_source_loc
+            if value_type is None or TypeUtils.is_aggregate_type(value_type):
+                raise MIRLoweringError(
+                    f"{slot.what} is a run-time aggregate; write a literal, or "
+                    f"copy it in afterwards with `clone_from`", source_loc=source_loc)
+            if self._get_type_size(value_type) != slot.size:
+                raise InternalCompilerError(
+                    f"{slot.what} is a {self._get_type_size(value_type)}-byte value "
+                    f"in a {slot.size}-byte slot", source_loc)
+            if id(slot.expr) not in values:
+                values[id(slot.expr)] = self.lower_expression(slot.expr)
+            self.emit(Store(source=values[id(slot.expr)],
+                            dest=self._create_offset_memloc(mem_loc, offset, mem_loc.symbol),
+                            type_info=value_type))
 
     def _emit_inline_rom_copy(self, mem_loc, data_bytes, element_size, label_prefix):
         """Copy *data_bytes* into a promoted local from the function's own ROM

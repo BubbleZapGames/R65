@@ -423,6 +423,10 @@ inferred element type, and there is then nothing to check it against:
 let e = [x_i8, y_u8];             // element type inferred as i8 from element 1
 ```
 
+A local's literal may hold run-time elements (`[x, 1, 2]`, `[x; 4]`); a
+static's must be compile-time constants (see
+[Local Aggregate Initializers](code-generation.md#local-aggregate-initializers)).
+
 ### Implicit Integer Promotion in Expressions
 
 When binary operations have mixed-size integer operands, the compiler automatically inserts a widening cast:

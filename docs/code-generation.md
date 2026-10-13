@@ -684,6 +684,33 @@ main:
 - **Explicit over implicit**: Only variables with `= value` are initialized
 - **Automatic integration**: Programmer doesn't need to remember to call init
 
+### Local Aggregate Initializers
+
+A local array, or a struct too large to decompose into registers, is promoted
+to a static slot and initialised by code at its `let`, every time it runs. A
+static's initializer must be a compile-time constant (or the address of an
+immutable static); a local's elements and fields may also be run-time values:
+
+```rust
+let a: [u8; 3] = [x, 1, 2];
+let b: [u16; 12] = [w; 12];
+let r = Rec { a: x, b: 300, arr: [4, x, 6] };
+```
+
+| Initializer | Code |
+|-------------|------|
+| All constant | ROM table + `MVN` block copy (`[0; N]`-style scalar fills: a fill loop) |
+| Constant part ≤ 4 bytes, plus run-time elements | One immediate store per constant byte, then one store per run-time element |
+| Larger constant part, plus run-time elements | ROM table (run-time slots zeroed) + `MVN`, then one store per run-time element |
+| Run-time `[v; N]`, N ≤ 8 | N stores of v |
+| Run-time `[v; N]`, N > 8 | Element 0 initialised, then an overlapping `MVN` one element above it replicates it (~25 cycles + 7 per byte) |
+
+Each distinct run-time expression is evaluated once, after the constant part,
+in source order — so `[f(); 4]` calls `f` once. A run-time element that is
+itself an aggregate (`[a, a]` with `a` an array) is an error: write a literal,
+or copy it in afterwards with `clone_from`. The thresholds are
+`MIRBuilder.INLINE_CONST_STORE_MAX` and `MIRBuilder.RUNTIME_FILL_UNROLL_MAX`.
+
 ---
 
 ## Key Components Summary

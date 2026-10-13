@@ -3,6 +3,7 @@
 Static init lowerer: generates __init_start() for static variable initialization.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, List
 
 from r65.compiler.hir import (
@@ -31,6 +32,21 @@ from r65.compiler.typeck.type_utils import TypeUtils
 if TYPE_CHECKING:
     from r65.compiler.mir.builder import MIRBuilder
     from r65.compiler.mir.context import LoweringContext
+
+
+@dataclass(eq=False)
+class RuntimeSlot:
+    """A run-time element of a local aggregate literal (`[x, 1, 2]`).
+
+    Holds every byte position of its slot in the initializer's byte list, so
+    the slot's offset is where it first appears; the constant bytes around it
+    are laid out as usual and the builder stores *expr* there afterwards.
+    One HIR expression shared by several slots (`[x; 4]` expands to the same
+    node four times) is evaluated once.
+    """
+    expr: HIRExpression
+    size: int
+    what: str  # the element, for errors ("element of local array `a`")
 
 
 class StaticInitLowerer:
@@ -247,7 +263,7 @@ class StaticInitLowerer:
         ))
 
     def _extract_symbol_address_bytes(
-        self, expr: HIRExpression, size: int
+        self, expr: HIRExpression, size: int, allow_runtime: bool = False
     ) -> Optional[List[SymbolByte]]:
         """
         Lower `&SOME_STATIC` (with any surrounding casts) into link-time
@@ -256,7 +272,8 @@ class StaticInitLowerer:
         Returns None if `expr` is not an address-of a ROM static, so callers
         can fall through to their own error reporting. Only immutable statics
         are supported: their data label is known to the assembler, whereas a
-        RAM static's address is assigned after MIR lowering.
+        RAM static's address is assigned after MIR lowering — so with
+        *allow_runtime* a mutable static's address is left to run-time code.
         """
         # Peel casts: `&FOO as far *u8` is the idiomatic spelling.
         inner = expr
@@ -277,6 +294,8 @@ class StaticInitLowerer:
 
         # Mutable statics live in RAM; their address is not a link-time label.
         if symbol.is_mutable:
+            if allow_runtime:
+                return None
             raise MIRLoweringError(
                 f"cannot take the address of mutable static `{target.name}` in a "
                 f"static initializer (only immutable statics have a link-time address)",
@@ -295,7 +314,8 @@ class StaticInitLowerer:
         return [SymbolByte(label, part) for part in parts[:size]]
 
     def _extract_initializer_bytes(
-        self, expr: HIRExpression, size: int, what: str
+        self, expr: HIRExpression, size: int, what: str,
+        allow_runtime: bool = False
     ) -> List:
         """
         Lower one static-initializer element to `size` little-endian bytes.
@@ -304,9 +324,11 @@ class StaticInitLowerer:
         expressions, and the aggregates built from them at any depth: a struct
         literal, an array literal or fill, a string literal for a byte array.
         Anything else is a hard error — silently substituting zero here
-        produces a ROM that links cleanly and misbehaves at runtime.
+        produces a ROM that links cleanly and misbehaves at runtime — unless
+        *allow_runtime* (a local's initializer, which runs as code): then the
+        element's bytes are one RuntimeSlot for the builder to store.
         """
-        aggregate = self._extract_aggregate_bytes(expr, size, what)
+        aggregate = self._extract_aggregate_bytes(expr, size, what, allow_runtime)
         if aggregate is not None:
             return aggregate
 
@@ -314,9 +336,12 @@ class StaticInitLowerer:
         if value is not None:
             return [(value >> (i * 8)) & 0xFF for i in range(size)]
 
-        symbol_bytes = self._extract_symbol_address_bytes(expr, size)
+        symbol_bytes = self._extract_symbol_address_bytes(expr, size, allow_runtime)
         if symbol_bytes is not None:
             return symbol_bytes
+
+        if allow_runtime:
+            return [RuntimeSlot(expr, size, what)] * size
 
         raise MIRLoweringError(
             f"{what} must be a compile-time constant or the address of an "
@@ -325,7 +350,8 @@ class StaticInitLowerer:
         )
 
     def _extract_aggregate_bytes(
-        self, expr: HIRExpression, size: int, what: str
+        self, expr: HIRExpression, size: int, what: str,
+        allow_runtime: bool = False
     ) -> Optional[List]:
         """The `size` bytes of an aggregate initializer, or None if *expr* is
         not one. A struct literal or string shorter than its slot (a union, a
@@ -333,7 +359,7 @@ class StaticInitLowerer:
         array whose elements do not divide it, is an error rather than a
         shifted table."""
         if isinstance(expr, HIRStructLiteralExpr):
-            data = self._extract_struct_literal_bytes(expr)
+            data = self._extract_struct_literal_bytes(expr, allow_runtime)
         elif isinstance(expr, HIRStringLiteral):
             data = list(expr.processed_bytes)
         elif isinstance(expr, (HIRArrayLiteralExpr, HIRArrayFillExpr)):
@@ -357,7 +383,8 @@ class StaticInitLowerer:
                 )
             data = []
             for elem in elements:
-                data.extend(self._extract_initializer_bytes(elem, element_size, what))
+                data.extend(self._extract_initializer_bytes(
+                    elem, element_size, what, allow_runtime))
         else:
             return None
         if len(data) > size:
@@ -400,9 +427,11 @@ class StaticInitLowerer:
         self._emit_rom_init(static_decl, mem_loc, data_bytes, element_size, skip_copy)
 
     def array_literal_bytes(self, literal_expr: HIRArrayLiteralExpr, array_type,
-                            what: str, stride: Optional[int] = None):
+                            what: str, stride: Optional[int] = None,
+                            allow_runtime: bool = False):
         """The ROM bytes of an array literal of type *array_type*, and its
-        element size. Each element is padded to *stride* when that is given."""
+        element size. Each element is padded to *stride* when that is given.
+        With *allow_runtime*, run-time elements are RuntimeSlots."""
         from r65.compiler.hir.types import ArrayTypeInfo
         if isinstance(array_type, ArrayTypeInfo):
             element_size = self.builder._get_type_size(array_type.element_type)
@@ -411,7 +440,8 @@ class StaticInitLowerer:
         padding = [0] * ((stride or element_size) - element_size)
         data_bytes = []
         for elem in literal_expr.elements:
-            data_bytes.extend(self._extract_initializer_bytes(elem, element_size, what))
+            data_bytes.extend(self._extract_initializer_bytes(
+                elem, element_size, what, allow_runtime))
             data_bytes.extend(padding)
         return data_bytes, element_size
 
@@ -477,9 +507,11 @@ class StaticInitLowerer:
             source_loc=self.builder._current_source_loc
         )
 
-    def _extract_struct_literal_bytes(self, struct_expr: HIRStructLiteralExpr) -> List[int]:
+    def _extract_struct_literal_bytes(self, struct_expr: HIRStructLiteralExpr,
+                                      allow_runtime: bool = False) -> List:
         """
-        Extract constant bytes from a struct literal expression.
+        Extract constant bytes from a struct literal expression (with
+        *allow_runtime*, run-time fields are RuntimeSlots).
 
         For structs implementing traits, the __type_id field at offset 0 is
         auto-initialized with the struct's TypeId value from the symbol table.
@@ -507,7 +539,8 @@ class StaticInitLowerer:
             offset, field_size = field_info[field_init.name]
             field_bytes = self._extract_initializer_bytes(
                 field_init.value, field_size,
-                f"initializer for field `{struct_expr.struct_name}.{field_init.name}`"
+                f"initializer for field `{struct_expr.struct_name}.{field_init.name}`",
+                allow_runtime
             )
 
             # Store as little-endian bytes at the field's offset
