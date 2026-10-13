@@ -52,37 +52,23 @@ fn invalid(idx @ X: u8) { }  // Error: X/Y registers are always 16-bit
 
 ## Code Generation
 
-### Prologue
+### Entry and Exit Widths
 
-For functions with m16 entry mode (u16 @ A parameter):
+Each function has an entry width (m16 if it has a `u16 @ A` parameter,
+otherwise m8) and an exit width (m16 if it returns a u16 in A). The
+function's `.ACCU` anchor declares its entry width, and every caller
+switches to it before the call:
+
 ```asm
 function_name:
-    .ACCU 16          ; Tell assembler A is 16-bit
-    .INDEX 16         ; Tell assembler X/Y are 16-bit
-    REP #$20          ; Set 16-bit accumulator mode
+    .ACCU 16          ; entered in m16: the caller already did REP #$20
+    .INDEX 16
     ; ... function body ...
-```
-
-For functions with m8 entry mode (default):
-```asm
-function_name:
-    .ACCU 8           ; Tell assembler A is 8-bit
-    .INDEX 16         ; Tell assembler X/Y are 16-bit
-    ; ... function body (no mode switch needed) ...
-```
-
-### Epilogue
-
-For m16 functions, restore m8 before return:
-```asm
-    ; ... function body ...
-    SEP #$20          ; Restore 8-bit accumulator mode
-    RTS/RTL
+    RTS/RTL           ; returns in its exit width
 ```
 
 ### Cross-Mode Calls
 
-When calling a function with different entry mode:
 ```rust
 fn caller() {
     // caller is m8 (default)
@@ -94,7 +80,10 @@ fn callee_m16(value @ A: u16) {
 }
 ```
 
-The callee's prologue handles the mode switch (REP #$20), and epilogue restores (SEP #$20).
+The caller emits `REP #$20` before loading a `u16 @ A` argument and calling,
+and switches back to the width it needs after the call (`SEP #$20` after a
+u16 return). Interrupt handlers and the reset entry have no known entry
+width; they set their own (see [interrupt-mode-transition.md](interrupt-mode-transition.md)).
 
 ---
 
@@ -186,7 +175,7 @@ fn vblank_handler() {
 }
 ```
 
-The interrupt prologue saves STATUS via PHP, and RTI restores it. The handler body executes in the default mode (m8, x16).
+The CPU pushes STATUS when the interrupt fires and RTI restores it, so the prologue needs no PHP. The handler body executes in the default mode (m8, x16).
 
 ---
 

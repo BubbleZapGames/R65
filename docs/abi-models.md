@@ -126,8 +126,7 @@ PHA
 LDA #10        ; First parameter
 PHA
 JSR add
-PLX            ; Caller cleans up 1st param byte (preserves A return)
-PLX            ; Caller cleans up 2nd param byte
+PLX            ; Caller pops both param bytes (x16 PLX; preserves A return)
 ```
 
 **Callee**:
@@ -282,7 +281,7 @@ fn divide(dividend @ A: u8, divisor @ X: u16) -> u8, u16 {
 let q, r = divide(100, 7);
 ```
 
-**Convention**: The return type lists the value types (`-> u8, u16`); the compiler assigns registers from those types and the mode. First return in A, second in X (or B in m8), third in Y. No parentheses in the `return` statement.
+**Convention**: The return type lists the value types (`-> u8, u16`); the compiler assigns registers from those types and the mode. First return in A; the second in B when it is 8-bit in m8, otherwise X; later values take the next of X, Y (so `-> u8, u8, u16` returns its third value in X). No parentheses in the `return` statement.
 
 ### B Register Returns (m8 Only)
 
@@ -738,15 +737,15 @@ The Default ABI uses PHA-based argument passing with caller PLX cleanup. This el
 
 **Parameter passing**: Register and variable-bound parameters work as declared. Stack parameters are pushed via PHA before each call (right-to-left) and cleaned up by the caller via PLX after the call returns.
 
-**Stack frame**: Space for locals and preserved registers, but no outgoing argument area:
+**Stack frame**: Space for locals and preserved registers, but no outgoing argument area. The frame is allocated first, so the preserved registers sit nearest S:
 ```
+[preserved regs]   <- PHX, PHY, etc. (pushed after the frame)
 [locals]
-[preserved regs]   <- PHX, PHY, etc.
 [return address]   <- 2 bytes (JSR) or 3 bytes (JSL)
 [caller's frame]
 ```
 
-Frame allocation uses `TSC / SEC / SBC #size / TCS` for frames larger than 4 bytes, or one `PHB` per byte for small frames. Deallocation mirrors this — `PLA` per byte for small frames, `TSC / CLC / ADC / TCS` for large ones.
+Frames up to 8 bytes are allocated with `PHX`/`PHY` pushes (2 bytes each, `PHB` for an odd byte); larger frames and interrupt handlers use `TSC / SEC / SBC #size / TCS`. Deallocation is `PLA` per byte up to 4 bytes, `TSC / CLC / ADC / TCS` above that.
 
 **Return values**: Hardware registers: A (first), B (second, m8 only), X, Y. Callee loads values into registers before returning.
 
@@ -768,12 +767,12 @@ FixedStack eliminates stack-passed parameters entirely. All parameters must fit 
 
 **Stack frame**: Without stack parameters or an outgoing area, the frame is minimal:
 ```
-[locals]
 [preserved regs]
+[locals]
 [return address]
 ```
 
-Frame allocation always uses `PHB` per byte (never `TSC/SBC/TCS`). Deallocation always uses `PLA` per byte. This keeps the stack pointer movement predictable and bounded.
+Frame allocation uses `PHB` per byte, except in interrupt handlers, which use `TSC/SBC/TCS`. Deallocation always uses `PLA` per byte. This keeps the stack pointer movement predictable and bounded.
 
 **Return values**: Identical to Default — hardware registers A, B, X, Y.
 
@@ -858,7 +857,7 @@ After return, SP points at the result space. The caller pulls it with `PLA`.
 | Parameter cleanup | Caller (PLX) | None | Callee |
 | Return mechanism | Registers (A,B,X,Y) | Registers (A,B,X,Y) | Stack result space |
 | Recursion | Yes | No | Yes |
-| Frame alloc (small) | PHB per byte | PHB per byte | PHB per byte |
+| Frame alloc (small) | PHX/PHY (≤ 8 bytes) | PHB per byte | PHB per byte (≤ 4 bytes) |
 | Frame alloc (large) | TSC/SBC/TCS | PHB per byte | TSC/SBC/TCS |
 | Frame dealloc (small) | PLA per byte | PLA per byte | PLA per byte |
 | Frame dealloc (large) | TSC/ADC/TCS | PLA per byte | TSC/ADC/TCS |
@@ -880,11 +879,11 @@ After return, SP points at the result space. The caller pulls it with `PLA`.
     +---------------------------+
     | Return Address            |  <- 2 bytes (JSR) or 3 bytes (JSL)
     +---------------------------+
-    | Preserved Registers       |  <- PHX, PHY, etc. from #[preserves]
+    | Local 1                   |  <- frame, allocated first
     +---------------------------+
-    | Local 1                   |
+    | Local 2                   |
     +---------------------------+
-    | Local 2                   |  <- SP
+    | Preserved Registers       |  <- PHX, PHY, etc. from #[preserves]; SP
     +---------------------------+
                   (low address, growing down)
 ```

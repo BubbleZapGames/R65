@@ -21,7 +21,7 @@ The actual register allocation pipeline is more sophisticated than a simple scra
 2. **Slot Allocation**: `slot_allocator.py` determines physical locations for each VReg:
    - **HW-coalesceable VRegs**: Values that can stay in their hardware register (A, X, Y, B) without spilling — detected by analyzing whether the HW register is clobbered between definition and last use
    - **Stack slots**: Non-coalesceable values are allocated to stack positions
-   - **Scratch registers**: `#[zeropage(addr, register)]` locations are available as call-graph-aware scratch space
+   - **Scratch registers**: `#[zeropage(addr, register)]` locations hold values whose live range contains no call (scratch is caller-save)
 3. **Register Allocation**: `register_alloc.py` maps VRegs to physical locations (HW registers or stack offsets)
 4. **Code Generation**: Instruction selectors emit loads/stores based on physical locations
 
@@ -319,29 +319,14 @@ fn example() {
 
 ### Scratch Register Allocation Algorithm
 
-**Simple first-fit algorithm**:
-
-```python
-class ScratchAllocator:
-    def __init__(self, scratch_pool):
-        self.pool = scratch_pool  # List of available scratch registers
-        self.allocated = {}       # Map: variable -> scratch register
-
-    def allocate(self, variable, size):
-        # Find first available scratch register of appropriate size
-        for scratch in self.pool:
-            if scratch.size >= size and scratch not in self.allocated.values():
-                self.allocated[variable] = scratch
-                return scratch
-
-        # No scratch available - fallback to stack
-        return None
-
-    def release(self, variable):
-        # Release at end of variable's lifetime
-        if variable in self.allocated:
-            del self.allocated[variable]
-```
+**First-fit, one function at a time** (`RegisterAllocator._try_scratch`,
+`codegen/register_alloc.py`): a vreg that is not live across any call takes
+the first free scratch register at least its size. A scratch, once taken,
+stays taken for the rest of the function — there is no release at the end
+of a live range — so a function can hold at most as many scratch values as
+the pool has registers; the rest go to the stack. Functions whose prologue
+sets D=S (the far-pointer D=S strategy) get no scratch registers, since DP
+addressing would then land in the stack frame.
 
 **Deterministic**: Always allocates in same order for predictable output
 
@@ -520,37 +505,19 @@ fn example() {
 
 ### Scratch Registers Are Caller-Save
 
-Scratch registers are **not preserved** across function calls:
+Scratch registers are **not preserved** across function calls, so the
+allocator never places a value that is live across a call in one: it gets a
+stack slot instead.
 
 ```rust
-#[zeropage(0x16, register)]
-static mut SCRATCH0: u8;
-
 fn example() {
-    let before = compute1();  // Allocated to SCRATCH0
-    callee();                 // May clobber SCRATCH0
-    let after = before;       // ERROR: 'before' invalid after call
+    let before = compute1();  // Live across the call: stack slot
+    callee();                 // May clobber any scratch register
+    let after = before;       // Reads the stack slot
 }
 ```
 
-**Compiler error**: Variable in scratch register used after function call
-
-### Workaround: Save to Explicit Location
-
-```rust
-#[zeropage(0x16, register)]
-static mut SCRATCH0: u8;
-
-#[zeropage(0x20)]
-static mut SAVED: u8;
-
-fn example() {
-    let before = compute1();  // Allocated to SCRATCH0
-    SAVED = before;           // Save to non-scratch memory
-    callee();
-    let after = SAVED;        // OK: SAVED is preserved
-}
-```
+Only values whose live range contains no call are candidates for scratch.
 
 ---
 

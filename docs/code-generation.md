@@ -69,8 +69,12 @@ Addressing Mode Selection → Assembly Emission → WLA-DX Assembly (.asm)
 ; ============================================================================
 ; RAM Allocations
 ; ============================================================================
-.DEFINE BUFFER $7E2000
-.DEFINE PLAYER_DATA $7E3000
+.BASE $7E
+.RAMSECTION "ram.7E" BANK $00 SLOT 1 FORCE ORGA $2000
+    BUFFER dsb 256
+    PLAYER_DATA dsb 16
+.ENDS
+.BASE $00
 
 ; ============================================================================
 ; Bank 0 - Main Code
@@ -165,8 +169,10 @@ The MemoryAllocator tracks and allocates memory locations for static variables, 
 ```asm
 .DEFINE TEMP $0020              ; Zero-page
 .DEFINE INIDISP $2100           ; Hardware register
-.DEFINE BUFFER $7E0000          ; RAM
 ```
+
+`#[ram]` statics are labels in a `.RAMSECTION` under `.BASE $7E`/`$7F`
+(see the RAM Allocations block above), not `.DEFINE`s.
 
 ---
 
