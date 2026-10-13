@@ -93,6 +93,17 @@ class TestIndexTargets:
             ExpectedState(memory={0x7E0020: [0x51, 0x04]}))   # 5+100+1000 = 0x0451
         assert result.success, f"Failures: {result.failures}"
 
+    def test_x_and_y_bound_into_a_databank_inline_callee(self, e2e):
+        """The callee's DBR setup runs with `a` in A and no free register."""
+        decls = ("#[bank(1)]\nstatic TBL: [u8; 4] = [1, 2, 3, 4];\n"
+                 "#[bank(1)]\n#[mode(databank=inline)]\n"
+                 "far fn f(a @ A: u8, x @ X: u16, y @ Y: u16) -> u16 "
+                 "{ let t: u8 = TBL[x] + TBL[y]; return (a + t) as u16; }\n"
+                 "#[bank(0)]\n")
+        result = e2e.run(program(decls, "OUT = f(5, 1, 2);"),
+                         ExpectedState(memory={0x7E0020: [10, 0]}))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_x_from_memory(self, e2e):
         decls = ("far fn addx(a @ A: u8, p @ X: u16) -> u16 "
                  "{ return (a as u16) + p; }\n"
@@ -118,6 +129,17 @@ class TestSixteenBitAccumulator:
                  "fn go(v @ A: u16, p: u16) -> u16 { return addw(v, p); }\n")
         result = e2e.run(program(decls, "OUT = go(300, 1000);"),
                          ExpectedState(memory={0x7E0020: [0x14, 0x05]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_u16_a_into_a_databank_inline_callee(self, e2e):
+        """The callee's DBR setup runs in m16 with `a` in A."""
+        decls = ("#[bank(1)]\nstatic TBL: [u8; 4] = [1, 2, 3, 4];\n"
+                 "#[bank(1)]\n#[mode(databank=inline)]\n"
+                 "far fn f(a @ A: u16) -> u16 { return a + (TBL[1] as u16); }\n"
+                 "#[bank(0)]\n")
+        result = e2e.run(program(decls, "OUT = f(300); OUT2 = f(1000);"),
+                         ExpectedState(memory={0x7E0020: [0x2E, 0x01],
+                                               0x7E0024: [0xEA, 0x03]}))
         assert result.success, f"Failures: {result.failures}"
 
 

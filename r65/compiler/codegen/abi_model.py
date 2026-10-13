@@ -398,10 +398,10 @@ class ABIModel(ABC):
         def emit(arg):
             # Resolved late: a stack save shifts every stack-relative source.
             arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
+            # A VARIABLE argument needs nothing here: CallLowerer's MIR Store,
+            # sized by the parameter type, wrote the variable before the Call.
             if arg.mechanism == ArgumentMechanism.REGISTER:
                 selector.emit_register_argument(arg, arg_loc)
-            elif arg.mechanism == ArgumentMechanism.VARIABLE:
-                selector.emit_variable_argument(arg, arg_loc)
             elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
                 selector.emit_scratch_param_argument(arg, arg_loc)
 
@@ -884,9 +884,9 @@ class ABIDefault(ABIModel):
     TSC/SEC/SBC/TCS for larger frames. PHX/PHY push 2 bytes at 4 cycles
     vs 2×PHB at 6 cycles, and neither clobbers A.
 
-    Return values are passed in hardware registers (A, B, X, Y). For
-    calls that return in X (multi-register returns), caller-side cleanup
-    pops with PLY instead of PLX so X survives.
+    Return values are passed in hardware registers (A, B, X, Y). The
+    caller pops its pushed arguments into whichever of X/Y holds no result
+    (CallSelector._emit_caller_arg_cleanup).
     """
 
     def __init__(self):
@@ -949,6 +949,31 @@ def abi_model_from_string(name: str) -> ABIModel:
         raise ValueError(
             f"Unknown ABI model: {name!r}. "
             f"Expected one of: {', '.join(sorted(_ABI_BY_NAME))}.")
+
+
+def emit_d_equals_s_keeping_c(emitter):
+    """Point D at S, as S stands after a PHD, without losing C (A and B).
+
+    TSC writes all of C, so C is parked with a 16-bit PHA - two bytes in any
+    entry mode - and the two INCs step D back over it. The emitter's tracked
+    width is restored; an unknown width ends in m8.
+    """
+    from r65.compiler.codegen.opcodes import Opcode
+    from r65.compiler.codegen.asm_nodes import Immediate
+    from r65.compiler.codegen.constants import M_FLAG
+    entry_bits = emitter.get_accu_mode()
+    if entry_bits != 16:
+        emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A to park C")
+        emitter.emit_accu_mode(16)
+    emitter.emit_instr(Opcode.PHA, None, "Park C across D=S setup")
+    emitter.emit_instr(Opcode.TSC, None, "Transfer Stack to A")
+    emitter.emit_instr(Opcode.INC)
+    emitter.emit_instr(Opcode.INC, None, "Skip the parked C")
+    emitter.emit_instr(Opcode.TCD, None, "D = S")
+    emitter.emit_instr(Opcode.PLA, None, "Restore C")
+    if entry_bits != 16:
+        emitter.emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Back to 8-bit A")
+        emitter.emit_accu_mode(8)
 
 
 def _force_accu_mode(selector, bits):

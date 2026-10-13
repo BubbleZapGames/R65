@@ -25,6 +25,7 @@ from r65.compiler.codegen.opcodes import (
 )
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction, RawAsm
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
+from r65.compiler.codegen.abi_model import emit_d_equals_s_keeping_c
 from r65.compiler.errors import CodegenError
 
 # Control leaves the handler: whatever runs there may write anything.
@@ -585,60 +586,8 @@ class FunctionCodeGenerator:
     # ========================================================================
 
     def _compute_block_order(self, mir_func: MIRFunction) -> List[int]:
-        """
-        Compute optimal ordering of basic blocks.
-
-        Uses DFS traversal from entry block with a layout heuristic:
-        blocks containing Return instructions are visited last among
-        successors. This places loop bodies linearly before exit paths,
-        reducing mode-switch overhead at block boundaries.
-
-        Args:
-            mir_func: MIR function
-
-        Returns:
-            List of block IDs in emission order
-        """
-        from r65.compiler.mir.nodes import Return as MIRReturn
-
-        # Pre-compute which blocks contain Return instructions
-        return_blocks: Set[int] = set()
-        for block_id, block in mir_func.blocks.items():
-            for instr in block.instructions:
-                if isinstance(instr, MIRReturn):
-                    return_blocks.add(block_id)
-                    break
-
-        visited: Set[int] = set()
-        order: List[int] = []
-
-        def visit(block_id: int):
-            if block_id in visited:
-                return
-
-            visited.add(block_id)
-            order.append(block_id)
-
-            # Visit successors, placing return blocks last so loop bodies
-            # are laid out linearly (hot path as fallthrough)
-            block = mir_func.blocks.get(block_id)
-            if block:
-                successors = sorted(
-                    block.successors,
-                    key=lambda sid: sid in return_blocks,
-                )
-                for successor_id in successors:
-                    visit(successor_id)
-
-        # Start from entry block
-        visit(mir_func.entry_block_id)
-
-        # Visit any unreachable blocks (shouldn't happen, but be safe)
-        for block_id in mir_func.blocks.keys():
-            if block_id not in visited:
-                visit(block_id)
-
-        return order
+        """Block emission order (see compute_block_order)."""
+        return compute_block_order(mir_func)
 
     def _back_edge_may_change_mode(
         self, mir_func: MIRFunction, pred_id: int, expected_is_m16: bool,
@@ -1056,48 +1005,43 @@ class FunctionCodeGenerator:
                 elif reg == 'Y':
                     y_has_param = True
 
-        # Determine if/how to save A across prologue code that clobbers it.
-        # Possible clobber sources: frame alloc (TSC/SBC/TCS for large frames),
-        # DBR inline management (LDA #bank), far pointer D setup (TSC/TCD).
-        # a_save_method: 'Y' = TAY/TYA, 'X' = TAX/TXA, 'push' = force push-based
-        # frame alloc (no save needed), None = no save needed.
-        a_save_method = None
+        # Keep an `@ A` parameter alive through the prologue. The steps that
+        # write A are a TSC/SBC/TCS frame allocation, the databank=inline
+        # DBR load, and far-pointer setup (LDA bank,S or TSC/TCD). The DBR
+        # load switches to a PEA when A is live (_emit_dbr_inline_setup), so
+        # it never forces a save. For the other two, `a_save` says where A
+        # is kept:
+        #   'Y' / 'X' - TAY/TYA (TAX/TXA) around the whole prologue;
+        #   'stack'   - X and Y hold parameters too: the frame is allocated
+        #               with register pushes, and the far-pointer setup
+        #               parks A on the stack around itself;
+        #   None      - no prologue step writes A.
+        from r65.compiler.typeck.processor_mode import ModeState
+        entry_m16 = mir_func.entry_m_mode == ModeState.M16
         force_direct = mir_func.interrupt_attr is not None
-
+        a_save = None
         if a_has_param:
-            frame_clobbers_a = False
-            if frame_size > 0:
-                frame_clobbers_a = (
-                    frame_size > self.abi_model.frame_alloc_clobbers_a_threshold
-                    or force_direct
-                )
-            dbr_clobbers_a = False
-            if mir_func.is_far and mir_func.mode_attr and mir_func.bank_attr:
-                from r65.compiler.hir.attributes import DataBankMode
-                if mir_func.mode_attr.databank == DataBankMode.INLINE:
-                    dbr_clobbers_a = True
-            fptr_clobbers_a = getattr(mir_func, 'has_far_ptr_stack_params', False)
-
-            if frame_clobbers_a or dbr_clobbers_a or fptr_clobbers_a:
+            frame_clobbers_a = frame_size > 0 and (
+                frame_size > self.abi_model.frame_alloc_clobbers_a_threshold
+                or force_direct
+            )
+            if frame_clobbers_a or mir_func.has_far_ptr_stack_params:
                 if not y_has_param:
-                    a_save_method = 'Y'
+                    a_save = 'Y'
                 elif not x_has_param:
-                    a_save_method = 'X'
+                    a_save = 'X'
                 else:
-                    # All three registers occupied — force push-based frame
-                    # allocation which doesn't clobber any register.
-                    a_save_method = 'push'
+                    a_save = 'stack'
+        a_live = a_has_param and a_save not in ('Y', 'X')
 
-        # Save A param before any prologue code that clobbers A.
-        # This must happen before frame allocation AND D=S setup (both use A).
-        if a_save_method == 'Y':
+        if a_save == 'Y':
             self._emit_instr(Opcode.TAY, comment="Save A param before prologue")
-        elif a_save_method == 'X':
+        elif a_save == 'X':
             self._emit_instr(Opcode.TAX, comment="Save A param before prologue (Y has param)")
 
         # Allocate stack frame for functions with locals.
         if frame_size > 0:
-            if a_save_method == 'push':
+            if a_save == 'stack':
                 # Push-based allocation (PHX/PHY) doesn't clobber A, X, or Y.
                 self.abi_model._emit_register_push_alloc(self._emit_instr, frame_size)
             else:
@@ -1109,31 +1053,12 @@ class FunctionCodeGenerator:
 
             if mir_func.mode_attr.databank == DataBankMode.INLINE:
                 if not getattr(mir_func, '_skip_dbr_inline', False):
-                    # Save current DBR and set to function's bank
-                    # Sequence: PHB, LDA #bank, PHA, PLB
-                    # bank_attr.bank_number is a WLA bank *index*; the 65816
-                    # bank *byte* is that index offset by the ROM base
-                    # (.BASE $80 for LoROM FastROM, $C0 for HiROM).
-                    dbr_bank = (getattr(self.emitter, 'rom_base', 0)
-                                + mir_func.bank_attr.bank_number)
-                    self._emit_instr(Opcode.PHB, comment="Save current data bank")
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(dbr_bank),
-                                    "Load function's bank number")
-                    self._emit_instr(Opcode.PHA, comment="Push bank number")
-                    self._emit_instr(Opcode.PLB, comment="Set data bank register")
+                    self._emit_dbr_inline_setup(mir_func, keep_a=a_live or entry_m16)
 
-        # Set up processor mode based on inferred entry mode
-        # In R65, X/Y are always x16, A mode is based on parameter types
-        from r65.compiler.typeck.processor_mode import ModeState
-
-        # For functions with m16 entry (u16 @ A parameter), set up 16-bit A mode
-        # The default execution mode is m8, x16 (set by the bootstrap/interrupt context)
-        # If this function requires m16, we need to switch to it
-        if mir_func.entry_m_mode == ModeState.M16:
-            # REP #$20 to set 16-bit accumulator mode
+        # An m16 entry is pinned by the caller before the JSR
+        # (call_select._emit_entry_mode_switch); the REP restates it.
+        if entry_m16:
             self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "Set m16 mode for u16 @ A parameter")
-        # An m8 callee needs no switch: the caller pins the callee's entry mode
-        # before the JSR (`call_select._emit_entry_mode_switch`).
 
         # Emit register saves for #[preserves(...)]
         # Registers are pushed in order: STATUS, A, X, Y, D, DBR
@@ -1152,30 +1077,83 @@ class FunctionCodeGenerator:
         # Set up far pointer access for stack parameters
         # Must come AFTER all other prologue pushes so offsets are final
         if mir_func.has_far_ptr_stack_params:
-            from r65.compiler.mir.nodes import FarPtrStrategy
-            if mir_func.far_ptr_strategy == FarPtrStrategy.SET_DBR:
-                # SET_DBR: save DBR, load bank byte from far pointer param, set DBR
-                # This preserves DP, keeping scratch registers and zeropage available
-                bank_offset = self._get_far_ptr_bank_stack_offset(mir_func, frame_size)
-                self._emit_instr(Opcode.PHB, comment="Save Data Bank Register")
-                self._emit_instr(Opcode.LDA_STACK, StackOffset(bank_offset),
-                                "Load far pointer bank byte from stack")
-                self._emit_instr(Opcode.PHA, comment="Push bank byte")
-                self._emit_instr(Opcode.PLB, comment="Set DBR to far pointer bank")
-            else:
-                # D_EQUALS_S: enables [dp],Y addressing for 24-bit pointers
-                self._emit_instr(Opcode.PHD, comment="Save Direct Page register")
-                self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
-                self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
+            self._emit_far_ptr_setup(mir_func, frame_size,
+                                     park_a=a_save == 'stack', m16=entry_m16)
 
         # Restore A param AFTER all prologue code that clobbers A.
         # The current mode (set by mode setup above) ensures the transfer
         # operates at the correct width (m8 for u8 @ A, m16 for u16 @ A).
-        if a_save_method == 'Y':
+        if a_save == 'Y':
             self._emit_instr(Opcode.TYA, comment="Restore A param after prologue")
-        elif a_save_method == 'X':
+        elif a_save == 'X':
             self._emit_instr(Opcode.TXA, comment="Restore A param after prologue")
-        # 'push' and None: no restore needed (A was never clobbered)
+
+    def _emit_dbr_inline_setup(self, mir_func: MIRFunction, keep_a: bool):
+        """Save DBR and point it at the function's bank (databank=inline).
+
+        `LDA #bank / PHA / PLB` is the cheap form, but it writes A, and in
+        m16 its PHA pushes a byte the PLB never pulls. With `keep_a` (A holds
+        a live value, or the function is entered in m16) the bank byte goes
+        through `PEA` instead, which touches no register and pushes two bytes
+        for the two PLBs.
+        """
+        # bank_attr.bank_number is a WLA bank *index*; the 65816 bank *byte*
+        # is that index offset by the ROM base (.BASE $80 for LoROM FastROM,
+        # $C0 for HiROM).
+        dbr_bank = (getattr(self.emitter, 'rom_base', 0)
+                    + mir_func.bank_attr.bank_number)
+        self._emit_instr(Opcode.PHB, comment="Save current data bank")
+        if keep_a:
+            self._emit_instr(Opcode.PEA, Immediate((dbr_bank << 8) | dbr_bank),
+                             "Push function's bank number (twice)")
+            self._emit_instr(Opcode.PLB)
+            self._emit_instr(Opcode.PLB, comment="Set data bank register")
+        else:
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(dbr_bank),
+                             "Load function's bank number")
+            self._emit_instr(Opcode.PHA, comment="Push bank number")
+            self._emit_instr(Opcode.PLB, comment="Set data bank register")
+
+    def _emit_far_ptr_setup(self, mir_func: MIRFunction, frame_size: int,
+                            park_a: bool, m16: bool):
+        """Set up far-pointer stack-parameter access (SET_DBR or D=S).
+
+        Both strategies go through A. With `park_a`, A holds a parameter that
+        no free register can hold, so it is pushed before and pulled after;
+        the pair is balanced, so the stack the body sees is unchanged.
+        """
+        from r65.compiler.mir.nodes import FarPtrStrategy
+        if mir_func.far_ptr_strategy == FarPtrStrategy.SET_DBR:
+            # SET_DBR: save DBR, load bank byte from far pointer param, set DBR
+            # This preserves DP, keeping scratch registers and zeropage available
+            bank_offset = self._get_far_ptr_bank_stack_offset(mir_func, frame_size)
+            self._emit_instr(Opcode.PHB, comment="Save Data Bank Register")
+            if park_a:
+                self._emit_instr(Opcode.PHA, comment="Park A param across DBR setup")
+                bank_offset += 2 if m16 else 1
+            if m16:
+                # A 16-bit load and push: the bank byte rides in the high
+                # byte, so two PLBs leave it in DBR with the stack balanced.
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(bank_offset - 1),
+                                 "Load far pointer bank byte (high) from stack")
+                self._emit_instr(Opcode.PHA, comment="Push bank byte")
+                self._emit_instr(Opcode.PLB)
+                self._emit_instr(Opcode.PLB, comment="Set DBR to far pointer bank")
+            else:
+                self._emit_instr(Opcode.LDA_STACK, StackOffset(bank_offset),
+                                 "Load far pointer bank byte from stack")
+                self._emit_instr(Opcode.PHA, comment="Push bank byte")
+                self._emit_instr(Opcode.PLB, comment="Set DBR to far pointer bank")
+            if park_a:
+                self._emit_instr(Opcode.PLA, comment="Restore A param")
+        else:
+            # D_EQUALS_S: enables [dp],Y indirect long addressing for 24-bit pointers
+            self._emit_instr(Opcode.PHD, comment="Save Direct Page register")
+            if park_a:
+                emit_d_equals_s_keeping_c(self.emitter)
+            else:
+                self._emit_instr(Opcode.TSC, comment="Transfer Stack to A")
+                self._emit_instr(Opcode.TCD, comment="Transfer A to Direct Page (D = S)")
 
     def _get_far_ptr_bank_stack_offset(self, mir_func: MIRFunction, frame_size: int) -> int:
         """Compute stack offset to the far pointer's bank byte for SET_DBR prologue.
@@ -1742,3 +1720,58 @@ class ProgramFunctionGenerator:
         self.func_gen = FunctionCodeGenerator(emitter, memory_allocator)
 
 
+def compute_block_order(mir_func: MIRFunction) -> List[int]:
+    """
+    Compute optimal ordering of basic blocks.
+
+    Uses DFS traversal from entry block with a layout heuristic:
+    blocks containing Return instructions are visited last among
+    successors. This places loop bodies linearly before exit paths,
+    reducing mode-switch overhead at block boundaries.
+
+    Args:
+        mir_func: MIR function
+
+    Returns:
+        List of block IDs in emission order
+    """
+    from r65.compiler.mir.nodes import Return as MIRReturn
+
+    # Pre-compute which blocks contain Return instructions
+    return_blocks: Set[int] = set()
+    for block_id, block in mir_func.blocks.items():
+        for instr in block.instructions:
+            if isinstance(instr, MIRReturn):
+                return_blocks.add(block_id)
+                break
+
+    visited: Set[int] = set()
+    order: List[int] = []
+
+    def visit(block_id: int):
+        if block_id in visited:
+            return
+
+        visited.add(block_id)
+        order.append(block_id)
+
+        # Visit successors, placing return blocks last so loop bodies
+        # are laid out linearly (hot path as fallthrough)
+        block = mir_func.blocks.get(block_id)
+        if block:
+            successors = sorted(
+                block.successors,
+                key=lambda sid: sid in return_blocks,
+            )
+            for successor_id in successors:
+                visit(successor_id)
+
+    # Start from entry block
+    visit(mir_func.entry_block_id)
+
+    # Visit any unreachable blocks (shouldn't happen, but be safe)
+    for block_id in mir_func.blocks.keys():
+        if block_id not in visited:
+            visit(block_id)
+
+    return order

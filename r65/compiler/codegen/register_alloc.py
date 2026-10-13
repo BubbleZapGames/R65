@@ -722,11 +722,6 @@ class RegisterAllocator:
                 )
                 self.allocations[vreg.id] = location
 
-            # Print statistics if any slots were saved
-            if self.slot_allocation.slots_saved > 0:
-                print(f"Stack slot reuse: {self.slot_allocation.slots_saved} slot(s) saved "
-                      f"({self.slot_allocation.total_slots}/{self.slot_allocation.variables_count} slots used)")
-
         # Allocate each virtual register
         for vreg in vregs:
             self.allocate_vreg(vreg)

@@ -24,7 +24,7 @@ from r65.compiler.mir.nodes import (
 if TYPE_CHECKING:
     from r65.compiler.mir.liveness import ClobberRegion
 from r65.compiler.codegen.register_alloc import LocationKind
-from r65.compiler.codegen.abi_model import ABIKind
+from r65.compiler.codegen.abi_model import ABIKind, emit_d_equals_s_keeping_c
 from r65.compiler.codegen.opcodes import (
     Opcode, TRANSFER_OPCODES, PUSH_OPCODES, PULL_OPCODES,
     LOAD_IMMEDIATE_OPCODES, STORE_MNEMONICS,
@@ -397,10 +397,7 @@ class CallInstructionSelector(BaseSelector):
         # Done after return value collection so A/X/Y return values are safely
         # stored in their virtual register destinations before we clobber A.
         if stack_bytes_pushed > 0:
-            returns_in_x = self._call_returns_in_x(instr)
-            returns_in_a = self._call_returns_in_a(instr)
-            self._emit_caller_arg_cleanup(stack_bytes_pushed, returns_in_x=returns_in_x,
-                                          returns_in_a=returns_in_a)
+            self._emit_caller_arg_cleanup(stack_bytes_pushed, self._call_live_after_collection(instr))
 
         # Step 6: Restore mode after receiving return value
         # If callee exited in m16 (u16 return), switch back to m8
@@ -525,10 +522,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Caller cleanup of PHA-pushed stack args
         if stack_bytes_pushed > 0:
-            returns_in_x = self._call_returns_in_x(instr)
-            returns_in_a = self._call_returns_in_a(instr)
-            self._emit_caller_arg_cleanup(stack_bytes_pushed, returns_in_x=returns_in_x,
-                                          returns_in_a=returns_in_a)
+            self._emit_caller_arg_cleanup(stack_bytes_pushed, self._call_live_after_collection(instr))
 
         # Restore caller's DBR after far self dispatch
         if emit_plb:
@@ -850,25 +844,9 @@ class CallInstructionSelector(BaseSelector):
             if pos:
                 _, instr_idx = pos
 
-        # Determine which registers receive return values from this call.
-        # A call that defines a register via return should never be spilled —
-        # spilling would save garbage and PLX/PLY would clobber the return value.
-        # Note: instr.returns may be empty (return values captured by separate Move
-        # instructions), so we determine the count from callee_return_type.
-        return_regs = self._get_callee_return_registers(instr)
-        num_returns = self._call_num_returns(instr)
-        call_return_set = set(return_regs[:num_returns])
-        # Also include the caller's *final destination* register for each
-        # return vreg. After the call, _emit_return_value_collection may
-        # emit a TAX/TAY to move the return value from the callee's return
-        # register (e.g. A) into the caller-allocated destination (e.g. X).
-        # That destination's prior value is dead — spilling it would PHX a
-        # value the TAX immediately overwrites, and the matching PLX at the
-        # region end would then clobber the just-captured return value.
-        for return_vreg in instr.returns:
-            dest_loc = self.parent._get_operand_location(return_vreg)
-            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
-                call_return_set.add(dest_loc.hw_register)
+        # A register the call defines is never spilled: spilling would save
+        # garbage and the matching PLX/PLY would clobber the result.
+        call_return_set = self._call_result_registers(instr)
 
         for reg_name in ['A', 'X', 'Y']:
             # Skip if callee preserves this register
@@ -964,18 +942,9 @@ class CallInstructionSelector(BaseSelector):
 
         _, instr_idx = pos
 
-        # Build the same "do-not-reload" set used in _compute_hw_spills:
-        # callee return registers AND caller's final destination registers
-        # for the return values. Reloading a register whose value the TAX/TAY
-        # in _emit_return_value_collection just placed would PLX/PLY the
-        # restored caller value back over the return value.
-        return_regs = self._get_callee_return_registers(instr)
-        num_returns = self._call_num_returns(instr)
-        call_return_set = set(return_regs[:num_returns])
-        for return_vreg in instr.returns:
-            dest_loc = self.parent._get_operand_location(return_vreg)
-            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
-                call_return_set.add(dest_loc.hw_register)
+        # Reloading a register the call defines would pull the caller's old
+        # value back over the result.
+        call_return_set = self._call_result_registers(instr)
 
         # Check each active region for X/Y and A (when bound)
         regs_to_check = ('A', 'X', 'Y') if self._a_bound_to_vreg else ('X', 'Y')
@@ -1347,61 +1316,54 @@ class CallInstructionSelector(BaseSelector):
             # Undo all temporary adjustments (caller adds full param_size after return)
             self.region_state.stack_tracker.pop(bytes_pushed_so_far - 1)
 
-    def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int, returns_in_x: bool = False,
-                                  returns_in_a: bool = True):
-        """Emit caller-side cleanup of PHA-pushed arguments after call returns.
+    def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int, live_regs: Set[str]):
+        """Pop the PHA-pushed arguments after the call returns.
 
-        Uses PLX to pop 2 bytes at a time, preserving the return value in A.
-        X is safe to clobber here: it's either dead (callee clobbered it) or
-        its pre-call value is saved by region spilling and will be reloaded later.
-
-        When returns_in_x is True (multi-register return via A+X), uses PLY
-        instead to avoid clobbering the X return value.
-
-        For odd remaining bytes, saves A in a free register, pops with PLA,
-        and restores A — unless the call returns void (returns_in_a=False),
-        in which case just PLA directly.
+        `live_regs` (from _call_live_after_collection) are the registers that
+        hold a result at this point; the cleanup writes none of them. Byte
+        pairs are pulled into X, or into Y when X is live; an odd byte goes
+        through PLA, with A parked in that index register when A is live.
+        When X and Y are both live, C (A and B) is stored over the topmost
+        argument bytes and pulled back last, so every register survives.
 
         Also updates the stack tracker to reflect the removed bytes.
-
-        Args:
-            stack_bytes_pushed: Number of bytes that were PHA-pushed for args
-            returns_in_x: True if the call returns a value in X that must be preserved
-            returns_in_a: True if the call returns a value in A that must be preserved
         """
+        from r65.compiler.codegen.asm_nodes import StackOffset
         if stack_bytes_pushed == 0:
             return
 
         remaining = stack_bytes_pushed
+        puller = next((r for r in ('X', 'Y') if r not in live_regs), None)
 
-        if returns_in_x:
-            # X holds a return value — use PLY (Y is 16-bit, pops 2 bytes)
-            while remaining >= 2:
-                self._emit_pull('Y', "Pop pushed arg bytes (preserve X)")
-                remaining -= 2
+        if puller is None:
             if remaining == 1:
                 self._ensure_m8_mode("8-bit A for 1-byte pop")
-                if returns_in_a:
-                    # Save A in Y, pop 1 byte, restore A (X untouched)
-                    self.parent.emitter.emit_instr(Opcode.TAY, comment="Save return A")
-                    self._emit_pull('A', "Pop 1 pushed arg byte")
-                    self.parent.emitter.emit_instr(Opcode.TYA, comment="Restore return A")
-                else:
-                    self._emit_pull('A', "Pop 1 pushed arg byte")
+                self.parent.emitter.emit_instr(Opcode.STA_STACK, StackOffset(1),
+                                               "Park A over the pushed arg byte")
+            else:
+                self._ensure_m16_mode("16-bit A to park C")
+                self.parent.emitter.emit_instr(Opcode.STA_STACK, StackOffset(remaining - 1),
+                                               "Park C over the top pushed arg bytes")
+                if remaining > 2:
+                    self._emit_implied(Opcode.TSC)
+                    self._emit_implied(Opcode.CLC)
+                    self._emit_immediate(Opcode.ADC_IMMEDIATE, remaining - 2,
+                                         "Drop the arg bytes below it")
+                    self._emit_implied(Opcode.TCS)
+            self._emit_pull('A', "Pull the parked value back")
         else:
-            # Normal path: PLX to pop 2 bytes at a time
             while remaining >= 2:
-                self._emit_pull('X', "Pop pushed arg bytes")
+                self._emit_pull(puller, "Pop pushed arg bytes")
                 remaining -= 2
             if remaining == 1:
                 self._ensure_m8_mode("8-bit A for 1-byte pop")
-                if returns_in_a:
-                    # Save A return value in X, pop 1 byte with PLA, restore A
-                    self.parent.emitter.emit_instr(Opcode.TAX, comment="Save return A")
+                if 'A' in live_regs:
+                    to_idx, from_idx = ((Opcode.TAX, Opcode.TXA) if puller == 'X'
+                                        else (Opcode.TAY, Opcode.TYA))
+                    self.parent.emitter.emit_instr(to_idx, comment="Save return A")
                     self._emit_pull('A', "Pop 1 pushed arg byte")
-                    self.parent.emitter.emit_instr(Opcode.TXA, comment="Restore return A")
+                    self.parent.emitter.emit_instr(from_idx, comment="Restore return A")
                 else:
-                    # Void call — no return value in A to preserve
                     self._emit_pull('A', "Pop 1 pushed arg byte")
 
         # Reduce stack tracker to undo the PHA tracking
@@ -1476,9 +1438,8 @@ class CallInstructionSelector(BaseSelector):
             return arg_loc.kind == LocationKind.STACK
 
         if arg.mechanism == ArgumentMechanism.VARIABLE:
-            # emit_variable_argument loads into A then stores; an A-resident
-            # source skips the load.
-            return not arg_loc.is_hw('A')
+            # The MIR Store before the Call already wrote the variable.
+            return False
 
         if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
             # The forwarding shortcut returns before emitting anything.
@@ -1527,25 +1488,6 @@ class CallInstructionSelector(BaseSelector):
             mnemonic = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg)
             if mnemonic:
                 self.parent._emit_load(mnemonic, arg_loc)
-
-    def emit_variable_argument(self, arg, arg_loc):
-        """Emit variable-bound argument (store to memory location)."""
-        # Load into A
-        if arg_loc.is_hw('A'):
-            pass  # Already in A
-        elif arg_loc.is_hw():
-            if arg_loc.hw_register == 'X':
-                self._emit_transfer('X', 'A')
-            elif arg_loc.hw_register == 'Y':
-                self._emit_transfer('Y', 'A')
-        elif isinstance(arg.value, MIRImmediate):
-            self._emit_load_immediate('A', arg.value.value)
-        else:
-            self.parent._emit_load('LDA', arg_loc)
-
-        # Store to variable location
-        var_loc = self.parent._get_operand_location(arg.location)
-        self.parent._emit_store('STA', var_loc)
 
     def emit_scratch_param_argument(self, arg, arg_loc):
         """
@@ -2181,14 +2123,33 @@ class CallInstructionSelector(BaseSelector):
             return False
         return True
 
-    def _call_returns_in_x(self, instr) -> bool:
-        """Check if a call returns a value in the X register.
+    def _call_result_registers(self, instr) -> Set[str]:
+        """Registers a call defines: what must not be spilled, reloaded or
+        pulled into around it.
 
-        Used by _emit_caller_arg_cleanup to determine whether PLX would clobber
-        a return value. When True, cleanup uses PLY instead of PLX.
+        The callee's return registers, plus the hw-allocated destination of
+        each return vreg (_emit_return_value_collection's TAX/TAY lands the
+        value there). `instr.returns` may be empty when the values are
+        captured by separate Moves, so the count comes from
+        callee_return_type.
         """
         return_regs = self._get_callee_return_registers(instr)
-        return 'X' in return_regs[:self._call_num_returns(instr)]
+        regs = set(return_regs[:self._call_num_returns(instr)])
+        for return_vreg in instr.returns:
+            dest_loc = self.parent._get_operand_location(return_vreg)
+            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
+                regs.add(dest_loc.hw_register)
+        return regs
+
+    def _call_live_after_collection(self, instr) -> Set[str]:
+        """Registers holding a result once the return values are collected.
+
+        As _call_result_registers, except that a void call leaves nothing in A.
+        """
+        regs = self._call_result_registers(instr)
+        if not self._call_returns_in_a(instr):
+            regs.discard('A')
+        return regs
 
     def _emit_return_value_collection(self, instr: Call):
         """
@@ -2422,12 +2383,8 @@ class CallInstructionSelector(BaseSelector):
         elif arg1_loc.is_hw('A'):
             self._emit_implied(Opcode.TAX)  # Transfer A to X
         elif arg1_loc.is_hw('Y'):
-            # Y to X requires going through A (no direct TYX on 65816)
-            # Save A, TYA, TAX, restore A
-            self._emit_implied(Opcode.PHA)
-            self._emit_implied(Opcode.TYA)
-            self._emit_implied(Opcode.TAX)
-            self._emit_implied(Opcode.PLA)
+            # TYX copies all 16 bits and leaves A (the first argument) alone.
+            self._emit_implied(Opcode.TYX)
         else:
             self.parent._emit_load('LDX', arg1_loc)
 
@@ -2546,13 +2503,8 @@ class CallInstructionSelector(BaseSelector):
 
         Tier 3 - A, X, Y all live (extremely rare):
           PHD          ; push D (2 bytes), SP = frame_base
-          PHA          ; save A (1 byte), SP = frame_base - 1
-          REP #$20     ; 16-bit for correct INC across page boundary
-          TSC          ; A(16) = SP = frame_base - 1
-          INC A        ; A(16) = frame_base
-          TCD          ; D = frame_base
-          SEP #$20     ; back to 8-bit
-          PLA          ; restore A, SP = frame_base, D = SP
+          (emit_d_equals_s_keeping_c: REP #$20 if m8; PHA, two bytes;
+           TSC; INC A; INC A; TCD; PLA; SEP #$20 if it was m8)
 
         Updates the stack tracker to undo the displacement from PLD.
         """
@@ -2583,18 +2535,10 @@ class CallInstructionSelector(BaseSelector):
             self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
             self._emit_instr(Opcode.TYA, comment="Restore A from Y")
         else:
-            # Tier 3: All registers live — PHA fallback (8 instructions)
+            # Tier 3: A, X and Y all live - park C on the stack
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
             self.region_state.stack_tracker.push(2)
-            self._emit_instr(Opcode.PHA, comment="Save A before D=S setup")
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for D=S setup")
-            self.parent.emitter.emit_accu_mode(16)
-            self._emit_instr(Opcode.TSC, comment="A(16) = SP")
-            self._emit_instr(Opcode.INC, comment="A(16) = SP + 1 (frame_base)")
-            self._emit_instr(Opcode.TCD, comment="D = frame_base (D = S)")
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
-            self.parent.emitter.emit_accu_mode(8)
-            self._emit_instr(Opcode.PLA, comment="Restore A after D=S setup")
+            emit_d_equals_s_keeping_c(self.parent.emitter)
 
     def _has_far_ptr_derefs_after_call(self, call_instr: Call) -> bool:
         """

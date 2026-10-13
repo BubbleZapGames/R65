@@ -189,6 +189,25 @@ class TestMixedParams:
         ''', ExpectedState(A=11, X=0x42))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_stack_args_with_a_x_y_returns(self, e2e):
+        """Popping the stack args must not pull into the X or Y result."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut OUT: [u16; 3];
+
+            #[inline(never)]
+            fn three(a: u16, b: u16) -> u8, u16, u16 { return 7, b, a; }
+
+            #[entry]
+            fn main() {
+                let v, j, k = three(0x1234, 0x0567);
+                OUT[0] = v as u16;
+                OUT[1] = j;
+                OUT[2] = k;
+            }
+        ''', ExpectedState(memory={0x7E0010: [7, 0, 0x67, 0x05, 0x34, 0x12]}))
+        assert result.success, f"Failures: {result.failures}"
+
 
 class TestVariableBoundParams:
     """Test variable-bound parameter passing (param @ STATIC_VAR)."""

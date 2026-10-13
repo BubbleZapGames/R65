@@ -177,9 +177,6 @@ class _MockSelector:
     def emit_register_argument(self, arg, arg_loc):
         self.calls.append(('register', arg.location.name))
 
-    def emit_variable_argument(self, arg, arg_loc):
-        self.calls.append(('variable',))
-
     def emit_scratch_param_argument(self, arg, arg_loc):
         self.calls.append(('scratch_param', arg.scratch_addr))
 
@@ -233,13 +230,14 @@ class TestEmitCallArgs:
         assert ('register', 'A') in selector.calls
 
     def test_variable_args(self):
-        """Variable-bound args emit variable calls."""
+        """Variable-bound args emit nothing: the MIR Store before the Call
+        already wrote the variable, so a second store would be a duplicate."""
         from r65.compiler.mir.nodes import Call
         args = [_make_arg('variable', location=_FakeLocation('TEMP'))]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
         selector = _MockSelector()
         ABI_DEFAULT.emit_call_args(selector, instr)
-        assert ('variable',) in selector.calls
+        assert selector.calls == []
 
     def test_scratch_param_args(self):
         """Scratch param args emit scratch_param calls."""
@@ -765,10 +763,8 @@ class TestDefaultEmitCallArgs:
         selector = _MockSelector()
         result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 1  # 1 stack arg byte pushed
-        # PHA stack first, then variable and register (sorted)
-        assert selector.calls[0][0] == 'pha_stack'
-        assert selector.calls[1][0] == 'variable'
-        assert selector.calls[2][0] == 'register'
+        # PHA stack first, then register; the variable arg emits nothing
+        assert [c[0] for c in selector.calls] == ['pha_stack', 'register']
 
     def test_stack_tracker_updated(self):
         """Stack tracker reflects all PHA-pushed bytes."""
