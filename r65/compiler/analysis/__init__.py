@@ -12,12 +12,10 @@ from r65.compiler.analysis.call_graph import (
     RecursionChecker,
     RecursionError
 )
-from r65.compiler.analysis.stack_depth import StackDepthAnalyzer
 
 __all__ = [
     'CallGraph',
     'build_call_graph',
     'RecursionChecker',
     'RecursionError',
-    'StackDepthAnalyzer'
 ]

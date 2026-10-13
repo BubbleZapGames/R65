@@ -17,6 +17,26 @@ def param_bytes(func: MIRFunction, param_idx: int, base_addr: int) -> range:
     return range(base_addr, base_addr + size)
 
 
+def reserve_scratch_param_bytes(mir_program: MIRProgram,
+                                skip: Set[str] = frozenset()) -> Set[int]:
+    """Reserve every promoted scratch-param byte from all functions' locals.
+
+    A caller's scratch params persist across its calls while the callee runs,
+    so no function may put a local on them. The functions in `skip` keep
+    theirs out of the set. Every function shares the returned set: bytes
+    added to it later are reserved too.
+    """
+    reserved: Set[int] = set()
+    for func in mir_program.functions:
+        if func.name in skip:
+            continue
+        for param_idx, base_addr in func.scratch_param_addrs.items():
+            reserved.update(param_bytes(func, param_idx, base_addr))
+    for func in mir_program.functions:
+        func.global_scratch_param_bytes = reserved
+    return reserved
+
+
 def clear_far_ptr_flag_if_all_promoted(func: MIRFunction, promoted_param_indices) -> None:
     """Clear the far-ptr-stack-param flag when every far-ptr param was promoted.
 

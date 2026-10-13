@@ -8,7 +8,7 @@ calls a function that takes scratch params, the param setup overwrites the
 local's scratch address.
 
 Root cause: analyze_scratch_params() (Default ABI) did not set
-_global_scratch_param_addrs on functions, so function_gen.py could not
+global_scratch_param_bytes on functions, so function_gen.py could not
 reserve those addresses. The FixedStack ABI path did this correctly.
 
 Repro: function `outer` has a local `flag` set to a computed value, then

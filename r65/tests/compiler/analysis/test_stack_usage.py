@@ -2,11 +2,10 @@
 """
 Tests for the static stack-usage analyzer (r65.compiler.analysis.stack_usage).
 
-Distinct from test_stack_depth.py — the new analyzer:
-  - Raises CodegenError on overflow rather than emitting warnings.
+The analyzer:
+  - Raises CodegenError on overflow.
   - Uses MIRFunction.codegen_max_region_spill_bytes (the recorded peak) for
-    spill cost rather than the legacy constant MAX_SPILL_BYTES=6.
-  - Includes MIRFunction.max_outgoing_arg_bytes in own_frame.
+    spill cost.
   - Resolves trait dispatch via CallGraph.trait_impls and indirect calls via
     CallGraph.address_taken.
 """
@@ -38,7 +37,7 @@ def _make_func(name, *,
                address_taken=None,
                interrupt_attr=None, interrupt_modified_regs=None,
                frame_size=0, prologue_bytes=0,
-               region_spill=0, outgoing_args=0):
+               region_spill=0):
     """Build a minimal MIRFunction with optional Call / TraitDispatch nodes."""
     instructions = []
     if calls:
@@ -89,7 +88,6 @@ def _make_func(name, *,
     func.codegen_frame_size = frame_size
     func.codegen_prologue_bytes = prologue_bytes
     func.codegen_max_region_spill_bytes = region_spill
-    func.max_outgoing_arg_bytes = outgoing_args
     if interrupt_modified_regs is not None:
         func.interrupt_modified_regs = interrupt_modified_regs
     return func
@@ -111,24 +109,16 @@ def _program(*funcs, stack_lower=0x0100, stack_upper=0x01FF,
 # ---------------------------------------------------------------------------
 
 class TestOwnFrameComposition:
-    """own_frame(f) sums prologue + frame + region_spill + outgoing_args."""
+    """own_frame(f) sums prologue + frame + region_spill."""
 
     def test_single_entry_no_calls(self):
         main = _make_func("main", is_entry=True,
                           frame_size=4, prologue_bytes=2,
-                          region_spill=0, outgoing_args=0)
+                          region_spill=0)
         budget = analyze_stack_usage(_program(main))
-        assert budget.entry_use == 6  # 2 + 4 + 0 + 0
+        assert budget.entry_use == 6  # 2 + 4 + 0
         assert budget.total == 6
         assert budget.capacity == 256
-
-    def test_own_frame_includes_outgoing_args(self):
-        leaf = _make_func("leaf")
-        main = _make_func("main", is_entry=True, calls=["leaf"],
-                          frame_size=4, outgoing_args=6)
-        budget = analyze_stack_usage(_program(main, leaf))
-        # main: 0 + 4 + 0 + 6 = 10; call leaf (near = +2); leaf: 0 → 12.
-        assert budget.entry_use == 12
 
     def test_own_frame_includes_region_spill(self):
         leaf = _make_func("leaf")

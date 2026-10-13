@@ -180,10 +180,10 @@ class ModeInfo:
 
 # Unconditional control transfers — successor is the branch target only,
 # not the next-in-line node. JUMP_OPCODES already excludes conditional
-# branches (BCC/BEQ/etc.), so JMP/JML/etc. all qualify. BRA is a branch,
-# but it's also unconditional, so we treat it specially. Codegen never
-# emits BRL, so it is not listed.
-_UNCONDITIONAL_TRANSFER = JUMP_OPCODES | RETURN_OPCODES | frozenset({Opcode.BRA})
+# branches (BCC/BEQ/etc.), so JMP/JML/etc. all qualify. BRA and BRL are
+# branches, but unconditional, so they are listed explicitly.
+_UNCONDITIONAL_TRANSFER = (JUMP_OPCODES | RETURN_OPCODES
+                           | frozenset({Opcode.BRA, Opcode.BRL}))
 
 
 def _required_mode_of(node) -> Mode:

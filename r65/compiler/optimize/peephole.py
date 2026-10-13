@@ -195,38 +195,6 @@ class OptimizationStats:
 # RawAsm Classification
 # ============================================================================
 
-# Some WLA-DX directives emit no code into the instruction stream
-# (string literals like `.ASC` / `.ASCII`) and are safe to skip when
-# scanning for the next "real" instruction. `RawAsm` is the catch-all
-# inline-asm node, so we have to peek at the text to decide whether it
-# represents inert metadata or actual bytes.
-#
-# Mode directives (`.ACCU` / `.INDEX`) are `ModeChange` nodes, not RawAsm.
-_TRANSPARENT_RAWASM_PREFIXES = (
-    '.ASC', '.ASCII',
-)
-# RawAsm prefixes that emit bytes into the instruction stream — must be
-# treated as opaque (a BRA over inline data tables would execute the data).
-_OPAQUE_RAWASM_PREFIXES = ('.DB', '.DW', '.DL', '.DSB', '.DS')
-
-
-def _rawasm_is_transparent(node) -> bool:
-    """Return True if a RawAsm node carries a non-emitting WLA-DX directive
-    (e.g. `.ASCII "..."`) and is therefore safe to skip when looking for
-    the next real instruction. Returns False for inline assembly and
-    data directives.
-    """
-    from r65.compiler.codegen.asm_nodes import RawAsm
-    if not isinstance(node, RawAsm):
-        return False
-    text = node.text.lstrip().upper()
-    if any(text.startswith(prefix) for prefix in _OPAQUE_RAWASM_PREFIXES):
-        return False
-    if any(text.startswith(prefix) for prefix in _TRANSPARENT_RAWASM_PREFIXES):
-        return True
-    return False
-
-
 def _mode_switch_residue(node):
     """What must stay of a SEP/REP once its M bit is known to be a no-op.
 
@@ -426,7 +394,7 @@ def _live_after(nodes: List['AsmNode'], start: int, resources,
             if k >= len(nodes):
                 break  # nothing executes past the last node
             node = nodes[k]
-            if isinstance(node, RawAsm) and not _rawasm_is_transparent(node):
+            if isinstance(node, RawAsm):
                 mode = mode_at(k)
                 reads = _rawasm_reads(node, None if mode is None else mode == 16)
                 if reads is None or reads & live:
@@ -1154,7 +1122,7 @@ class PeepholeOptimizer:
         inline asm — makes the write observable and stops the rewrite.
         """
         from r65.compiler.codegen.asm_nodes import (
-            Instruction, Immediate, Comment, ModeChange, RawAsm,
+            Instruction, Immediate, Comment, ModeChange,
         )
 
         ALL_FLAGS = 0xFF
@@ -1195,9 +1163,6 @@ class PeepholeOptimizer:
             while j < n:
                 nj = nodes[j]
                 if isinstance(nj, (Comment, ModeChange)):
-                    j += 1
-                    continue
-                if isinstance(nj, RawAsm) and _rawasm_is_transparent(nj):
                     j += 1
                     continue
                 break
@@ -1302,6 +1267,7 @@ class PeepholeOptimizer:
                 (node.comment or '') + ' (carry cleared here)' if node.comment
                 else 'Mode switch, carry cleared',
                 node.source_loc,
+                required=node.required,
             )
 
         if not drop:
@@ -1394,8 +1360,7 @@ class PeepholeOptimizer:
                 if sep_rep_idx is not None:
                     sep_rep = nodes[sep_rep_idx]
                     target_mode = 8 if sep_rep.opcode == Opcode.SEP_IMMEDIATE else 16
-                    is_required = bool(getattr(sep_rep, 'comment', None)) and \
-                        'REQUIRED' in (sep_rep.comment or '')
+                    is_required = sep_rep.required
                     if not is_required:
                         arriving = info.incoming_at(sep_rep_idx)
                         defined = {m for m in arriving if m is not None}
@@ -1654,9 +1619,8 @@ class PeepholeOptimizer:
 
         # Build label -> BRA target map: for each label immediately followed
         # by a BRA (skipping other labels/directives), record the BRA target.
-        # Opaque RawAsm (inline asm, data) stops the scan.
-        # `_rawasm_is_transparent` passes only string directives. ModeChange
-        # nodes are not instructions and are skipped.
+        # RawAsm (inline asm, data) emits bytes and stops the scan; ModeChange
+        # nodes and comments are not instructions and are skipped.
         label_to_bra_target: dict[str, str] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
@@ -1666,7 +1630,7 @@ class PeepholeOptimizer:
                     nj = nodes[j]
                     if isinstance(nj, Instruction):
                         break
-                    if isinstance(nj, RawAsm) and not _rawasm_is_transparent(nj):
+                    if isinstance(nj, RawAsm):
                         break
                     j += 1
                 if (j < len(nodes) and
@@ -2396,14 +2360,11 @@ class PeepholeOptimizer:
         Eliminate BRA instructions that branch to the immediately following label.
 
         Pattern: BRA label; label: -> label:
-        Skips directives/comments between the BRA and the label.
+        Skips mode directives, comments and other labels between the BRA and
+        the label. RawAsm (inline asm, data directives) emits bytes the CPU
+        would then execute, so it keeps the BRA.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Label, Address, RawAsm
-
-        # Data directives that emit bytes into the code stream (e.g. inline
-        # lookup tables).  A BRA must NOT be eliminated when these appear
-        # between it and its target — the CPU would execute the data as code.
-        _DATA_DIRECTIVE_PREFIXES = ('.DB ', '.DW ', '.DL ', '.DSB ', '.DS ')
 
         optimized = []
         i = 0
@@ -2418,17 +2379,14 @@ class PeepholeOptimizer:
 
                 target = node.operand.value
 
-                # Look ahead past directives/comments/non-target labels for the target label.
-                # Labels between the BRA and target contain no instructions, so
-                # falling through them is equivalent to branching to the target.
-                # IMPORTANT: .DB/.DW/.DL data directives emit bytes into the code
-                # stream (e.g. inline lookup tables) — treat them as barriers.
+                # Look ahead for the target label. Labels between the BRA
+                # and target contain no instructions, so falling through
+                # them is equivalent to branching to the target.
                 j = i + 1
                 while j < len(nodes) and not isinstance(nodes[j], Instruction):
                     if isinstance(nodes[j], Label) and nodes[j].name == target:
                         break
-                    if isinstance(nodes[j], RawAsm) and nodes[j].text.lstrip().upper().startswith(
-                            _DATA_DIRECTIVE_PREFIXES):
+                    if isinstance(nodes[j], RawAsm):
                         break
                     j += 1
 
@@ -2462,15 +2420,15 @@ class PeepholeOptimizer:
         label_to_return: dict[str, Opcode] = {}
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
-                # Find first instruction after label. Stop at inline asm /
-                # data directives (opaque RawAsm) but skip non-instruction
-                # nodes (ModeChange, comments) and transparent string RawAsm.
+                # Find first instruction after label. Stop at RawAsm (inline
+                # asm, data directives: it emits bytes) but skip
+                # non-instruction nodes (ModeChange, comments).
                 j = i + 1
                 while j < len(nodes):
                     nj = nodes[j]
                     if isinstance(nj, Instruction):
                         break
-                    if isinstance(nj, RawAsm) and not _rawasm_is_transparent(nj):
+                    if isinstance(nj, RawAsm):
                         break
                     j += 1
                 if (j < len(nodes) and isinstance(nodes[j], Instruction) and

@@ -33,8 +33,8 @@ class TestFixedStackBasicPromotion:
         result = compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
         assert "add_one:" in result
 
-    def test_no_outgoing_arg_area(self):
-        """FixedStack should not allocate outgoing arg area."""
+    def test_caller_of_promoted_param_compiles(self):
+        """A caller of a function whose stack param was promoted compiles."""
         source = """
         fn callee(x: u8) -> u8 {
             return x;
@@ -222,7 +222,7 @@ def test_dispatch_reserves_the_dispatched_methods_param_bytes(monkeypatch):
     def spy(program, *args):
         collect(program, *args)
         for f in program.functions:
-            reserved[f.name] = getattr(f, '_trait_dispatch_scratch_addrs', set())
+            reserved[f.name] = f.trait_dispatch_scratch_bytes
 
     monkeypatch.setattr(fp, '_collect_trait_dispatch_scratch_addrs', spy)
     source = """

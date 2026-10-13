@@ -101,7 +101,7 @@ mir_func.has_far_ptr_stack_params = True
 
 That second flag routes the function through the general far-ptr-strategy
 machinery (Section 2). For far-self D=S the strategy is forced to
-`D_EQUALS_S` because `_is_set_dbr_safe` returns False when
+`D_EQUALS_S` because `is_set_dbr_safe` returns False when
 `self_far_uses_d_equals_s` is set.
 
 Prologue (after standard preserves and after A-param save):
@@ -220,7 +220,7 @@ Predicates and their disqualifiers:
 
 | Predicate | Disqualifiers (gap instruction or function body) |
 |-----------|--------------------------------------------------|
-| DBR-independent (`_instr_is_dbr_independent` / `_function_is_dbr_independent`) | non-LONG RAM/lowram access; near pointer deref; inline `MemoryLocation` operands on Compare/BitTest/BinaryOp/UnaryOp pointing at RAM/lowram; nested `TraitDispatch`; call to non-DBR-independent function; functions that use `SET_DBR` / `self_far_uses_d_equals_s` / are in a call-graph cycle |
+| DBR-independent (`_instr_is_dbr_independent` / `_function_is_dbr_independent`) | non-LONG RAM/lowram access; near pointer deref; inline `MemoryLocation` operands on Compare/BitTest/BinaryOp/UnaryOp pointing at RAM/lowram; zero-page access in a function that runs with D=S (absolute there); inline `asm!`; nested `TraitDispatch`; call to non-DBR-independent function; functions that use `SET_DBR` / `self_far_uses_d_equals_s` / are in a call-graph cycle |
 | Y-preserving (`_instr_preserves_y` / `_function_preserves_y`) | inline asm; nested `TraitDispatch` (dispatch wrapper clobbers Y); call to non-Y-preserving function; vreg with `register_hint='Y'`; explicit Move/etc. with HW-Y dest; recursion |
 
 In addition every gap walker rejects redefinition of the chain's root
@@ -337,7 +337,7 @@ That extra PHB/PHK/PLB/PLB bracket is the 14*N_calls term in the cost model.
 - ❌ Only safe with a **single** far-pointer stack param (can't set DBR to two
   banks at once).
 - ❌ Near pointer derefs in the same function become unsafe — changing DBR
-  changes which bank the near pointer points into. `_is_set_dbr_safe`
+  changes which bank the near pointer points into. `is_set_dbr_safe`
   rejects functions with non-trait-self near `LoadIndirect`/`StoreIndirect`
   via VirtualRegister pointers.
 - ❌ Far-pointer derefs through *non-param* far pointers also unsafe (their
@@ -348,14 +348,14 @@ That extra PHB/PHK/PLB/PLB bracket is the 14*N_calls term in the cost model.
 
 ### 2.3 Choosing between them
 
-`_choose_strategy` (far_ptr_strategy.py:33):
+`_choose_strategy` (far_ptr_strategy.py):
 
 ```python
-if func.scratch_param_addrs and _is_set_dbr_safe(func):
-    return FarPtrStrategy.SET_DBR        # forced — D=S would break scratches
-
-if not _is_set_dbr_safe(func):
+if forces_d_equals_s(func):              # far-ptr stack params, not is_set_dbr_safe
     return FarPtrStrategy.D_EQUALS_S     # forced — SET_DBR not safe
+
+if func.scratch_param_addrs:             # scratch promotion skips forced D=S
+    return FarPtrStrategy.SET_DBR        # forced — D=S would break scratches
 
 # cost-driven choice
 d_equals_s_cost = 13 + n_zp + 13*n_calls
@@ -370,7 +370,7 @@ mechanisms separately) and expensive under SET_DBR — that's the dominant
 term. Calls are slightly more expensive under SET_DBR because of the
 PHB/PHK/PLB/PLB bracket.
 
-`_is_set_dbr_safe` rejects:
+`is_set_dbr_safe` rejects:
 
 1. More than one far-pointer stack param (`len(func.far_ptr_param_indices) > 1`).
 2. `func.self_far_uses_d_equals_s` is True (D=S has already been forced).
@@ -471,8 +471,8 @@ For a single function, the combinations actually emitted:
 | no | — | yes | cost-driven SET_DBR or D=S | classic far-ptr params |
 | yes | near | no | (none) | self in Y |
 | yes | far, leaf | no | (none) | DBR:Y far self, self in Y |
-| yes | far, non-leaf | yes (forced) | D=S (forced via `_is_set_dbr_safe`) | self on stack at fixed offset, accessed via `[dp],Y` |
-| yes | far, leaf, but body also takes another `far *T` stack param | yes | cost-driven, but `_is_set_dbr_safe` may reject | rare |
+| yes | far, non-leaf | yes (forced) | D=S (forced via `is_set_dbr_safe`) | self on stack at fixed offset, accessed via `[dp],Y` |
+| yes | far, leaf, but body also takes another `far *T` stack param | yes | cost-driven, but `is_set_dbr_safe` may reject | rare |
 
 ---
 

@@ -12,20 +12,18 @@ This replaces scratch_params.py for FixedStack mode.
 import sys
 from typing import Dict, Set, List, Tuple
 from r65.compiler.mir.nodes import (
-    CallBase,
     MIRProgram, MIRFunction, Call, ArgumentMechanism,
     Move, VirtualRegister, HardwareRegister, TraitDispatch,
-    Load, Store, MemoryLocation,
 )
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.param_utils import (
     find_composite_scratch, find_trait_impl_groups,
-    param_bytes, clear_far_ptr_flag_if_all_promoted,
+    clear_far_ptr_flag_if_all_promoted, reserve_scratch_param_bytes,
 )
 from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
-from r65.compiler.hir.types import PointerTypeInfo
+from r65.compiler.analysis.far_ptr_strategy import far_self_needs_save
 
 
 def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegisterPool):
@@ -34,9 +32,6 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
 
     Compile error if any parameter cannot be placed. This is mandatory for
     FixedStack ABI where no stack-passed parameters are allowed.
-
-    Also sets max_outgoing_arg_bytes = 0 for all functions (FixedStack has no
-    outgoing arg area).
 
     Args:
         mir_program: MIR program to analyze (mutated in place)
@@ -159,8 +154,6 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
 
     if not all_promotions:
         # No stack params in the whole program — nothing to do
-        for func in mir_program.functions:
-            func.max_outgoing_arg_bytes = 0
         return
 
     # Step 3: Apply promotions to callee functions
@@ -189,23 +182,12 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         # Clear far pointer stack param flag if all far ptrs promoted off stack
         clear_far_ptr_flag_if_all_promoted(func, func_promos.keys())
 
-    # Step 4: Collect global set of all scratch param addresses.
-    # Any function's locals must avoid these addresses because a caller's
-    # scratch params persist across calls while the callee runs.
-    # For multi-byte params, include ALL bytes in the range (e.g. u16 at $00 → {$00, $01}).
-    #
+    # Step 4: Reserve every scratch param byte from all functions' locals.
     # Trait dispatch scratch addresses are NOT globally reserved — they use
     # caller-scoped reservation (only functions that contain TraitDispatch
     # calls mark those addresses as occupied).
-    global_scratch_param_addrs: Set[int] = set()
-    for func in mir_program.functions:
-        if func.name in trait_promoted_funcs:
-            continue  # Trait impl scratches are caller-scoped, not global
-        for param_idx, base_addr in func.scratch_param_addrs.items():
-            global_scratch_param_addrs.update(param_bytes(func, param_idx, base_addr))
-    # Store on each function so function_gen.py can access it
-    for func in mir_program.functions:
-        func._global_scratch_param_addrs = global_scratch_param_addrs
+    global_scratch_param_addrs = reserve_scratch_param_bytes(
+        mir_program, skip=trait_promoted_funcs)
 
     # Step 4b: Caller-scoped reservation for trait dispatch scratches.
     # Scan each function for TraitDispatch instructions. For each caller that
@@ -226,10 +208,6 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # Step 5: Update call sites
     for func in mir_program.functions:
         _update_call_sites(func, all_promotions, trait_method_promos)
-
-    # Step 6: Zero out outgoing arg bytes for all functions
-    for func in mir_program.functions:
-        func.max_outgoing_arg_bytes = 0
 
     total = total_hw + total_scratch
     if total > 0:
@@ -305,7 +283,6 @@ def _promote_function_params(
         return {}
 
     from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
-    from r65.compiler.hir.types import PointerTypeInfo
 
     if reserved_scratch_bytes is None:
         reserved_scratch_bytes = set()
@@ -331,16 +308,7 @@ def _promote_function_params(
             continue
         param_size = get_type_size(func.parameters[param_idx].param_type)
         cross_call = liveness.is_live_across_any_call(vreg)
-
-        # Far pointers (3 bytes) can only go to scratch, not hw regs
-        is_far_ptr = isinstance(func.parameters[param_idx].param_type, PointerTypeInfo) and \
-                     func.parameters[param_idx].param_type.is_far
-
-        if is_far_ptr:
-            # Force to scratch only
-            params_to_place.append((param_idx, vreg, param_size, cross_call))
-        else:
-            params_to_place.append((param_idx, vreg, param_size, cross_call))
+        params_to_place.append((param_idx, vreg, param_size, cross_call))
 
     # Available hw regs for promotion (order: A, B for u8; X, Y for u16)
     # B is only usable in m8 mode — exclude it from m16 functions (@ A: u16)
@@ -518,34 +486,6 @@ def _apply_promos_to_args(args, callee_promos: Dict[int, Tuple[str, object]]):
             arg.scratch_addr = loc
 
 
-def _far_self_needs_save(func: MIRFunction) -> bool:
-    """Return True if a far-self trait method needs self saved across calls/ROM.
-
-    Mirrors the non-leaf detection in function_gen._analyze_far_self_trait_method:
-    any Call/TraitDispatch or ROM/HW Load/Store means self must be saved before
-    the call (callee will normalize DBR) or before the access (DBR may not match).
-    """
-    if not func.is_trait_method or not func.self_y_vreg:
-        return False
-    self_type = func.self_y_vreg.type_info
-    if not isinstance(self_type, PointerTypeInfo) or not self_type.is_far:
-        return False
-
-    for block in func.blocks.values():
-        for instr in block.instructions:
-            if isinstance(instr, CallBase):
-                return True
-            if isinstance(instr, Load):
-                src = getattr(instr, 'source', None)
-                if isinstance(src, MemoryLocation) and src.storage_type in ('rom', 'hw'):
-                    return True
-            elif isinstance(instr, Store):
-                dst = getattr(instr, 'dest', None)
-                if isinstance(dst, MemoryLocation) and dst.storage_type in ('rom', 'hw'):
-                    return True
-    return False
-
-
 def _allocate_far_self_scratches(
     mir_program: MIRProgram,
     scratch_pool: ScratchRegisterPool,
@@ -615,7 +555,7 @@ def _allocate_far_self_scratches(
         )
 
     for func in mir_program.functions:
-        if not _far_self_needs_save(func):
+        if not far_self_needs_save(func):
             continue
 
         # Shared-address branch for dynamic-dispatch groups.
@@ -653,9 +593,7 @@ def _allocate_far_self_scratches(
                         )
                         if addrs:
                             per_func |= addrs
-            if per_func:
-                existing = getattr(func, '_trait_dispatch_scratch_addrs', None) or set()
-                func._trait_dispatch_scratch_addrs = existing | per_func
+            func.trait_dispatch_scratch_bytes |= per_func
 
 
 def _scratch_param_bytes(promos: Dict[int, Tuple[str, object]],
@@ -706,5 +644,4 @@ def _collect_trait_dispatch_scratch_addrs(
                     addrs = trait_scratch_bytes.get(key)
                     if addrs:
                         func_trait_addrs |= addrs
-        if func_trait_addrs:
-            func._trait_dispatch_scratch_addrs = func_trait_addrs
+        func.trait_dispatch_scratch_bytes = func_trait_addrs

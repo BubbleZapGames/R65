@@ -37,6 +37,8 @@ from r65.compiler.mir.nodes import (
     Call, CallBase, TraitDispatch, VirtualRegister,
     Move, TypeConvert, BinaryOp, UnaryOp, InlineAsm, iter_memory_operands,
 )
+from r65.compiler.hir.types import PointerTypeInfo
+from r65.compiler.analysis.far_ptr_strategy import runs_with_d_equals_s
 
 
 @dataclass(frozen=True)
@@ -253,7 +255,8 @@ def _try_bridge_diamond(func, head_block, visited_blocks, path,
     # isn't modeled as a DBR/Y-relevant op.
     for arm in (s1, s2):
         for instr in arm.instructions:
-            if not kind.instr_ok(instr, call_graph, func_map, cyclic_funcs):
+            if not kind.instr_ok(instr, call_graph, func_map, cyclic_funcs,
+                                 func=func):
                 return None
 
     return [s1, s2], rejoin_id
@@ -562,12 +565,7 @@ def _trivial_cast_source(instr):
 
     if isinstance(instr, TypeConvert):
         # Conservative: both types must be PointerTypeInfo with matching
-        # is_far AND matching size_bytes. We import lazily to avoid a
-        # circular dependency with the HIR types module.
-        try:
-            from r65.compiler.hir.types import PointerTypeInfo
-        except ImportError:
-            return None
+        # is_far AND matching size_bytes.
         st = instr.source_type
         tt = instr.target_type
         if not (isinstance(st, PointerTypeInfo) and isinstance(tt, PointerTypeInfo)):
@@ -619,14 +617,16 @@ def _instr_redefines_vreg(instr, vreg):
                for _, v in iter_operands(instr, role=OperandRole.WRITE))
 
 
-def _uses_dbr(mem) -> bool:
+def _uses_dbr(mem, d_equals_s: bool) -> bool:
     """True if codegen addresses `mem` through DBR (16-bit absolute).
 
     RAM and lowram are emitted absolute. A `#[hw]` register at a 16-bit
     address is absolute too: it lives in bank $00 (and its mirrors), not
     in a RAM or ROM object's bank. A ROM label is emitted LONG except
     when indexed by Y, which has no long form and falls back to absolute.
-    Zeropage goes through DP.
+    Zeropage goes through DP, except in a function that runs with D=S
+    (`d_equals_s`), where it is absolute as well: under a self bank of
+    $40-$7D, $7F or $C0-$FF that reaches ROM or high WRAM, not page 0.
     """
     if mem.storage_type in ('ram', 'lowram'):
         return True
@@ -634,6 +634,8 @@ def _uses_dbr(mem) -> bool:
         return mem.address is None or mem.address <= 0xFFFF
     if mem.storage_type == 'rom':
         return mem.index_register == 'Y'
+    if mem.storage_type == 'zeropage':
+        return d_equals_s
     return False
 
 
@@ -641,19 +643,20 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=No
     """True if `instr` is safe to execute while DBR is set to self's bank
     (rather than the caller's DBR).
 
-    `func` is accepted but unused — it's there so the signature matches
-    ``_instr_preserves_y`` and both can be plugged into the same predicate
-    helpers (``_function_satisfies``, ``_between_satisfies``).
+    `func` is the function `instr` sits in: under D=S its zero-page
+    operands are DBR-relative too (`runs_with_d_equals_s`).
 
     Disqualifiers:
       - a memory operand codegen addresses DBR-relative (`_uses_dbr`)
       - near pointer dereference
       - indirect call, or call to a non-DBR-independent function
       - any TraitDispatch
+      - inline asm (not analyzed; it may address memory through DBR)
     """
     # Any node may name memory - a load or store, a folded operand, a
     # read-modify-write, a copy.
-    if any(_uses_dbr(m) for m in iter_memory_operands(instr)):
+    d_equals_s = func is not None and runs_with_d_equals_s(func)
+    if any(_uses_dbr(m, d_equals_s) for m in iter_memory_operands(instr)):
         return False
 
     if isinstance(instr, (LoadIndirect, StoreIndirect)):
@@ -681,8 +684,11 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=No
         # the gap region.
         return False
 
+    if isinstance(instr, InlineAsm):
+        return False
+
     # Other instructions (arithmetic, compare, branch, mode set, push/pull,
-    # inline asm, save/restore reg, type convert, ...) are DBR-independent.
+    # save/restore reg, type convert, ...) are DBR-independent.
     return True
 
 

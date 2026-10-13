@@ -188,7 +188,7 @@ class TestNonParamDerefVetoesSetDbr:
 
     This is what makes it safe to inline a far callee with a far-pointer stack
     param into a caller that has one of its own. The spliced-in deref goes
-    through a vreg the caller never declared, so `_is_set_dbr_safe` vetoes
+    through a vreg the caller never declared, so `is_set_dbr_safe` vetoes
     SET_DBR — and D=S reaches the pointer with `[dp],Y`, which is indirect long
     and carries its own bank. Under SET_DBR it would have used the caller's DBR,
     set to the caller's pointer bank, and read the wrong one.

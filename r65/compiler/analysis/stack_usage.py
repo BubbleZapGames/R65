@@ -5,7 +5,7 @@ Static stack-size analysis.
 Walks the call graph bottom-up to bound the runtime stack high-water mark
 of an R65 program. Runs as the final step of compilation, after codegen
 has populated the per-function inputs on ``MIRFunction`` (frame size,
-prologue bytes, region-spill peak, outgoing arg bytes).
+prologue bytes, region-spill peak).
 
 Algorithm
 ---------
@@ -16,7 +16,6 @@ Algorithm
     own_frame(f) = abi.prologue_stack_bytes      # PHB / PHX / PHY / PHD
                  + codegen_frame_size             # locals
                  + codegen_max_region_spill_bytes # peak PHA/PHX/PHY around calls
-                 + max_outgoing_arg_bytes         # caller-owned outgoing args
 
     ra(s) = 3 if call_site.is_far else 2         # JSL pushes PBR+PC vs JSR PC
 
@@ -113,8 +112,7 @@ class StackUsageAnalyzer:
     """Compute a static upper bound on stack usage from a populated MIRProgram.
 
     Must run after ``Codegen.generate()`` so that each ``MIRFunction`` has
-    ``abi_info`` set and the ``codegen_*`` and ``max_outgoing_arg_bytes``
-    fields populated.
+    ``abi_info`` set and the ``codegen_*`` fields populated.
     """
 
     def __init__(self, mir_program: MIRProgram,
@@ -242,8 +240,7 @@ class StackUsageAnalyzer:
 
         frame = getattr(func, 'codegen_frame_size', 0) or 0
         spill = getattr(func, 'codegen_max_region_spill_bytes', 0) or 0
-        out_args = getattr(func, 'max_outgoing_arg_bytes', 0) or 0
-        return prologue + frame + spill + out_args
+        return prologue + frame + spill
 
     def _call_edges(self, func: MIRFunction):
         """Yield (callee_name, ra_bytes) for every reachable call edge.

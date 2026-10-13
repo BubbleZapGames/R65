@@ -18,7 +18,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate,
     InlineAsm, Argument, ArgumentMechanism, SetMode,
     BitTest, Rotate, Push, Pull,
-    TraitDispatch, FarPtrStrategy,
+    TraitDispatch,
 )
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import (
@@ -1231,31 +1231,6 @@ class TestCanInlineRejections:
         checker, _ = self._checker_for(callee)
         assert checker.can_inline(callee.name) is False
 
-    def test_rejects_scratch_param_addrs(self):
-        """Callees with promoted scratch params reserve DP slots tied to
-        their signature; the caller's frame doesn't reflect those."""
-        callee = create_simple_callee()
-        callee.scratch_param_addrs = {0: 0x40}
-        checker, _ = self._checker_for(callee)
-        assert checker.can_inline(callee.name) is False
-
-    def test_rejects_hw_param_regs(self):
-        """Callees with hw-promoted params (FixedStack ABI) carry per-param
-        register pre-allocations the caller doesn't see."""
-        callee = create_simple_callee()
-        callee.hw_param_regs = {0: 'X'}
-        checker, _ = self._checker_for(callee)
-        assert checker.can_inline(callee.name) is False
-
-    def test_rejects_far_ptr_strategy(self):
-        """far_ptr_strategy is per-function (D=S vs SET_DBR); inlining a
-        callee under one strategy into a caller under the other breaks
-        LoadIndirect/StoreIndirect lowering."""
-        callee = create_simple_callee()
-        callee.far_ptr_strategy = FarPtrStrategy.D_EQUALS_S
-        checker, _ = self._checker_for(callee)
-        assert checker.can_inline(callee.name) is False
-
     def test_rejects_preserves_attr(self):
         """#[preserves(...)] contract is enforced at the call boundary; the
         inliner removes the boundary without emitting equivalent
@@ -2332,7 +2307,7 @@ class TestFarFunctionInlining:
         picks the far-deref path from whichever caller the body lands in, and
         both outcomes are bank-explicit — the per-access DBR path when the
         caller has no far-ptr params of its own, and D=S long addressing when
-        it does (`_is_set_dbr_safe` vetoes SET_DBR once a deref goes through a
+        it does (`is_set_dbr_safe` vetoes SET_DBR once a deref goes through a
         non-param pointer). See `_far_body_is_bank_safe` for the full argument
         and `test_far_ptr_inline_banks.py` for the runtime proof.
 

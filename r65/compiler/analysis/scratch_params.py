@@ -23,9 +23,9 @@ from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.analysis.param_utils import (
     find_composite_scratch,
-    param_bytes, clear_far_ptr_flag_if_all_promoted,
+    param_bytes, clear_far_ptr_flag_if_all_promoted, reserve_scratch_param_bytes,
 )
-from r65.compiler.analysis.far_ptr_strategy import _is_set_dbr_safe
+from r65.compiler.analysis.far_ptr_strategy import forces_d_equals_s
 from r65.compiler.analysis.call_graph import build_call_graph
 
 
@@ -44,9 +44,8 @@ def _is_eligible_for_any_promotion(func: MIRFunction, address_taken: Set[str]) -
         # the argument on the stack and the callee reads a scratch address
         # nobody wrote. Same reason the inliner refuses trait methods.
         return False
-    # D=S moves DP onto the stack, leaving scratch DP addresses inaccessible
-    if func.has_far_ptr_stack_params and not _is_set_dbr_safe(func):
-        return False
+    if forces_d_equals_s(func):
+        return False  # D=S moves DP onto the stack, away from the scratch bytes
     return True
 
 
@@ -86,23 +85,17 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
     # Step 2b: Demote any caller param whose scratch addr would be
     # overwritten by a callee's scratch param at a call where the caller
     # param is used as an argument. Demotion only shrinks callee footprints,
-    # so it cannot create a conflict. Freed addresses are not reassigned.
+    # so it cannot create a conflict and one sweep finds them all. Freed
+    # addresses are not reassigned.
     func_by_name = {f.name: f for f in mir_program.functions}
-    while True:
-        demoted_any = False
-        for caller in mir_program.functions:
-            caller_promos = promotions.get(caller.name)
-            if not caller_promos:
-                continue
-            conflicts = _find_war_conflicts(caller, caller_promos, promotions, func_by_name)
-            if conflicts:
-                for param_idx in conflicts:
-                    del caller_promos[param_idx]
-                if not caller_promos:
-                    del promotions[caller.name]
-                demoted_any = True
-        if not demoted_any:
-            break
+    for caller in mir_program.functions:
+        caller_promos = promotions.get(caller.name)
+        if not caller_promos:
+            continue
+        for param_idx in _find_war_conflicts(caller, caller_promos, promotions, func_by_name):
+            del caller_promos[param_idx]
+        if not caller_promos:
+            del promotions[caller.name]
 
     if not promotions:
         return
@@ -121,16 +114,8 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
             # Clear far pointer flag if all far ptrs promoted
             clear_far_ptr_flag_if_all_promoted(func, func_promos.keys())
 
-    # Step 3b: Collect global set of all scratch param addresses.
-    # Any function's locals must avoid these addresses because a caller's
-    # scratch params persist across calls while the callee runs.
-    global_scratch_param_addrs: Set[int] = set()
-    for func in mir_program.functions:
-        for param_idx, base_addr in func.scratch_param_addrs.items():
-            global_scratch_param_addrs.update(param_bytes(func, param_idx, base_addr))
-    # Store on each function so function_gen.py can mark them as occupied
-    for func in mir_program.functions:
-        func._global_scratch_param_addrs = global_scratch_param_addrs
+    # Step 3b: Reserve every scratch param byte from all functions' locals.
+    reserve_scratch_param_bytes(mir_program)
 
     # Step 4: Update call sites
     for func in mir_program.functions:

@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Dict, List, Set, Optional, Tuple
 
 from r65.compiler.codegen.type_utils import defines_in_a
+from r65.compiler.codegen.arg_order import register_arg_rank
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
     MIRInstruction, VirtualRegister, HardwareRegister, Immediate,
@@ -251,7 +252,7 @@ class InlinabilityChecker:
           `_get_far_ptr_strategy() is None` and the per-access path, which
           reads the bank byte from the pointer itself. A caller that does have
           them sees a deref through a vreg that is not one of *its* params, so
-          `_is_set_dbr_safe` vetoes SET_DBR and forces D=S, whose `[dp],Y` is
+          `is_set_dbr_safe` vetoes SET_DBR and forces D=S, whose `[dp],Y` is
           indirect long and takes its bank from the pointer bytes. Both
           analyses run after inlining (`codegen.py`), so they see the merged
           body.
@@ -395,27 +396,6 @@ class InlinabilityChecker:
         # is callee-specific and the body's self_y_vreg has no meaning in
         # the caller's vreg space.
         if func.is_trait_method:
-            return False
-
-        # Scratch-param promotion (analyze_scratch_params / fixedstack_params)
-        # reserves direct-page slots tied to the callee's signature. The
-        # caller's frame doesn't reflect those reservations, and the global
-        # scratch reservation set lives on the function being processed.
-        # Rather than merge the maps (and risk overlapping reservations),
-        # refuse to inline callees with promoted params. The expression
-        # lowerer never reaches them anyway except via the call ABI.
-        if func.scratch_param_addrs:
-            return False
-        if func.hw_param_regs:
-            return False
-
-        # Far-pointer access strategy (D=S vs SET_DBR) is chosen per-function
-        # by analysis/far_ptr_strategy.py based on body characteristics
-        # (prologue PHD/TSC/TCD vs PHB/PLB). LoadIndirect/StoreIndirect
-        # lowering reads `caller.far_ptr_strategy`, so splicing a callee
-        # configured for the opposite strategy yields wrong addressing.
-        # Reject any callee with a non-default strategy.
-        if func.far_ptr_strategy is not None:
             return False
 
         # Callee's #[preserves(...)] contract is enforced at the call boundary
@@ -1376,7 +1356,7 @@ class FunctionInliner:
                     # bytes get zero/sign-extended properly. A plain Move does
                     # a bit-copy and leaves the high byte garbage from whatever
                     # was last in A. The non-inlined call path handles this
-                    # via emit_outgoing_stack_argument's source_size < param_size
+                    # via emit_pha_stack_argument's source_size < param_size
                     # branch; the inline path must mirror it.
                     from r65.compiler.codegen.type_utils import get_type_size
                     arg_type = getattr(arg.value, 'type_info', None)
@@ -1405,18 +1385,9 @@ class FunctionInliner:
                         type_info=param.param_type
                     ))
 
-        # Sort register loads so any A-targeted load comes LAST. Several
-        # non-A param loads route through A in codegen — Move to B uses
-        # XBA on A, Move to DBR uses PHA/PLB, Move to D uses TCD — so
-        # if we set A first then load another register through A, the
-        # A-param value is clobbered before the body uses it. Matches the
-        # non-inlined order in `CallSelector.arg_sort_key`
-        # (codegen/call_select.py: 'A last'); see docs/abi-models.md,
-        # "Argument Setup Preserves an A-Resident Value". Stable sort: False
-        # (non-A) sorts before True (A).
-        register_instrs.sort(
-            key=lambda m: getattr(m.dest, 'name', '') == 'A'
-        )
+        # Register loads in the call lowering's order, A last: the other
+        # loads go through A and would clobber an A param set before them.
+        register_instrs.sort(key=lambda m: register_arg_rank(m.dest.name))
 
         return register_instrs, stack_instrs
 

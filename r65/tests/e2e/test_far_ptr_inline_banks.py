@@ -11,7 +11,7 @@ both outcomes are bank-explicit:
   each deref brackets itself with PHB / set DBR from the pointer's own bank byte
   / PLB;
 - a caller that does have them sees a deref through a vreg that is not one of
-  *its* params, which makes `_is_set_dbr_safe` veto SET_DBR and force D=S, whose
+  *its* params, which makes `is_set_dbr_safe` veto SET_DBR and force D=S, whose
   `[dp],Y` is indirect long and carries its own bank.
 
 Compiling is not the test. A wrong-bank read compiles perfectly and returns
@@ -56,7 +56,7 @@ def test_inlined_far_helper_reads_the_pointers_bank(e2e):
 def test_inlined_into_a_caller_that_has_its_own_far_ptr_param(e2e):
     """The caller derefs its own far-ptr param *and* an inlined one.
 
-    This is the case that depends on `_is_set_dbr_safe` noticing the non-param
+    This is the case that depends on `is_set_dbr_safe` noticing the non-param
     deref and forcing D=S. Under SET_DBR the inlined deref would use the
     caller's DBR — set to the caller's own pointer bank, 3 — and read 'C' from
     OTHER instead of 'A' from REAL, summing to 0x86 rather than 0x84.

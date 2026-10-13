@@ -235,6 +235,42 @@ class TestFarSelfChainCoalescing:
         assert phb >= 3, f"Expected >= 3 PHB (mixed selves uncoalesced), got {phb}"
         assert plb >= 3, f"Expected >= 3 PLB (mixed selves uncoalesced), got {plb}"
 
+    def test_chain_broken_by_zeropage_store_under_d_equals_s(self):
+        """A D=S function reaches zero page with absolute addressing, through
+        DBR. In a chain gap DBR is self's bank: for a HiROM ROM object
+        ($C5) `STA.w $0000` would write ROM, not Z. The store must split
+        the chain into two brackets."""
+        source = _PREAMBLE + '''
+            #[zeropage]
+            static mut Z: u8;
+
+            struct Player { x: u8 }
+            trait HasX { far fn get_x(far *self) -> u8; }
+            impl HasX for Player {
+                far fn get_x(far *self) -> u8 { return self.x; }
+            }
+
+            #[bank(5)]
+            static ROMP: Player = Player { x: 1 };
+
+            #[bank(0)]
+            #[inline(never)]
+            fn caller(q: far *u8, p: far *dyn HasX) -> u8 {
+                let a: u8 = p.get_x();
+                Z = a;
+                let b: u8 = p.get_x();
+                return a + b + *q + Z;
+            }
+
+            #[entry]
+            fn main() {
+                let p: far *dyn HasX = &ROMP;
+                RESULT = caller(&RESULT as far *u8, p);
+            }
+        '''
+        asm = _compile_snes(source)
+        assert _count_in_function(asm, 'caller', 'PHB') == 2, asm
+
     def test_chain_runtime_correctness(self, e2e):
         """Chain a method that mutates self.x with a method that reads it.
 

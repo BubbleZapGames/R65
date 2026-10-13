@@ -2,7 +2,7 @@
 """Tests for Default ABI scratch parameter global reservation.
 
 Bug: analyze_scratch_params() (Default ABI) did not set
-_global_scratch_param_addrs on functions, so function_gen.py couldn't
+global_scratch_param_bytes on functions, so function_gen.py couldn't
 reserve those DP addresses. This allowed the register allocator to place
 local variables at the same addresses used by callee scratch params.
 
@@ -11,7 +11,6 @@ the global set.
 """
 
 import re
-import pytest
 from r65.compiler.main import compile_string
 
 
@@ -41,6 +40,7 @@ class TestScratchParamGlobalReservation:
     def test_callee_scratch_params_exist(self):
         """Verify that far fn callees get scratch-promoted params."""
         source = self.SCRATCHES + """
+        #[inline(never)]
         far fn helper(a: u8, b: u8) -> u8 {
             return a + b;
         }
@@ -58,11 +58,12 @@ class TestScratchParamGlobalReservation:
     def test_caller_locals_avoid_callee_scratch(self):
         """Assembly must not store non-param locals at callee scratch addresses.
 
-        This is the core regression test. Without _global_scratch_param_addrs,
+        This is the core regression test. Without global_scratch_param_bytes,
         the register allocator may place caller locals at DP addresses that
         callees use for scratch params, causing silent clobbering.
         """
         source = self.SCRATCHES + """
+        #[inline(never)]
         far fn helper(a: u8, b: u8) -> u8 {
             return a + b;
         }
@@ -83,8 +84,7 @@ class TestScratchParamGlobalReservation:
         """
         asm = compile_string(source, "test.r65")
         helper_scratch = self._find_scratch_param_addrs(asm)
-        if not helper_scratch:
-            pytest.skip("No scratch params in assembly")
+        assert helper_scratch, "helper's params should be scratch-promoted"
 
         # In outer's body, any bare STA $XX (without "Scratch param" comment)
         # must NOT target a helper scratch address

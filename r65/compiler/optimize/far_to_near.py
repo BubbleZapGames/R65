@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 
 from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call
 from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
+# The bank #[bank(auto)] functions are placed in; codegen places them by it.
+from r65.compiler.codegen.symbol_gen import auto_bank_number as compute_auto_bank_num
 
 
 @dataclass
@@ -36,23 +38,6 @@ class FunctionBankInfo:
     has_address_taken: bool = False
     is_interrupt: bool = False
     callers: Set[str] = field(default_factory=set)
-
-
-def compute_auto_bank_num(mir_program: MIRProgram) -> int:
-    """Return the bank that `#[bank(auto)]` functions will be placed in.
-
-    Mirrors the rule in `ProgramCodeGenerator._organize_functions_by_bank`:
-    auto-bank functions live in the bank above the highest explicit bank,
-    with a floor of bank 4. If the program has no auto-bank functions the
-    value isn't actually used; we still compute a consistent number so
-    callers can compare freely.
-    """
-    explicit_max = -1
-    for func in mir_program.functions:
-        if func.bank_attr and func.bank_attr.bank_number is not None:
-            if func.bank_attr.bank_number > explicit_max:
-                explicit_max = func.bank_attr.bank_number
-    return max(explicit_max + 1, 4)
 
 
 def effective_bank(func: MIRFunction, auto_bank_num: int) -> int:
@@ -92,9 +77,8 @@ class FarToNearOptimizer:
         # Mangled names of every method reachable through a trait dispatch
         # table. Filled in at the start of `optimize()`.
         self._dispatch_targets: Set[str] = set()
-        # Computed bank that auto-bank functions will land in. Filled in
-        # at the start of `optimize()`. Mirrors the placement rule used
-        # later by `ProgramCodeGenerator._organize_functions_by_bank`.
+        # The bank auto-bank functions will land in (`compute_auto_bank_num`).
+        # Filled in at the start of `optimize()`.
         self._auto_bank_num: int = 0
 
     def optimize(self, mir_program: MIRProgram) -> int:
@@ -110,14 +94,9 @@ class FarToNearOptimizer:
         # Build function map
         self.func_map = {f.name: f for f in mir_program.functions}
 
-        # Pre-compute the bank that #[bank(auto)] functions will be
-        # placed in. Without this we'd treat auto-bank like bank 0 and
-        # incorrectly conclude that an auto-bank function and a no-bank
-        # caller are co-located — converting their JSL to JSR. The real
-        # placement (handled later by `_organize_functions_by_bank`)
-        # parks auto-bank functions at `max(explicit_bank)+1`, floor 4,
-        # so the JSR'd target ends up at a completely different address
-        # from where the call points.
+        # The bank #[bank(auto)] functions will be placed in: treating it
+        # as bank 0 would co-locate them with no-bank callers and turn a
+        # cross-bank JSL into a JSR.
         self._auto_bank_num = compute_auto_bank_num(mir_program)
         graph = build_call_graph(mir_program)
         # A far trait's dispatch wrapper enters each implementor with JML,
