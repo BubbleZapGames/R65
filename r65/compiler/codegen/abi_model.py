@@ -189,12 +189,8 @@ class ABIModel(ABC):
 
     @staticmethod
     def _arg_size(arg) -> int:
-        from r65.compiler.codegen.type_utils import get_type_size
-        if arg.param_type is not None:
-            return get_type_size(arg.param_type)
-        if hasattr(arg.value, 'type_info') and arg.value.type_info:
-            return get_type_size(arg.value.type_info)
-        return 1
+        from r65.compiler.codegen.type_utils import arg_param_size
+        return arg_param_size(arg)
 
     @staticmethod
     def _register_target_name(arg) -> str:

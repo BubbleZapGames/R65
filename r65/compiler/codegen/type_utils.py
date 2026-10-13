@@ -67,6 +67,23 @@ def pointer_element_size(type_info) -> int:
         return 0
 
 
+def arg_param_size(arg) -> int:
+    """Bytes an argument occupies at its parameter: the parameter's type, else
+    the value's, else an untyped immediate's own width (1, 2 or 3)."""
+    for type_info in (arg.param_type, getattr(arg.value, 'type_info', None)):
+        if type_info:
+            return get_type_size(type_info)
+    from r65.compiler.mir.nodes import Immediate
+    if isinstance(arg.value, Immediate):
+        value = arg.value.value
+        if isinstance(value, int):
+            if value > 0xFFFF or value < -32768:
+                return 3
+            if value > 0xFF or value < -128:
+                return 2
+    return 1
+
+
 def get_vreg_size(vreg: 'VirtualRegister') -> int:
     """Get size of virtual register in bytes."""
     if vreg.type_info is None:

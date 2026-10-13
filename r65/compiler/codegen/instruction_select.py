@@ -253,26 +253,17 @@ class InstructionSelector:
         """Public method to flush pending mode flags (for function epilogue etc.)."""
         self._flush_pending_mode_flags()
 
-    def _ensure_m8_mode(self):
-        """
-        Ensure accumulator is in 8-bit mode, switching if necessary.
-
-        Call this before operations that require m8 mode when we might
-        currently be in m16 mode. This is more efficient than switching
-        back to m8 after every 16-bit operation.
-        """
-        if self.emitter.get_accu_mode() == 16:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A")
+    def _ensure_m8_mode(self, comment: str = "8-bit A"):
+        """Switch to 8-bit A unless it is known to be 8-bit already. An unknown
+        mode (after inline asm, say) switches too: guessing m8 is not safe."""
+        if self.emitter.get_accu_mode() != 8:
+            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, comment)
             self.emitter.emit_accu_mode(8)
 
-    def _ensure_m16_mode(self):
-        """
-        Ensure accumulator is in 16-bit mode, switching if necessary.
-
-        Call this before operations that require m16 mode.
-        """
+    def _ensure_m16_mode(self, comment: str = "16-bit A"):
+        """Switch to 16-bit A unless it is known to be 16-bit already."""
         if self.emitter.get_accu_mode() != 16:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, comment)
             self.emitter.emit_accu_mode(16)
 
     # ========================================================================

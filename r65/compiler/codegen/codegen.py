@@ -635,7 +635,7 @@ class ProgramCodeGenerator:
         across all call sites. The caller writes args via STA d,S instead of PHA.
         """
         from r65.compiler.mir.nodes import Call, TraitDispatch, ArgumentMechanism
-        from r65.compiler.codegen.type_utils import get_type_size
+        from r65.compiler.codegen.type_utils import arg_param_size
 
         for func in mir_program.functions:
             max_bytes = 0
@@ -645,12 +645,7 @@ class ProgramCodeGenerator:
                         call_bytes = 0
                         for arg in instr.args:
                             if arg.mechanism == ArgumentMechanism.STACK:
-                                if arg.param_type is not None:
-                                    call_bytes += get_type_size(arg.param_type)
-                                elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-                                    call_bytes += get_type_size(arg.value.type_info)
-                                else:
-                                    call_bytes += 1
+                                call_bytes += arg_param_size(arg)
                         max_bytes = max(max_bytes, call_bytes)
             func.max_outgoing_arg_bytes = max_bytes
 

@@ -33,7 +33,7 @@ from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.abi import StackStateTracker
-from r65.compiler.codegen.type_utils import scalar_width
+from r65.compiler.codegen.type_utils import arg_param_size, scalar_width
 
 
 class SpillInfo(NamedTuple):
@@ -257,13 +257,6 @@ class CallInstructionSelector(BaseSelector):
         opcode = LOAD_IMMEDIATE_OPCODES.get(reg)
         if opcode:
             self._emit_immediate(opcode, value, comment)
-
-    def _ensure_m8_mode(self, comment: str = "8-bit A"):
-        """Switch to 8-bit accumulator mode if not already there."""
-        from r65.compiler.codegen.constants import M_FLAG
-        if self.parent.emitter.get_accu_mode() != 8:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, comment)
-            self.parent.emitter.emit_accu_mode(8)
 
     def _store_multibyte_outgoing(self, arg, arg_loc, source_size: int, target_size: int, outgoing_offset: int):
         """
@@ -1186,17 +1179,7 @@ class CallInstructionSelector(BaseSelector):
         outgoing_offset += spill_offset
 
         # Determine PARAMETER size (what we need to store)
-        param_size = 1
-        if arg.param_type is not None:
-            param_size = get_type_size(arg.param_type)
-        elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-            param_size = get_type_size(arg.value.type_info)
-        elif isinstance(arg.value, MIRImmediate):
-            value = arg.value.value
-            if value > 0xFFFF or value < -32768:
-                param_size = 3
-            elif value > 0xFF or value < -128:
-                param_size = 2
+        param_size = arg_param_size(arg)
 
         # Determine SOURCE size for zero-extension
         source_size = param_size
@@ -1507,7 +1490,7 @@ class CallInstructionSelector(BaseSelector):
 
         if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
             # The forwarding shortcut returns before emitting anything.
-            param_size = self._scratch_param_size(arg)
+            param_size = arg_param_size(arg)
             if (arg_loc.kind == LocationKind.SCRATCH
                     and arg_loc.scratch_addr == arg.scratch_addr
                     and (arg_loc.size or 0) >= param_size):
@@ -1517,14 +1500,6 @@ class CallInstructionSelector(BaseSelector):
         # STACK and SELF_Y both route through A. Not reached from the
         # other-args pass, but the predicate should be total.
         return True
-
-    def _scratch_param_size(self, arg) -> int:
-        from r65.compiler.codegen.type_utils import get_type_size
-        if arg.param_type is not None:
-            return get_type_size(arg.param_type)
-        if getattr(arg.value, 'type_info', None):
-            return get_type_size(arg.value.type_info)
-        return 1
 
     def _emit_b_register_argument(self, arg, arg_loc):
         """Emit B register argument (special handling)."""
@@ -1592,11 +1567,7 @@ class CallInstructionSelector(BaseSelector):
         from r65.compiler.codegen.asm_nodes import Address
 
         scratch_addr = arg.scratch_addr
-        param_size = 1
-        if arg.param_type is not None:
-            param_size = get_type_size(arg.param_type)
-        elif hasattr(arg.value, 'type_info') and arg.value.type_info:
-            param_size = get_type_size(arg.value.type_info)
+        param_size = arg_param_size(arg)
 
         # Determine source size for zero-extension check
         source_size = param_size

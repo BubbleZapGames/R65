@@ -77,6 +77,12 @@ class BaseSelector(ABC):
         """Emit an instruction with an address operand (absolute, DP, or label)."""
         self.emitter.emit_instr(opcode, Address(addr), comment, self.parent._current_source_loc)
 
+    def _ensure_m8_mode(self, comment: str = "8-bit A"):
+        self.parent._ensure_m8_mode(comment)
+
+    def _ensure_m16_mode(self, comment: str = "16-bit A"):
+        self.parent._ensure_m16_mode(comment)
+
     def _emit_branch(self, opcode: Opcode, label: str, comment: str | None = None):
         """Emit a branch instruction to a label."""
         self.emitter.emit_instr(opcode, Address(label), comment, self.parent._current_source_loc)
