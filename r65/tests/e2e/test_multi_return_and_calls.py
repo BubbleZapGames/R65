@@ -208,6 +208,35 @@ class TestMixedParams:
         ''', ExpectedState(memory={0x7E0010: [7, 0, 0x67, 0x05, 0x34, 0x12]}))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_computed_return_survives_marshalling(self, e2e):
+        """a + b lands in A; loading `a` into Y goes through A, so X must
+        take the sum first."""
+        source = '''
+            #[zeropage(0x10)]
+            static mut O1: u8;
+            #[zeropage(0x12)]
+            static mut O2: u16;
+            #[zeropage(0x14)]
+            static mut O3: u16;
+
+            #[inline(never)]
+            fn h(a: u16, b: u16) -> u8, u16, u16 { return 7, a + b, a; }
+
+            #[entry]
+            fn main() -> ! {
+                let p, q, r = h(0x1234, 0x0567);
+                O1 = p; O2 = q; O3 = r;
+                loop {}
+            }
+        '''
+        for opt in ("-O0", "-O1", "-O2"):
+            result = e2e.run(source, ExpectedState(memory={
+                0x7E0010: 7,
+                0x7E0012: [0x9B, 0x17],
+                0x7E0014: [0x34, 0x12],
+            }), extra_args=[opt])
+            assert result.success, f"{opt}: {result.failures or result.error}"
+
 
 class TestVariableBoundParams:
     """Test variable-bound parameter passing (param @ STATIC_VAR)."""

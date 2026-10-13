@@ -602,17 +602,21 @@ class ABIModel(ABC):
         return stack_bytes_pushed
 
     def emit_return_values(self, selector, instr):
-        """Emit return value loading for a Return instruction.
+        """Move a Return's values into their return registers.
 
         Concrete on the base class — Default and FixedStack share identical
         register-based logic. Pascal overrides to write to stack result space.
+
+        The values are one parallel move: each is read as it stood at the
+        Return, so no move may write a register that a pending move still
+        reads, nor one already holding its final value. _ReturnMarshaller
+        orders the moves to keep that, and parks a source on the stack where
+        no order does (X and Y swapped). The CPU leaves in the exit mode.
 
         Args:
             selector: ControlFlowInstructionSelector instance
             instr: Return MIR instruction
         """
-        from r65.compiler.codegen.register_alloc import LocationKind
-        from r65.compiler.codegen.opcodes import Opcode
         from r65.compiler.errors import InstructionSelectionError
 
         if not instr.values:
@@ -624,58 +628,237 @@ class ABIModel(ABC):
                 f"Too many return values (max {len(return_registers)})",
                 source_loc=selector.parent._current_source_loc)
 
-        # Process in reverse order to avoid clobbering A
-        # Reverse order: Y first, then X, then B (XBA to store), then A last
-        for i in range(len(instr.values) - 1, -1, -1):
-            value = instr.values[i]
-            target_reg = return_registers[i]
-            value_loc = selector.parent._get_operand_location(value)
-
-            if value_loc.kind == LocationKind.RETURN_SINKABLE:
-                # Deferred load: emit the load directly into the target register
-                src_loc = selector.parent._get_operand_location(value_loc.source_location)
-                if target_reg == 'B':
-                    selector.parent._emit_load('LDA', src_loc)
-                    selector.parent._store_to_b_from_a()
-                elif target_reg in ('X', 'Y'):
-                    selector.parent._emit_load('LDA', src_loc)
-                    if target_reg == 'X':
-                        selector._emit_implied(Opcode.TAX)
-                    else:
-                        selector._emit_implied(Opcode.TAY)
-                else:  # 'A'
-                    selector.parent._emit_load('LDA', src_loc)
-                continue
-            elif value_loc.is_hw(target_reg):
-                pass  # Already in correct register
-            elif target_reg == 'B':
-                # B return: load value into A, then XBA to store in B
-                if value_loc.is_hw('A'):
-                    selector.parent._store_to_b_from_a()
-                elif value_loc.is_hw():
-                    selector.parent._emit_register_transfer(value_loc.hw_register, 'A')
-                    selector.parent._store_to_b_from_a()
-                else:
-                    selector.parent._emit_load('LDA', value_loc)
-                    selector.parent._store_to_b_from_a()
-            elif value_loc.is_hw():
-                selector.parent._emit_register_transfer(value_loc.hw_register, target_reg)
-            elif target_reg in ('X', 'Y') and value_loc.kind == LocationKind.STACK:
-                # Handle stack-relative addressing: LDX/LDY don't support sr,S mode.
-                # Force m16 — TAX/TAY in m8/x16 transfers B:A (stale B) into a
-                # 16-bit index register, corrupting the high byte.
-                selector.parent._ensure_m16_mode()
-                selector.parent._emit_load('LDA', value_loc)
-                if target_reg == 'X':
-                    selector._emit_implied(Opcode.TAX, "Transfer to X (no LDX sr,S)")
-                else:
-                    selector._emit_implied(Opcode.TAY, "Transfer to Y (no LDY sr,S)")
-            else:
-                load_mnem = {'A': 'LDA', 'X': 'LDX', 'Y': 'LDY'}.get(target_reg, 'LDA')
-                selector.parent._emit_load(load_mnem, value_loc)
+        _ReturnMarshaller(selector, instr.values, return_registers).run()
+        selector._switch_to_exit_mode()
 
     def __repr__(self):
         return f"ABIModel({self.kind.value})"
+
+
+
+class _ReturnMove:
+    """One return value bound for its register; *pushed* is the byte count
+    once its source has been parked on the stack."""
+
+    __slots__ = ('index', 'value', 'target', 'width', 'pushed')
+
+    def __init__(self, index, value, target, width):
+        self.index = index
+        self.value = value
+        self.target = target
+        self.width = width
+        self.pushed = None
+
+
+class _ReturnMarshaller:
+    """Schedule a Return's moves into A, B, X and Y as one parallel move.
+
+    Invariant: a move is emitted only when nothing it writes is read by
+    another pending move or already holds a final value. A 16-bit value in A
+    occupies B too. Loads into X/Y from the stack go through A, and B is
+    written through A (XBA), so X and Y are filled first, then B, then A.
+    When every remaining move is blocked, a blocking register source is
+    pushed and later pulled straight into its target (LIFO); the stack
+    tracker shifts stack-relative sources over the pushed bytes meanwhile.
+    """
+
+    def __init__(self, selector, values, return_registers):
+        from r65.compiler.hir.types import MultiReturnTypeInfo
+        from r65.compiler.codegen.type_utils import scalar_width
+        from r65.compiler.typeck.processor_mode import ModeState
+
+        self.sel = selector
+        self.isel = selector.parent
+        self.tracker = selector.parent.call_selector.region_state.stack_tracker
+        func = selector.current_function
+        ret_type = func.return_type if func else None
+        exit_width = 2 if (func and func.exit_m_mode == ModeState.M16) else 1
+        self.moves = []
+        for i, value in enumerate(values):
+            if isinstance(ret_type, MultiReturnTypeInfo):
+                width = scalar_width(ret_type.element_types[i])
+            else:
+                width = scalar_width(ret_type)
+            if width not in (1, 2):
+                width = exit_width
+            self.moves.append(_ReturnMove(i, value, return_registers[i], width))
+        self.parked = []   # moves whose source is on the stack, push order
+        self.done = set()  # registers holding a final value
+
+    # -- facts about a move ------------------------------------------------
+
+    def _loc(self, m):
+        return self.isel._get_operand_location(m.value)
+
+    def _in_place(self, m):
+        return m.pushed is None and self._loc(m).is_hw(m.target)
+
+    def _reads(self, m):
+        if m.pushed is not None:
+            return set()
+        loc = self._loc(m)
+        if not loc.is_hw():
+            return set()
+        if loc.hw_register == 'A' and m.width == 2:
+            return {'A', 'B'}
+        return {loc.hw_register}
+
+    def _writes(self, m):
+        """Registers emitting *m* writes, in the current accumulator mode."""
+        from r65.compiler.codegen.register_alloc import LocationKind
+        t = m.target
+        if m.pushed is not None:
+            if t in ('X', 'Y'):
+                return {t}
+            return {'A', 'B'} if (t == 'B' or m.pushed == 2) else {'A'}
+        loc = self._loc(m)
+        if t == 'B' or (t == 'A' and (m.width == 2 or loc.is_hw('B'))):
+            return {'A', 'B'}
+        if t == 'A':
+            return {'A'}
+        if loc.is_hw():
+            src = loc.hw_register
+            if src in ('X', 'Y'):
+                return {t}
+            if src == 'A':
+                # An 8-bit A moving from m8 is zero-extended through B.
+                if m.width == 1 and self.isel.emitter.get_accu_mode() != 16:
+                    return {t, 'B'}
+                return {t}
+            return {'A', 'B', t}
+        if loc.kind in (LocationKind.STACK, LocationKind.RETURN_SINKABLE):
+            return {'A', 'B', t}
+        return {t}
+
+    def _final(self, m):
+        return {'A', 'B'} if (m.target == 'A' and m.width == 2) else {m.target}
+
+    # -- emission ----------------------------------------------------------
+
+    def _set_width(self, width):
+        if width == 2:
+            self.isel._ensure_m16_mode()
+        else:
+            self.isel._ensure_m8_mode()
+
+    def _emit(self, m):
+        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.opcodes import Opcode
+        isel, t = self.isel, m.target
+        if m.pushed is not None:
+            self._pull(m)
+            return
+        loc = self._loc(m)
+        if loc.is_hw(t):
+            return
+        if loc.kind == LocationKind.RETURN_SINKABLE:
+            # Deferred load: read the memory source at the return site.
+            loc = isel._get_operand_location(loc.source_location)
+            via_a = True
+        else:
+            via_a = loc.kind == LocationKind.STACK
+        if t == 'A':
+            self._set_width(m.width)
+            if loc.is_hw():
+                isel._emit_register_transfer(loc.hw_register, 'A')
+            else:
+                isel._emit_load('LDA', loc)
+        elif t == 'B':
+            if loc.is_hw() and not loc.is_hw('A'):
+                isel._emit_register_transfer(loc.hw_register, 'A')
+            elif not loc.is_hw():
+                isel._emit_load('LDA', loc)
+            isel._store_to_b_from_a()
+        elif loc.is_hw():
+            if loc.hw_register == 'A' and m.width == 2:
+                isel._ensure_m16_mode()
+            isel._emit_register_transfer(loc.hw_register, t)
+        elif via_a:
+            # No LDX/LDY sr,S. Stack loads use m16: TAX/TAY in m8/x16 move
+            # B:A, and B may hold stale data.
+            if loc.kind == LocationKind.STACK or m.width == 2:
+                isel._ensure_m16_mode()
+            isel._emit_load('LDA', loc)
+            self.sel._emit_implied(Opcode.TAX if t == 'X' else Opcode.TAY,
+                                   f"Transfer to {t}")
+        else:
+            isel._emit_load('LDX' if t == 'X' else 'LDY', loc)
+
+    def _park(self, m):
+        from r65.compiler.codegen.opcodes import Opcode
+        src = self._loc(m).hw_register
+        if src == 'A':
+            n = 2 if (m.width == 2 or m.target in ('X', 'Y')) else 1
+            self._set_width(n)
+            self.sel._emit_implied(Opcode.PHA, "Park return value")
+        else:
+            n = 2
+            self.sel._emit_implied(Opcode.PHX if src == 'X' else Opcode.PHY,
+                                   "Park return value")
+        self.tracker.push(n)
+        m.pushed = n
+        self.parked.append(m)
+
+    def _pull(self, m):
+        from r65.compiler.codegen.opcodes import Opcode
+        if m.target in ('X', 'Y'):
+            self.sel._emit_implied(Opcode.PLX if m.target == 'X' else Opcode.PLY,
+                                   "Pull parked return value")
+        else:
+            self._set_width(m.pushed)
+            self.sel._emit_implied(Opcode.PLA, "Pull parked return value")
+            self.isel._invalidate_xba_state()
+            if m.target == 'B':
+                self.isel._store_to_b_from_a()
+        self.tracker.pop(m.pushed)
+        self.parked.pop()
+
+    # -- scheduling --------------------------------------------------------
+
+    def run(self):
+        from r65.compiler.errors import InstructionSelectionError
+        rank = {'X': 0, 'Y': 0, 'B': 1, 'A': 2}
+        pending = sorted(self.moves, key=lambda m: (rank[m.target], -m.index))
+
+        def blocked_by(m):
+            guarded = set(self.done)
+            for p in pending:
+                if p is not m:
+                    guarded |= self._reads(p)
+            return self._writes(m) & guarded
+
+        while not all(self._in_place(m) for m in pending):
+            xy_left = any(m.target in ('X', 'Y') and m.pushed is None
+                          and not self._in_place(m) for m in pending)
+            candidates = [
+                m for m in pending
+                if not self._in_place(m)
+                and (m.pushed is None or m is self.parked[-1])
+                and not (m.target in ('A', 'B') and xy_left)]
+            ready = next((m for m in candidates if not blocked_by(m)), None)
+            if ready is not None:
+                self._emit(ready)
+                pending.remove(ready)
+                self.done |= self._final(ready)
+                continue
+            # Every candidate is blocked: park a register source that blocks one.
+            victim = None
+            for m in candidates:
+                blocking = blocked_by(m)
+                victim = next(
+                    (p for p in pending
+                     if p is not m and p.pushed is None
+                     and self._loc(p).is_hw()
+                     and self._loc(p).hw_register in ('A', 'X', 'Y')
+                     and self._reads(p) & blocking), None)
+                if victim is not None:
+                    break
+            if victim is None:
+                raise InstructionSelectionError(
+                    "Cannot order the moves of the return values into their "
+                    "registers",
+                    source_loc=self.isel._current_source_loc)
+            self._park(victim)
 
 
 class ABIFixedStack(ABIModel):
