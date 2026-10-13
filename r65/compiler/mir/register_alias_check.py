@@ -2,11 +2,12 @@
 """
 Reject a register alias whose register is overwritten before its last use.
 
-`let x @ A = ...` (or `@ X`, `@ Y`) makes `x` a name for the register, not a
-copy of a value: nothing preserves it. So code between the binding and a later
-read of `x` that writes the register - an expression evaluated through A, an
-array index loaded into X, a pointer read indexing with Y, a call - leaves `x`
-reading whatever was put there instead. That used to compile silently to the
+`let x @ A = ...` (or `@ B`, `@ X`, `@ Y`) makes `x` a name for the register,
+not a copy of a value: nothing preserves it. So code between the binding and a
+later read of `x` that writes the register - an expression evaluated through A,
+anything done with a 16-bit accumulator (whose high byte is B), an array index
+loaded into X, a pointer read indexing with Y, a call - leaves `x` reading
+whatever was put there instead. That used to compile silently to the
 wrong value; it is now an error at the overwriting line.
 
 The aliases are tracked through the MIR right after lowering, before any
@@ -35,9 +36,9 @@ from r65.compiler.mir.nodes import (
     CondBranch, Move, BinaryOp, UnaryOp, IncDecMemory, SetMode,
     OperandRole, iter_operands,
 )
-from r65.compiler.codegen.type_utils import get_type_size
+from r65.compiler.codegen.type_utils import get_type_size, get_vreg_size
 
-CHECKED = ('A', 'X', 'Y')
+CHECKED = ('A', 'B', 'X', 'Y')
 
 
 
@@ -52,11 +53,31 @@ def _size(type_info) -> int:
         return 1
 
 
+def _wide(instr) -> bool:
+    """True if codegen may run *instr* with a 16-bit accumulator."""
+    if _size(getattr(instr, 'type_info', None)) >= 2:
+        return True
+    return any(isinstance(v, VirtualRegister) and get_vreg_size(v) >= 2
+               for _, v in iter_operands(instr, role=OperandRole.WRITE))
+
+
+def _writes_b(instr) -> bool:
+    """B is A's high byte: whatever writes A at 16 bits writes it too. An
+    8-bit operation in A leaves it alone, so this asks more than "writes A"."""
+    if isinstance(instr, Pull):
+        return _hw(instr.register, 'A')     # the pull's width is the push's
+    explicit_a = any(_hw(v, 'A') for _, v in iter_operands(instr, role=OperandRole.WRITE)) \
+        and not (isinstance(instr, Move) and _hw(instr.source, 'A'))
+    return (explicit_a or _implicit_clobbers(instr, 'A')) and _wide(instr)
+
+
 def _implicit_clobbers(instr, reg: str) -> bool:
     """True if codegen for *instr* may overwrite *reg* in a way its explicit
     hardware-register dest (handled by the caller) does not show."""
     if isinstance(instr, CLOBBERS_ALL) or reg in fixed_clobbers(instr):
         return True
+    if reg == 'B':
+        return 'A' in fixed_clobbers(instr) or _writes_b(instr)
     if isinstance(instr, Pull):
         return _hw(instr.register, reg)
 
@@ -191,8 +212,8 @@ def _clobber(state, aliases, reg, loc):
 
 
 def check_register_aliases(func: MIRFunction):
-    """Raise MIRLoweringError if *func* reads an `@ A`/`@ X`/`@ Y` alias
-    after its register was overwritten."""
+    """Raise MIRLoweringError if *func* reads a register alias after its
+    register was overwritten."""
     tracker = getattr(func, 'alias_tracker', None)
     if tracker is None:
         return

@@ -299,8 +299,9 @@ fn example() {
    - Mandatory allocation
    - Not preserved: the alias *is* the register, so code that overwrites
      it before the alias's last use - an expression evaluated through A,
-     an array index loaded into X, a pointer access indexing with Y, a
-     call - is a compile error at the overwriting line
+     16-bit work in A (which writes B, its high byte; 8-bit work leaves
+     it), an array index loaded into X, a pointer access indexing with Y,
+     a call - is a compile error at the overwriting line
      (`mir/register_alias_check.py`), not a spill. Loop promotion keeps
      its counters off a register an `@ X`/`@ Y` alias names.
 

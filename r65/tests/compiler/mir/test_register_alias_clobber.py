@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-A `let x @ A/X/Y` alias whose register is overwritten before its last use is
+A `let x @ A/B/X/Y` alias whose register is overwritten before its last use is
 a compile error (mir/register_alias_check.py).
 
 An alias names the register; nothing preserves it. These all compiled
@@ -79,6 +79,12 @@ def test_y_alias_overwritten_by_a_pointer_index():
     _rejects("fn f() { let k @ Y = 7; V = P[J]; OUT = k; }", 'k', 'Y')
 
 
+@pytest.mark.parametrize("between", ["OUT = J + 1;", "OUT = V as u16;"])
+def test_b_alias_overwritten_by_16_bit_accumulator_work(between):
+    """B is A's high byte: u16 arithmetic or a widening cast in A writes it."""
+    _rejects(f"fn f() {{ let h @ B = 0x12; {between} FLAG = h; }}", 'h', 'B')
+
+
 def test_a_clobber_on_one_branch_reaches_a_use_after_the_join():
     _rejects("""
 fn f() { let i @ X = 3; if FLAG != 0 { V = ARR[J]; } OUT = i; }
@@ -123,6 +129,10 @@ def test_an_alias_whose_last_use_precedes_the_clobber_is_fine():
 
 def test_incrementing_an_x_alias_is_fine():
     _compile("fn f() { let mut i @ X = 3; i++; OUT = i; }")
+
+
+def test_a_b_alias_across_8_bit_accumulator_work_is_fine():
+    _compile("fn f() { let h @ B = 0x12; V = V + 1; FLAG = h; }")
 
 
 def test_reassigning_an_alias_after_the_clobber_is_fine():

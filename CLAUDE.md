@@ -385,10 +385,11 @@ let mut hitpoints @ A = PLAYER.health;  // A holds hitpoints
 hitpoints = hitpoints - 1;               // Modifies A
 ```
 
-Nothing preserves an alias: code that overwrites its register (`A`, `X`
-or `Y`) before the alias's last use - another expression through A, an
-array index into X, a pointer access through Y, a call - is a compile
-error at the overwriting line.
+Nothing preserves an alias: code that overwrites its register (`A`, `B`,
+`X` or `Y`) before the alias's last use - another expression through A,
+16-bit work in A (which writes B, its high byte), an array index into X,
+a pointer access through Y, a call - is a compile error at the
+overwriting line.
 
 **Preservation**: Compiler generates save/restore code for declared registers.
 
