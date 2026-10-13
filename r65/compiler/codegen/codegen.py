@@ -311,6 +311,7 @@ class ProgramCodeGenerator:
             functions_by_bank.setdefault(bank_for_inc, [])  # ensure bank window opens
 
         # Generate code for each bank
+        function_starts = []
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
 
@@ -325,11 +326,15 @@ class ProgramCodeGenerator:
 
             # Generate functions in this bank
             for mir_func in bank_functions:
+                start = len(self.emitter.nodes)
                 self.func_gen.func_gen.generate_function(
                     mir_func,
                     scratch_pool=scratch_pool,
                     abi_model=abi_model
                 )
+                # The peephole optimizer iterates each function separately.
+                if len(self.emitter.nodes) > start:
+                    function_starts.append(self.emitter.nodes[start])
                 # Emit this function's local array/string/struct literal
                 # init data immediately after its body so the data lands in
                 # the same ROM bank as the function's inlined MVN block-copy.
@@ -388,7 +393,9 @@ class ProgramCodeGenerator:
 
         # Apply node-based peephole optimizations (only if opt_level >= 1)
         if opt_level >= 1:
-            optimized_nodes, num_optimizations = optimize_nodes(nodes, volatile_names, volatile_addresses)
+            optimized_nodes, num_optimizations = optimize_nodes(
+                nodes, volatile_names, volatile_addresses,
+                region_starts=function_starts)
             if num_optimizations > 0:
                 print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
         else:

@@ -46,7 +46,7 @@ Notes on `.ACCU`:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from r65.compiler.codegen.constants import M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import (
@@ -260,6 +260,7 @@ def compute_modes(
     nodes: List,
     entry_modes: Optional[Dict[str, Mode]] = None,
     entry_x_modes: Optional[Dict[str, Mode]] = None,
+    start_bits: Optional[Tuple[int, int]] = None,
 ) -> ModeInfo:
     """Run forward dataflow over `nodes`; return per-node mode info.
 
@@ -279,6 +280,10 @@ def compute_modes(
         entry_x_modes: optional ``{label_name: initial_x_mode}`` seed.
             R65 keeps x16 across all functions; pass ``None`` to use
             the default seeding (x16 at the program entry).
+        start_bits: optional ``(m_mask, x_mask)`` lattice masks for
+            nodes[0], replacing the program-start seed. For a slice of a
+            larger stream, pass the masks the whole stream computed at
+            the slice's first node so the slice sees the same modes.
 
     Returns:
         ModeInfo. Every reachable node has a non-empty ``incoming`` set;
@@ -332,7 +337,9 @@ def compute_modes(
     # incoming = {None, 8}, and unique_mode_at would yield None.
     frozen_m: Set[int] = set()
     frozen_x: Set[int] = set()
-    if n > 0:
+    if n > 0 and start_bits is not None:
+        info.incoming[0], info.x_incoming[0] = start_bits
+    elif n > 0:
         info.incoming[0] |= _mode_bit(entry_modes.get('__entry__', None))
         if '__entry__' in entry_x_modes:
             info.x_incoming[0] |= _mode_bit(entry_x_modes['__entry__'])

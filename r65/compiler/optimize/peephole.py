@@ -8,6 +8,7 @@ redundant operations and improve code quality.
 Uses typed Opcode enum for efficient pattern matching without string parsing.
 """
 
+import itertools
 from typing import List, Optional, Tuple, TYPE_CHECKING, Set
 from dataclasses import dataclass
 
@@ -272,18 +273,28 @@ class PeepholeOptimizer:
         self.stats = OptimizationStats()
         self.volatile_names = volatile_names or set()
         self.volatile_addresses = volatile_addresses or set()
+        # Set while one region of a split stream is being optimized: the
+        # mode masks the whole stream had at the region's first node, and
+        # the other regions (for queries that must see the whole program).
+        self._start_bits: Optional[Tuple[int, int]] = None
+        self._outside: List[List['AsmNode']] = []
 
     @property
     def optimizations_applied(self) -> int:
         """Total number of optimizations applied."""
         return self.stats.total
 
-    def optimize(self, nodes: List['AsmNode']) -> List['AsmNode']:
+    def optimize(self, nodes: List['AsmNode'],
+                 region_starts: Optional[List['AsmNode']] = None) -> List['AsmNode']:
         """
         Apply peephole optimizations to AsmNode list.
 
         Args:
             nodes: List of AsmNode objects
+            region_starts: Optional first nodes of independent regions
+                (one per function). Each region is iterated to its own
+                fixpoint, so a function that has converged is not
+                re-scanned while another still changes.
 
         Returns:
             Optimized node list
@@ -291,6 +302,7 @@ class PeepholeOptimizer:
         from r65.compiler.optimize.mode_directive_rewrite import (
             normalize_mode_directives,
         )
+        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
 
         # Strip and re-emit mode directives once up-front. This drops
         # the mid-block `.ACCU` / `.INDEX` directives codegen pairs with
@@ -301,6 +313,36 @@ class PeepholeOptimizer:
         # regenerates them after all optimizations settle.
         nodes = normalize_mode_directives(nodes)
 
+        regions = _split_regions(nodes, region_starts)
+        if len(regions) == 1:
+            nodes = self._optimize_region(nodes)
+        else:
+            # Seed each region with the modes the whole stream reaches its
+            # first node in, so the passes' dataflow matches a whole-stream run.
+            info = compute_modes(nodes)
+            seeds = []
+            pos = 0
+            for region in regions:
+                seeds.append((info.incoming[pos], info.x_incoming[pos]))
+                pos += len(region)
+            for k, region in enumerate(regions):
+                self._start_bits = seeds[k]
+                self._outside = regions[:k] + regions[k + 1:]
+                regions[k] = self._optimize_region(region)
+            self._start_bits = None
+            self._outside = []
+            nodes = [node for region in regions for node in region]
+
+        # Final pass: regenerate `.ACCU` / `.INDEX` directives from the
+        # mode dataflow. The optimizations above may have left stale or
+        # missing directives; this guarantees the final stream is
+        # consistent without each pass having to maintain the pairing.
+        nodes = normalize_mode_directives(nodes)
+
+        return nodes
+
+    def _optimize_region(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """Apply the optimization passes to `nodes` until none changes it."""
         # Apply optimization passes until no more changes
         changed = True
         while changed:
@@ -334,12 +376,6 @@ class PeepholeOptimizer:
             nodes = self._fold_inc_dec_accumulator(nodes)
             nodes = self._eliminate_redundant_cmp_zero(nodes)
             changed = self.stats.total > prev_total
-
-        # Final pass: regenerate `.ACCU` / `.INDEX` directives from the
-        # mode dataflow. The optimizations above may have left stale or
-        # missing directives; this guarantees the final stream is
-        # consistent without each pass having to maintain the pairing.
-        nodes = normalize_mode_directives(nodes)
 
         return nodes
 
@@ -529,7 +565,7 @@ class PeepholeOptimizer:
 
         cache = getattr(self, '_accu_mode_cache', None)
         if cache is None or cache[0] is not nodes:
-            self._accu_mode_cache = (nodes, compute_modes(nodes))
+            self._accu_mode_cache = (nodes, compute_modes(nodes, start_bits=self._start_bits))
         info = self._accu_mode_cache[1]
         mode = info.unique_mode_at(idx)
         return mode if mode is not None else 8
@@ -632,15 +668,16 @@ class PeepholeOptimizer:
         Check if any instruction in the node list reads from store_operand
         (or adjacent_operand for m16 overlap).
 
-        Conservatively scans all nodes. This may miss optimization
-        opportunities when multiple functions use the same stack offset,
-        but is always safe (no false negatives).
+        Conservatively scans all nodes - including the other regions when
+        one region of a split stream is being optimized. This may miss
+        optimization opportunities when multiple functions use the same
+        stack offset, but is always safe (no false negatives).
         """
         from r65.compiler.codegen.asm_nodes import Instruction, StackOffset
 
         is_stack = isinstance(store_operand, StackOffset)
 
-        for node in nodes:
+        for node in itertools.chain(nodes, *self._outside):
             if not isinstance(node, Instruction):
                 continue
             if self._reads_from_location(node, store_operand):
@@ -748,7 +785,7 @@ class PeepholeOptimizer:
         from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
         from r65.compiler.optimize.asm_mode_dataflow import compute_modes
 
-        info = compute_modes(nodes)
+        info = compute_modes(nodes, start_bits=self._start_bits)
 
         optimized: List = []
         i = 0
@@ -1008,7 +1045,7 @@ class PeepholeOptimizer:
         any_change = True
         while any_change:
             any_change = False
-            info = compute_modes(nodes)
+            info = compute_modes(nodes, start_bits=self._start_bits)
             new_nodes: List = []
             i = 0
             n = len(nodes)
@@ -2513,8 +2550,26 @@ class PeepholeOptimizer:
 # Public API
 # ============================================================================
 
+def _split_regions(nodes: List['AsmNode'],
+                   region_starts: Optional[List['AsmNode']]) -> List[List['AsmNode']]:
+    """Cut `nodes` before each of `region_starts` (matched by identity).
+
+    A start no longer in the list is skipped, merging its region into the
+    previous one.
+    """
+    if not region_starts:
+        return [nodes]
+    position = {id(node): i for i, node in enumerate(nodes)}
+    cuts = sorted({position[id(node)] for node in region_starts
+                   if id(node) in position} - {0})
+    bounds = [0] + cuts + [len(nodes)]
+    return [nodes[a:b] for a, b in zip(bounds, bounds[1:])]
+
+
 def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
-                   volatile_addresses: Set[int] = None) -> Tuple[List['AsmNode'], int]:
+                   volatile_addresses: Set[int] = None,
+                   region_starts: Optional[List['AsmNode']] = None,
+                   ) -> Tuple[List['AsmNode'], int]:
     """
     Apply peephole optimizations to AsmNode list.
 
@@ -2524,10 +2579,12 @@ def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
                        Stores to these locations will not be eliminated.
         volatile_addresses: Set of hardware register addresses (from #[hw] attributes).
                            Stores to these addresses will not be eliminated.
+        region_starts: Optional first nodes of the regions (functions) to
+                       optimize independently; see PeepholeOptimizer.optimize.
 
     Returns:
         Tuple of (optimized nodes, number of optimizations applied)
     """
     optimizer = PeepholeOptimizer(volatile_names, volatile_addresses)
-    optimized = optimizer.optimize(nodes)
+    optimized = optimizer.optimize(nodes, region_starts)
     return optimized, optimizer.optimizations_applied

@@ -529,3 +529,28 @@ class TestIncFoldKeepsCarryForIndexedRotate:
         ]
         result = PeepholeOptimizer()._fold_inc_dec_accumulator(nodes)
         assert result[0].opcode == Opcode.CLC
+
+
+class TestPerFunctionRegions:
+    """optimize() iterates each region separately but must decide as a
+    whole-stream run would."""
+
+    def test_stack_store_before_bra_sees_other_regions(self):
+        """A push in another function still keeps the stack store: the
+        BRA rule asks whether *any* instruction may read the slot."""
+        second = Comment("second function")
+        nodes = [
+            Label("first"),
+            Instruction(opcode=Opcode.STA_STACK, operand=StackOffset(0x03)),
+            Instruction(opcode=Opcode.BRA, operand=Address("first_end")),
+            Label("first_end"),
+            Instruction(opcode=Opcode.RTS),
+            second,
+            Label("other"),
+            Instruction(opcode=Opcode.PHA),
+            Instruction(opcode=Opcode.PLA),
+            Instruction(opcode=Opcode.RTS),
+        ]
+        result = PeepholeOptimizer().optimize(nodes, region_starts=[second])
+        assert any(isinstance(n, Instruction) and n.opcode == Opcode.STA_STACK
+                   for n in result)
