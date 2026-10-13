@@ -14,6 +14,7 @@ whose address a callee's scratch param would overwrite are then demoted
 (`_find_war_conflicts`).
 """
 
+import sys
 from typing import Dict, Set, List
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, Call, ArgumentMechanism, Move, VirtualRegister,
@@ -136,7 +137,7 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
         _update_call_sites(func, promotions)
 
     if total_promoted > 0:
-        print(f"Scratch parameter promotion: {total_promoted} parameter(s) promoted")
+        print(f"Scratch parameter promotion: {total_promoted} parameter(s) promoted", file=sys.stderr)
 
 
 def _analyze_function(func: MIRFunction, scratch_pool: ScratchRegisterPool) -> Dict[int, int]:

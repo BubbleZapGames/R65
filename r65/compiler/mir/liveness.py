@@ -6,6 +6,7 @@ Determines which virtual registers are live (in use) at each program point,
 enabling optimizations like stack slot reuse and better register allocation.
 """
 
+import sys
 from typing import Set, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import (
@@ -128,7 +129,7 @@ class LivenessAnalyzer:
                     changed = True
 
         if iterations >= max_iterations:
-            print(f"Warning: Liveness analysis did not converge after {max_iterations} iterations")
+            print(f"Warning: Liveness analysis did not converge after {max_iterations} iterations", file=sys.stderr)
 
         return self.liveness
 

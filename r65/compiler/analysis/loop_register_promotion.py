@@ -10,6 +10,7 @@ and local +/-1 loop counters get a hint directly
 a clobber or an alias would break.
 """
 
+import sys
 from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
     CallBase,
@@ -63,9 +64,9 @@ def analyze_loop_promotion(mir_program: MIRProgram):
             _eliminate_temp_copies(func)
 
     if total_param_promoted > 0:
-        print(f"Loop register promotion: {total_param_promoted} parameter(s) promoted")
+        print(f"Loop register promotion: {total_param_promoted} parameter(s) promoted", file=sys.stderr)
     if total_local_promoted > 0:
-        print(f"Loop register promotion: {total_local_promoted} local(s) promoted")
+        print(f"Loop register promotion: {total_local_promoted} local(s) promoted", file=sys.stderr)
 
 
 def _analyze_function(func: MIRFunction) -> int:

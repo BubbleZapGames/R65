@@ -9,6 +9,7 @@ compile error if any parameter cannot be placed.
 This replaces scratch_params.py for FixedStack mode.
 """
 
+import sys
 from typing import Dict, Set, List, Tuple
 from r65.compiler.mir.nodes import (
     CallBase,
@@ -237,7 +238,7 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
             parts.append(f"{total_hw} to hw regs")
         if total_scratch > 0:
             parts.append(f"{total_scratch} to scratch")
-        print(f"FixedStack parameter promotion: {total} parameter(s) promoted ({', '.join(parts)})")
+        print(f"FixedStack parameter promotion: {total} parameter(s) promoted ({', '.join(parts)})", file=sys.stderr)
 
 
 def _reject_recursive_functions(mir_program: MIRProgram, cg: CallGraph):

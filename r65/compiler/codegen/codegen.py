@@ -6,6 +6,7 @@ Main code generation orchestrator that transforms a complete MIR program
 into WLA-DX assembly output.
 """
 
+import sys
 from typing import Optional, Dict, List, Any
 from r65.compiler.mir import MIRProgram, MIRFunction
 from r65.compiler.mir.nodes import SymbolByte
@@ -125,13 +126,13 @@ class ProgramCodeGenerator:
             dead_func_elim = DeadFunctionEliminator(verbose=False)
             func_eliminated = dead_func_elim.eliminate(mir_program)
             if func_eliminated > 0:
-                print(f"Dead function elimination: {func_eliminated} function(s) removed")
+                print(f"Dead function elimination: {func_eliminated} function(s) removed", file=sys.stderr)
 
             # Dead code elimination - remove unreachable blocks and dead stores
             dead_code_elim = DeadCodeEliminator(verbose=False)
             code_eliminated = dead_code_elim.eliminate(mir_program)
             if code_eliminated > 0:
-                print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed")
+                print(f"Dead code elimination: {code_eliminated} block(s)/instruction(s) removed", file=sys.stderr)
 
             # Byte-extract lowering - fold `(mem16 >> 8) as u8` into a load
             # of the high byte. Runs before inlining so callees shrink first:
@@ -141,7 +142,7 @@ class ProgramCodeGenerator:
             byte_extract = ByteExtractOptimizer(verbose=False)
             bytes_folded = byte_extract.optimize(mir_program)
             if bytes_folded > 0:
-                print(f"Byte extraction: {bytes_folded} high-byte load(s) folded")
+                print(f"Byte extraction: {bytes_folded} high-byte load(s) folded", file=sys.stderr)
 
             # Far-to-near call optimization - convert far calls to near when
             # call graph shows all callers and callee are in the same bank
@@ -151,7 +152,7 @@ class ProgramCodeGenerator:
             far_to_near = FarToNearOptimizer(verbose=False)
             far_converted = far_to_near.optimize(mir_program)
             if far_converted > 0:
-                print(f"Far-to-near optimization: {far_converted} function(s) converted")
+                print(f"Far-to-near optimization: {far_converted} function(s) converted", file=sys.stderr)
 
             # Function inlining - replace call sites with inlined function bodies
             # At -O1: only explicit inlining (#[inline] or #[inline(always)])
@@ -160,7 +161,7 @@ class ProgramCodeGenerator:
             func_inliner = FunctionInliner(verbose=False, implicit_inline=implicit_inline)
             inlined_count = func_inliner.run(mir_program)
             if inlined_count > 0:
-                print(f"Function inlining: {inlined_count} call site(s) inlined")
+                print(f"Function inlining: {inlined_count} call site(s) inlined", file=sys.stderr)
 
                 # Re-run mode tracking on every function the inliner mutated:
                 # cloned blocks arrive with entry_mode/exit_mode = None, and
@@ -185,7 +186,7 @@ class ProgramCodeGenerator:
                 dead_func_elim2 = DeadFunctionEliminator(verbose=False)
                 func_eliminated2 = dead_func_elim2.eliminate(mir_program)
                 if func_eliminated2 > 0:
-                    print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed")
+                    print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed", file=sys.stderr)
 
             # Constant-index folding - an X-indexed access with a constant X
             # becomes the absolute access, the X load dropped. What an inlined
@@ -195,7 +196,7 @@ class ProgramCodeGenerator:
             const_index = ConstIndexFolder(verbose=False)
             indices_folded = const_index.optimize(mir_program)
             if indices_folded > 0:
-                print(f"Constant-index folding: {indices_folded} access(es) made absolute")
+                print(f"Constant-index folding: {indices_folded} access(es) made absolute", file=sys.stderr)
 
             # Loop unrolling - fully unroll small static loops at -O2
             if opt_level >= 2:
@@ -203,7 +204,7 @@ class ProgramCodeGenerator:
                 loop_unroller = LoopUnroller(verbose=False)
                 unrolled_count = loop_unroller.unroll(mir_program)
                 if unrolled_count > 0:
-                    print(f"Loop unrolling: {unrolled_count} loop(s) unrolled")
+                    print(f"Loop unrolling: {unrolled_count} loop(s) unrolled", file=sys.stderr)
 
             # Memory-operand folding - read a single-use static directly in
             # the ADC/SBC/AND/ORA/EOR/CMP that consumes it. Runs last so it
@@ -214,7 +215,7 @@ class ProgramCodeGenerator:
             operand_folder = MemoryOperandFolder(verbose=False)
             operands_folded = operand_folder.optimize(mir_program)
             if operands_folded > 0:
-                print(f"Memory-operand folding: {operands_folded} load(s) folded")
+                print(f"Memory-operand folding: {operands_folded} load(s) folded", file=sys.stderr)
 
             # INC/DEC on memory - `m = m ± 1` on a direct-page / absolute
             # static or plane as one read-modify-write, and a following
@@ -223,7 +224,7 @@ class ProgramCodeGenerator:
             incdec_folder = MemoryIncDecFolder(verbose=False)
             incdec_folded = incdec_folder.optimize(mir_program)
             if incdec_folded > 0:
-                print(f"Memory INC/DEC folding: {incdec_folded} step(s) folded")
+                print(f"Memory INC/DEC folding: {incdec_folded} step(s) folded", file=sys.stderr)
 
         # Emit file header and processor directives
         self.emitter.emit_file_header()
@@ -279,7 +280,7 @@ class ProgramCodeGenerator:
 
         # Collect memory allocation warnings
         for w in self.allocator.warnings:
-            print(w)
+            print(w, file=sys.stderr)
         self.warnings.extend(self.allocator.warnings)
 
         # Symbol definitions
@@ -428,7 +429,7 @@ class ProgramCodeGenerator:
                 entry_modes=entry_modes, call_exit_modes=exit_modes,
                 acc_abi=acc_abi)
             if num_optimizations > 0:
-                print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
+                print(f"Peephole optimizer: {num_optimizations} optimization(s) applied", file=sys.stderr)
         else:
             optimized_nodes = nodes
 
@@ -437,7 +438,7 @@ class ProgramCodeGenerator:
         final_nodes, num_branch_fixups = fixup_nodes(optimized_nodes)
 
         if num_branch_fixups > 0:
-            print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed")
+            print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed", file=sys.stderr)
 
         # Validate bank sizes
         self._validate_bank_sizes(final_nodes, mir_program)
@@ -1014,7 +1015,7 @@ class ProgramCodeGenerator:
 
         writer = Cc65DebugWriter(self.debug_info)
         writer.write_to_file(dbg_path)
-        print(f"Debug info written to: {dbg_path}")
+        print(f"Debug info written to: {dbg_path}", file=sys.stderr)
 
     def _collect_segments(self, mir_program: MIRProgram, nodes: list, base_address: int, is_hirom: bool):
         """
