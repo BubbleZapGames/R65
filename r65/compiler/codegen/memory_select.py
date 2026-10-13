@@ -719,7 +719,8 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
             self.parent.emitter.emit_accu_mode(8)
         else:
-            # 8-bit load: LDA abs,Y directly
+            # 8-bit load: LDA abs,Y directly, in m8 so it reads one byte
+            self._ensure_m8_mode()
             self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
             if dest_loc.is_hw('A'):
                 pass  # Already in A

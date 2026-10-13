@@ -253,6 +253,17 @@ class InstructionSelector:
         """Public method to flush pending mode flags (for function epilogue etc.)."""
         self._flush_pending_mode_flags()
 
+    def _force_accu_mode(self, bits: int, comment: str, mask: int = M_FLAG):
+        """Switch A to *bits* whatever the tracked mode, and record it.
+
+        For points where the tracked mode may not match the CPU's - after a
+        handler body, around a block move - so the switch cannot be skipped.
+        *mask* may add X_FLAG; X/Y stay 16-bit in R65.
+        """
+        op = Opcode.REP_IMMEDIATE if bits == 16 else Opcode.SEP_IMMEDIATE
+        self._emit_immediate(op, mask, comment)
+        self.emitter.emit_accu_mode(bits)
+
     def _ensure_m8_mode(self, comment: str = "8-bit A"):
         """Switch to 8-bit A unless it is known to be 8-bit already. An unknown
         mode (after inline asm, say) switches too: guessing m8 is not safe."""
@@ -655,6 +666,8 @@ class InstructionSelector:
         For memory: LDA source+2
         """
         dest_loc = self._get_operand_location(instr.dest)
+        # One byte: in m16 the LDA/STA would move the byte after it too.
+        self._ensure_m8_mode()
 
         if isinstance(instr.source, MIRImmediate):
             bank = (instr.source.value >> 16) & 0xFF
@@ -1267,7 +1280,7 @@ class InstructionSelector:
             frame_size = self.reg_alloc.frame_size
 
         if frame_size > 0:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "16-bit A for stack adjustment")
+            self._force_accu_mode(16, "16-bit A for stack adjustment")
             self._emit_implied(Opcode.TSC, "Get stack pointer")
             self._emit_implied(Opcode.CLC)
             self._emit_immediate(Opcode.ADC_IMMEDIATE, frame_size, f"Deallocate {frame_size} bytes")
@@ -1311,7 +1324,7 @@ class InstructionSelector:
             self._emit_implied(Opcode.PLX, "Restore X")
         # PLA only if A was saved in prologue (handler modifies A)
         if restore_all or 'A' in modified:
-            self._emit_immediate(Opcode.REP_IMMEDIATE, 0x20, "Force 16-bit A for full restore")
+            self._force_accu_mode(16, "Force 16-bit A for full restore")
             self._emit_implied(Opcode.PLA, "Restore A (full 16-bit, includes hidden high byte)")
         # PHP/PLP eliminated — RTI restores P from the CPU-pushed stack frame
 
@@ -1349,15 +1362,15 @@ class InstructionSelector:
             want = 16 if kind == 'word' else 8
             if mode != want:
                 if want == 16:
-                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for scratch word restore")
+                    self._force_accu_mode(16, "16-bit A for scratch word restore")
                 else:
-                    self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A for scratch restore")
+                    self._force_accu_mode(8, "8-bit A for scratch restore")
                 mode = want
             self._emit_implied(Opcode.PLA, f"Restore scratch ${address:02X}")
             self.emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(address))
 
         if mode != 8:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self._force_accu_mode(8, "Restore 8-bit A")
 
     # ========================================================================
     # Helper Methods
@@ -1978,12 +1991,12 @@ class InstructionSelector:
         # absolute write to a hardware register lands in WRAM - so DBR is
         # saved around it.
         self.emitter.emit_instr(Opcode.PHB)
-        self._emit_immediate(Opcode.REP_IMMEDIATE, MX_FLAGS, "16-bit A and index")
+        self._force_accu_mode(16, "16-bit A and index", MX_FLAGS)
         self._emit_immediate(Opcode.LDA_IMMEDIATE, total_bytes - 2)  # MVN copies A+1 bytes
         self._emit_immediate(Opcode.LDX_IMMEDIATE, addr_lo)          # source
         self._emit_immediate(Opcode.LDY_IMMEDIATE, addr_lo + 1)      # dest = source + 1
         self.emitter.emit_instr(Opcode.MVN, BlockMove(bank, bank))
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self._force_accu_mode(8, "Restore 8-bit A")
         self.emitter.emit_instr(Opcode.PLB)
 
     # Threshold in bytes above which zero fills use MVN self-copy
@@ -2028,16 +2041,16 @@ class InstructionSelector:
             # === Small zero fill ===
             if element_size == 2 and not is_wram:
                 # 16-bit STZ loop (non-WRAM only)
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for STZ")
+                self._force_accu_mode(16, "16-bit A for STZ")
                 self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=True)
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self._force_accu_mode(8, "Restore 8-bit A")
 
             elif element_size == 2 and is_wram:
                 # 16-bit LDA #0 + STA loop (WRAM: no STZ long)
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+                self._force_accu_mode(16, "16-bit A")
                 self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x0000)
                 self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
-                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+                self._force_accu_mode(8, "Restore 8-bit A")
 
             elif not is_wram:
                 # 8-bit STZ loop (non-WRAM)
@@ -2050,10 +2063,10 @@ class InstructionSelector:
 
         elif element_size == 2:
             # === Non-zero u16 fill: 16-bit A mode ===
-            self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A")
+            self._force_accu_mode(16, "16-bit A")
             self._emit_immediate(Opcode.LDA_IMMEDIATE, fill_value & WORD_MASK)
             self._emit_fill_loop(base_addr, total_bytes, count, element_size, loop_label, use_stz=False)
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+            self._force_accu_mode(8, "Restore 8-bit A")
 
         else:
             # === Non-zero u8 fill: current 8-bit loop (unchanged) ===
@@ -2093,7 +2106,7 @@ class InstructionSelector:
 
         # Set up for MVN: A = count - 1, X = source, Y = dest
         # For 16-bit index mode, we need REP #$10 first
-        self._emit_immediate(Opcode.REP_IMMEDIATE, MX_FLAGS, "16-bit A and index")
+        self._force_accu_mode(16, "16-bit A and index", MX_FLAGS)
 
         # Load count - 1 into A
         self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
@@ -2120,7 +2133,7 @@ class InstructionSelector:
         self.emitter.emit_instr(Opcode.MVN, BlockMove(rom_label, dest_bank))
 
         # Restore 8-bit A mode only; X/Y must remain 16-bit (x16 convention)
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self._force_accu_mode(8, "Restore 8-bit A")
         self.emitter.emit_instr(Opcode.PLB)
 
     # Shared with loop-register-promotion (see mir/nodes.py): at/below this size an
@@ -2179,12 +2192,12 @@ class InstructionSelector:
 
         self.emitter.emit_comment(f"Clone copy {count} bytes")
         self.emitter.emit_instr(Opcode.PHB)  # preserve DBR (MVN clobbers it)
-        self._emit_immediate(Opcode.REP_IMMEDIATE, MX_FLAGS, "16-bit A and index")
+        self._force_accu_mode(16, "16-bit A and index", MX_FLAGS)
         self._emit_immediate(Opcode.LDA_IMMEDIATE, count - 1)
         self._emit_immediate(Opcode.LDX_IMMEDIATE, src_addr & WORD_MASK)
         self._emit_immediate(Opcode.LDY_IMMEDIATE, dest_addr & WORD_MASK)
         self.emitter.emit_instr(Opcode.MVN, BlockMove(bank_of(src_addr), bank_of(dest_addr)))
-        self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
+        self._force_accu_mode(8, "Restore 8-bit A")
         self.emitter.emit_instr(Opcode.PLB)  # restore DBR
 
     # ========================================================================

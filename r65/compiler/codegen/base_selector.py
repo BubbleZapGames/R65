@@ -250,10 +250,9 @@ class BaseSelector(ABC):
             self._emit_load_store('STA', loc)
 
     def _emit_pointer_mem_copy(self, src_loc, dest_loc, n_bytes: int):
-        """Copy an n_bytes pointer from src to dest as byte-by-byte LDA/STA pairs.
-
-        Caller is responsible for ensuring 8-bit accumulator mode beforehand.
-        """
+        """Copy an n_bytes pointer from src to dest as byte-by-byte LDA/STA
+        pairs, in m8 so each moves one byte."""
+        self._ensure_m8_mode()
         for i in range(n_bytes):
             s = src_loc if i == 0 else self.parent._offset_location(src_loc, i)
             d = dest_loc if i == 0 else self.parent._offset_location(dest_loc, i)

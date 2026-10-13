@@ -663,7 +663,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         from r65.compiler.codegen.constants import M_FLAG
 
         if self.current_function.entry_m_mode == ModeState.M16:
-            self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore m8 mode")
+            self.parent._force_accu_mode(8, "Restore m8 mode")
 
     def _emit_return_instruction(self):
         """Emit appropriate return instruction (RTL, RTS, or infinite loop).
