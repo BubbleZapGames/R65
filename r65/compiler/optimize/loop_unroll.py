@@ -27,6 +27,7 @@ from r65.compiler.mir.nodes import (
     InlineAsm, SetMode, Push, Pull, SaveRegister, RestoreRegister,
     JumpTable, LookupTable, MemoryFill, BlockCopy,
 )
+from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
 
 # Size thresholds
 MIN_BODY_OPS = 4
@@ -247,56 +248,6 @@ class LoopUnroller:
         exit_block = func.blocks.get(exit_block_id)
         if exit_block and header_id in exit_block.predecessors:
             exit_block.predecessors.remove(header_id)
-
-
-# ============================================================================
-# Loop Detection (reused from loop_register_promotion.py)
-# ============================================================================
-
-def _find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:
-    """Find natural loops via back-edge detection."""
-    loops = []
-    for block_id, block in func.blocks.items():
-        if not block.instructions:
-            continue
-        for instr in block.instructions:
-            target = None
-            if isinstance(instr, Jump):
-                target = instr.target
-            elif isinstance(instr, CondBranch):
-                if instr.true_target <= block_id:
-                    target = instr.true_target
-                if instr.false_target <= block_id:
-                    body = _find_loop_body(func, instr.false_target, block_id)
-                    if body:
-                        loops.append((instr.false_target, body))
-                    if target is None:
-                        continue
-            if target is not None and target <= block_id:
-                body = _find_loop_body(func, target, block_id)
-                if body:
-                    loops.append((target, body))
-    return loops
-
-
-def _find_loop_body(func: MIRFunction, header: int,
-                    back_edge_source: int) -> Set[int]:
-    """Find the natural loop body by reverse walk from back-edge source."""
-    body = {header}
-    if header == back_edge_source:
-        return body
-    worklist = [back_edge_source]
-    body.add(back_edge_source)
-    while worklist:
-        bid = worklist.pop()
-        block = func.blocks.get(bid)
-        if block is None:
-            continue
-        for pred_id in block.predecessors:
-            if pred_id not in body:
-                body.add(pred_id)
-                worklist.append(pred_id)
-    return body
 
 
 # ============================================================================
