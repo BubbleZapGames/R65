@@ -144,7 +144,8 @@ Pass the element **index** instead — that is what a method receives.
 
 A tagged enum *may* be a field of an `#[soa]` struct. The outer static splits
 into planes anyway, so the enum contributes its own two rather than needing a
-contiguous form:
+contiguous form. A field that is an *array* of them is rejected: it would need a
+pair of planes per element.
 
 ```rust
 struct Body { x: u16, hp: u8 }

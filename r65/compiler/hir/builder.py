@@ -2238,7 +2238,18 @@ class HIRBuilder:
             # stride-1. In a plain array-of-structs it would have to be
             # contiguous — a tag byte with the payload inline — which puts the
             # element stride multiply back on every tag read, so it stays
-            # rejected there.
+            # rejected there. Only a bare enum: an array of them would need a
+            # pair of planes per element, and was laid out as one enum.
+            if (struct.is_soa and isinstance(field_type, ArrayTypeInfo)
+                    and self._tagged_enum_of(field_type) is not None):
+                raise HIRError(
+                    f"field '{field.name}' of #[soa] struct '{struct.name}' is an "
+                    f"array of tagged enum '{field_type.element_type}'",
+                    source_loc=struct.source_loc,
+                    hint="a tagged enum field contributes one tag plane and one "
+                         "payload plane; use a field per element, or give the "
+                         "enum its own pool",
+                )
             if not (struct.is_soa and self._tagged_enum_of(field_type) is not None):
                 self._reject_soa_type(field_type, 'field', field.name,
                                       struct.source_loc)

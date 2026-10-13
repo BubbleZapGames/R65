@@ -297,6 +297,14 @@ class TestNestedInSoaStruct:
         build_fails(self.SOURCE + "#[lowram] static mut more: [Shape; 4];\nfn main() {}",
                     r"backs both 'Thing.shape' and a static of its own")
 
+    def test_an_array_of_the_enum_is_rejected(self):
+        """It was laid out as one enum: `T[i].s[1]` read element i+1's tag."""
+        build_fails(SHAPES + """
+#[soa] struct Thing { hp: u8, s: [Shape; 2] }
+#[lowram] static mut things: [Thing; 4];
+fn main() {}
+""", r"field 's' of #\[soa\] struct 'Thing' is an array of tagged enum 'Shape'")
+
 
 class TestNestedAccess:
     """Reaching the nested element: match, construct, cast and method call."""

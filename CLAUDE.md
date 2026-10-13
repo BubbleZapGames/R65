@@ -248,7 +248,7 @@ of the same width.
 **Restrictions**: a payload names a declared struct (no inline fields, no tuple
 variants); a tagged enum backs exactly one `static mut` and takes no
 initializer, so write an element before matching it; it may be a field of an
-`#[soa]` struct (contributing its two planes) but not of a plain one; no locals, parameters,
+`#[soa]` struct (contributing its two planes), but not of a plain one or as an array; no locals, parameters,
 `&POOL[i]` or `&POOL[i].field`, `impl Clone`, or traits (the TypeId byte and the tag both want
 offset 0); no `= n` on a tagged enum's variants.
 
