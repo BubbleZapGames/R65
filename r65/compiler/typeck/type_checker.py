@@ -25,6 +25,7 @@ from r65.compiler.hir import (
 from r65.compiler.hir.types import (
     FunctionTypeInfo, PointerTypeInfo, NewtypeTypeInfo, strip_newtype
 )
+from r65.compiler.hir.nodes import walk_hir
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.typeck.mode_tracker import ModeTracker
 from r65.compiler.typeck.cfg_builder import CFGBuilder
@@ -746,45 +747,11 @@ class TypeChecker:
                     func_map[method.name] = method
 
         # Walk all function bodies, find HIRFunctionCall nodes with HIRAddressOf args
-        def _walk_expressions(node):
-            """Yield all HIRExpression nodes in the AST subtree."""
-            if node is None:
-                return
-            if isinstance(node, HIRFunctionCall):
-                yield node
-                for arg in node.args:
-                    yield from _walk_expressions(arg)
-                if node.func:
-                    yield from _walk_expressions(node.func)
-                return
-            # Walk all child attributes that are HIR nodes or lists
-            for attr_name in ('body', 'statements', 'then_block', 'else_block',
-                              'condition', 'left', 'right', 'operand', 'value',
-                              'target', 'initializer', 'pointer', 'array', 'index',
-                              'base', 'args', 'branches', 'expression', 'expr', 'func',
-                              'receiver', 'targets', 'elements'):
-                attr = getattr(node, attr_name, None)
-                if attr is None:
-                    continue
-                if isinstance(attr, list):
-                    for item in attr:
-                        if isinstance(item, HIRExpression) or isinstance(item, HIRStatement):
-                            yield from _walk_expressions(item)
-                        # Handle match branches, if branches, etc.
-                        elif hasattr(item, 'body'):
-                            yield from _walk_expressions(getattr(item, 'body', None))
-                        elif hasattr(item, 'value'):
-                            yield from _walk_expressions(getattr(item, 'value', None))
-                elif isinstance(attr, (HIRExpression, HIRStatement)):
-                    yield from _walk_expressions(attr)
-                elif hasattr(attr, 'statements'):
-                    yield from _walk_expressions(attr)
-
         # Scan all function bodies for calls that pass far pointers to near params
         for func in func_map.values():
             if func.body is None:
                 continue
-            for expr in _walk_expressions(func.body):
+            for expr in walk_hir(func.body):
                 if not isinstance(expr, HIRFunctionCall):
                     continue
                 # Only handle direct calls to known functions

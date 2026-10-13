@@ -80,6 +80,7 @@ from r65.compiler.hir import (
     HIRStaticDecl,
     HIRWhileStmt,
 )
+from r65.compiler.hir.nodes import walk_hir
 from r65.compiler.lint.call_graph import _resolve_direct_callee
 from r65.compiler.lint.rule import LintContext, LintRule
 from r65.compiler.lint.rule_kinds._common import (
@@ -318,51 +319,18 @@ def _identifiers_from_first_loop(func: HIRFunctionDecl) -> Set[int]:
     its body — are included.
     """
     found: Set[int] = set()
-    seen: Set[int] = set()
     passed_loop = False
-
-    def walk(node) -> None:
-        nonlocal passed_loop
-        if node is None or id(node) in seen:
-            return
-        seen.add(id(node))
+    for node in walk_hir(func.body):
         if isinstance(node, (HIRWhileStmt, HIRLoopExpression)):
             passed_loop = True
-        if isinstance(node, HIRIdentifier) and passed_loop:
+        elif isinstance(node, HIRIdentifier) and passed_loop:
             found.add(id(node))
-        for name in getattr(node, "__dataclass_fields__", ()):
-            value = getattr(node, name, None)
-            if isinstance(value, list):
-                for item in value:
-                    if hasattr(item, "__dataclass_fields__"):
-                        walk(item)
-            elif hasattr(value, "__dataclass_fields__"):
-                walk(value)
-
-    walk(func.body)
     return found
 
 
 def _contains_loop(node) -> bool:
     """True if ``node``'s subtree contains any loop construct."""
-    seen: Set[int] = set()
-    stack = [node]
-    while stack:
-        n = stack.pop()
-        if n is None or id(n) in seen:
-            continue
-        seen.add(id(n))
-        if isinstance(n, (HIRWhileStmt, HIRLoopExpression)):
-            return True
-        for fname in getattr(n, "__dataclass_fields__", ()):
-            value = getattr(n, fname, None)
-            if isinstance(value, list):
-                for item in value:
-                    if hasattr(item, "__dataclass_fields__"):
-                        stack.append(item)
-            elif hasattr(value, "__dataclass_fields__"):
-                stack.append(value)
-    return False
+    return any(isinstance(n, (HIRWhileStmt, HIRLoopExpression)) for n in walk_hir(node))
 
 
 def _live_region_callees(func: HIRFunctionDecl) -> Tuple[Set[str], bool]:
@@ -378,7 +346,6 @@ def _live_region_callees(func: HIRFunctionDecl) -> Tuple[Set[str], bool]:
     them to ``reachable_from`` to get everything the game loop can reach.
     """
     direct: Set[str] = set()
-    seen: Set[int] = set()
     # If there is no loop at all, everything is live from the start.
     state = {"live": not _contains_loop(func.body), "indirect": False}
 
@@ -393,10 +360,7 @@ def _live_region_callees(func: HIRFunctionDecl) -> Tuple[Set[str], bool]:
         else:
             state["indirect"] = True
 
-    def walk(node) -> None:
-        if node is None or id(node) in seen:
-            return
-        seen.add(id(node))
+    for node in walk_hir(func.body):
         if isinstance(node, (HIRWhileStmt, HIRLoopExpression)):
             state["live"] = True
         if state["live"]:
@@ -404,16 +368,6 @@ def _live_region_callees(func: HIRFunctionDecl) -> Tuple[Set[str], bool]:
                 record(node)
             elif isinstance(node, HIRMethodCall):
                 state["indirect"] = True
-        for fname in getattr(node, "__dataclass_fields__", ()):
-            value = getattr(node, fname, None)
-            if isinstance(value, list):
-                for item in value:
-                    if hasattr(item, "__dataclass_fields__"):
-                        walk(item)
-            elif hasattr(value, "__dataclass_fields__"):
-                walk(value)
-
-    walk(func.body)
     return direct, state["indirect"]
 
 

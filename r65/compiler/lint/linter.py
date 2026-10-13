@@ -53,7 +53,7 @@ from r65.compiler.hir.nodes import (
     HIRIfExpression,
     HIRLoopExpression,
     HIRMatchExpression,
-    HIRMatchArm,
+    HIRMatchArm, walk_hir,
 )
 
 from r65.compiler.lint.rule import LintContext, LintRule
@@ -302,29 +302,14 @@ class R65Linter:
 def _max_source_line(root, floor: int) -> int:
     """Largest source line touched by any node in ``root``'s subtree.
 
-    Used to bound an item's #[allow] span. Walks dataclass fields; nodes carry
-    an optional ``source_loc``. ``floor`` (the decl's own line) is the minimum,
+    Used to bound an item's #[allow] span. Nodes carry an optional
+    ``source_loc``; a name's symbol is not followed into its declaration. ``floor`` (the decl's own line) is the minimum,
     so a body-less or synthetic item still spans its declaration line.
     """
     best = floor
-    seen: set = set()
-    stack = [root]
-    while stack:
-        node = stack.pop()
-        if node is None or id(node) in seen:
-            continue
-        seen.add(id(node))
-        loc = getattr(node, "source_loc", None)
-        if loc is not None and getattr(loc, "line", 0) > best:
-            best = loc.line
-        for fname in getattr(node, "__dataclass_fields__", ()):
-            value = getattr(node, fname, None)
-            if isinstance(value, list):
-                for item in value:
-                    if hasattr(item, "__dataclass_fields__"):
-                        stack.append(item)
-            elif hasattr(value, "__dataclass_fields__"):
-                stack.append(value)
+    for node in walk_hir(root):
+        line = getattr(getattr(node, "source_loc", None), "line", 0) or 0
+        best = max(best, line)
     return best
 
 

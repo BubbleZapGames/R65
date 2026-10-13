@@ -233,23 +233,13 @@ class ExpressionBuilder:
         `i++` and `i += n` parse as compound assignments, so three node kinds
         cover every way a local can change.
         """
-        names, stack, seen = set(), [node], set()
-        while stack:
-            n = stack.pop()
-            if id(n) in seen:
-                continue
-            seen.add(id(n))
+        names = set()
+        for n in ExpressionBuilder._walk_ast(node):
             if isinstance(n, (ast.Assignment, ast.CompoundAssignment)):
                 if isinstance(n.target, ast.Identifier):
                     names.add(n.target.name)
             elif isinstance(n, ast.MultiAssignment):
                 names.update(t.name for t in n.targets if isinstance(t, ast.Identifier))
-            if isinstance(n, list):
-                stack.extend(n)
-            elif hasattr(n, '__dict__'):
-                for v in vars(n).values():
-                    if isinstance(v, (list, ast.ASTNode)):
-                        stack.append(v)
         return names
 
     def _payload_self_ident(self, expr):

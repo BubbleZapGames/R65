@@ -42,6 +42,7 @@ from r65.compiler.mir.lowerers.condition import ConditionLowerer
 from r65.compiler.mir.lowerers.static_init import StaticInitLowerer
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
 from r65.compiler.errors import MIRLoweringError
+from r65.compiler.hir.nodes import walk_hir
 
 
 class MIRBuilder:
@@ -980,7 +981,7 @@ class MIRBuilder:
         info = clone_expr.clone_info
         src_loc = self._clone_place_memloc(clone_expr.func.base)
         if src_loc is None:
-            raise MIRError(
+            raise MIRLoweringError(
                 "clone source must be a named aggregate variable or static",
                 source_loc=getattr(clone_expr, 'source_loc', None)
             )
@@ -993,7 +994,7 @@ class MIRBuilder:
         dest_loc = self._clone_place_memloc(call_expr.func.base)
         src_loc = self._clone_place_memloc(call_expr.args[0])
         if dest_loc is None or src_loc is None:
-            raise MIRError(
+            raise MIRLoweringError(
                 "clone_from operands must be named aggregate variables or statics",
                 source_loc=getattr(call_expr, 'source_loc', None)
             )
@@ -1008,7 +1009,7 @@ class MIRBuilder:
         dest_loc = self._clone_place_memloc(expr.target)
         src_loc = self._clone_place_memloc(clone_expr.func.base)
         if dest_loc is None or src_loc is None:
-            raise MIRError(
+            raise MIRLoweringError(
                 "clone assignment operands must be named aggregate variables or statics",
                 source_loc=getattr(expr, 'source_loc', None)
             )
@@ -1059,120 +1060,35 @@ class MIRBuilder:
         return True
 
     def _symbol_address_taken(self, symbol) -> bool:
+        """Whether the current function's body takes *symbol*'s address.
+
+        `&sym`, a method-style call on it (the receiver is passed or copied by
+        address), and an operator-trait compound assignment to it all pin it
+        to a memory location.
         """
-        Check if the address of a symbol is taken anywhere in the current function body.
-
-        Walks the HIR function body looking for HIRAddressOf nodes whose operand
-        references this symbol.
-
-        Args:
-            symbol: The symbol to check
-
-        Returns:
-            True if &symbol appears in the function body
-        """
-        target_id = id(symbol)
-
-        def check_expr(expr) -> bool:
-            if expr is None:
-                return False
-            if isinstance(expr, HIRAddressOf):
-                if isinstance(expr.operand, HIRIdentifier) and id(expr.operand.symbol) == target_id:
-                    return True
-                return check_expr(expr.operand)
-            elif isinstance(expr, HIRBinaryOp):
-                return check_expr(expr.left) or check_expr(expr.right)
-            elif isinstance(expr, (HIRUnaryOp,)):
-                return check_expr(expr.operand)
-            elif isinstance(expr, HIRTypeCast):
-                return check_expr(expr.expr)
-            elif isinstance(expr, HIRAssignment):
-                if getattr(expr, 'opassign_call', None):
-                    if check_expr(expr.opassign_call):
-                        return True
-                    if isinstance(expr.target, HIRIdentifier) and id(expr.target.symbol) == target_id:
-                        return True
-                return check_expr(expr.target) or check_expr(expr.value)
-            elif isinstance(expr, HIRFunctionCall):
-                if any(check_expr(a) for a in expr.args):
-                    return True
-                # A method-style call (x.method(...), x.clone()/.clone_from(...))
-                # passes / copies the receiver by address, so its receiver is pinned
-                # and must be promoted to a static (codegen needs a memory location).
-                if isinstance(expr.func, HIRFieldAccess):
-                    base = expr.func.base
-                    if isinstance(base, HIRIdentifier) and id(base.symbol) == target_id:
-                        return True
-                return False
-            elif isinstance(expr, HIRMethodCall):
-                return check_expr(expr.receiver) or any(check_expr(a) for a in expr.args)
-            elif isinstance(expr, HIRArrayIndex):
-                return check_expr(expr.array) or check_expr(expr.index)
-            elif isinstance(expr, HIRFieldAccess):
-                return check_expr(expr.base)
-            elif isinstance(expr, HIRDereference):
-                return check_expr(expr.operand)
-            elif isinstance(expr, HIRBlockExpression):
-                for s in expr.statements:
-                    if check_stmt(s):
-                        return True
-                return check_expr(expr.final_expr)
-            elif isinstance(expr, HIRIfExpression):
-                return check_expr(expr.condition) or check_expr(expr.then_block) or check_expr(expr.else_block)
-            elif isinstance(expr, HIRStructLiteralExpr):
-                return any(check_expr(f.value) for f in expr.fields)
+        func_decl = self.function_decls.get(self.current_function.name)
+        if func_decl is None or not func_decl.body:
             return False
 
-        def check_stmt(stmt) -> bool:
-            if stmt is None:
-                return False
-            if isinstance(stmt, HIRLetStmt):
-                return check_expr(stmt.initializer)
-            elif isinstance(stmt, HIRExprStmt):
-                return check_expr(stmt.expr)
-            elif isinstance(stmt, HIRReturnStmt):
-                return any(check_expr(v) for v in stmt.values)
-            elif isinstance(stmt, HIRIfStmt):
-                if check_expr(stmt.condition):
-                    return True
-                if check_block(stmt.then_block):
-                    return True
-                if stmt.else_block:
-                    if isinstance(stmt.else_block, HIRIfStmt):
-                        return check_stmt(stmt.else_block)
-                    else:
-                        return check_block(stmt.else_block)
-            elif isinstance(stmt, HIRWhileStmt):
-                return check_expr(stmt.condition) or check_block(stmt.body)
-            elif isinstance(stmt, HIRAssignment):
-                if getattr(stmt, 'opassign_call', None):
-                    if check_expr(stmt.opassign_call):
-                        return True
-                    if isinstance(stmt.target, HIRIdentifier) and id(stmt.target.symbol) == target_id:
-                        return True
-                return check_expr(stmt.target) or check_expr(stmt.value)
-            elif isinstance(stmt, HIRMultiAssignment):
-                return check_expr(stmt.value)
-            elif isinstance(stmt, HIRBlock):
-                return check_block(stmt)
-            return False
+        def is_sym(expr):
+            return isinstance(expr, HIRIdentifier) and expr.symbol is symbol
 
-        def check_block(block) -> bool:
-            if block is None:
-                return False
-            for stmt in block.statements:
-                if check_stmt(stmt):
+        # An operator-trait call hangs off its assignment as an attribute, not
+        # a field, so the walk is restarted from it.
+        roots = [func_decl.body]
+        while roots:
+            for node in walk_hir(roots.pop()):
+                if isinstance(node, HIRAddressOf) and is_sym(node.operand):
                     return True
-            return False
-
-        # Walk the current function body
-        # We need to find the current function's HIR body
-        # Look through function_decls to find the matching function
-        func_name = self.current_function.name
-        if func_name in self.function_decls:
-            func_decl = self.function_decls[func_name]
-            if func_decl.body:
-                return check_block(func_decl.body)
+                if (isinstance(node, HIRFunctionCall)
+                        and isinstance(node.func, HIRFieldAccess)
+                        and is_sym(node.func.base)):
+                    return True
+                call = getattr(node, 'opassign_call', None)
+                if isinstance(node, HIRAssignment) and call is not None:
+                    if is_sym(node.target):
+                        return True
+                    roots.append(call)
         return False
 
     def _decompose_struct_local(self, stmt: HIRLetStmt):
@@ -2160,7 +2076,7 @@ class MIRBuilder:
 
         hoisted: Dict[Any, Any] = {}
         defined, array_indices = set(), []
-        for node in _walk_hir(body):
+        for node in walk_hir(body):
             if isinstance(node, HIRAssignment):
                 if isinstance(node.target, HIRIdentifier):
                     defined.add(id(node.target.symbol))
@@ -2609,127 +2525,31 @@ class MIRBuilder:
 
     def _count_param_usages(self, hir_func: HIRFunctionDecl) -> Dict[int, int]:
         """
-        Count how many times each parameter symbol is used in the function body.
+        Count how many times each register-bound parameter is read in the body.
 
         This is needed to determine if register-aliased parameters need to be
         saved to a vreg at function entry (if used more than once).
 
-        Args:
-            hir_func: HIR function declaration
-
         Returns:
             Dict mapping symbol id to usage count
         """
+        param_ids = {id(p.symbol) for p in hir_func.parameters
+                     if isinstance(p.binding, RegisterBinding)}
         counts: Dict[int, int] = {}
-
-        # Build set of parameter symbol ids
-        param_ids = set()
-        for param in hir_func.parameters:
-            if isinstance(param.binding, RegisterBinding):
-                param_ids.add(id(param.symbol))
-
-        if not param_ids:
+        if not param_ids or hir_func.body is None:
             return counts
 
-        def count_in_expr(expr):
-            """Recursively count parameter uses in an expression."""
-            if expr is None:
-                return
-
-            if isinstance(expr, HIRIdentifier):
-                sym_id = id(expr.symbol)
-                if sym_id in param_ids:
-                    counts[sym_id] = counts.get(sym_id, 0) + 1
-            elif isinstance(expr, HIRBinaryOp):
-                count_in_expr(expr.left)
-                count_in_expr(expr.right)
-            elif isinstance(expr, HIRUnaryOp):
-                count_in_expr(expr.operand)
-            elif isinstance(expr, HIRTypeCast):
-                count_in_expr(expr.expr)
-            elif isinstance(expr, HIRAssignment):
-                count_in_expr(expr.value)
-                # A bare identifier target is a pure write — `x = 5` does not
-                # read x. Any *compound* target does: `arr[i] = v` reads i,
-                # `*p = v` reads p, `p.f = v` reads p when p is a pointer. Miss
-                # those and the parameter is aliased to a raw hardware register
-                # that the address computation is then free to overwrite.
-                if not isinstance(expr.target, HIRIdentifier):
-                    count_in_expr(expr.target)
-            elif isinstance(expr, HIRFunctionCall):
-                for arg in expr.args:
-                    count_in_expr(arg)
-            elif isinstance(expr, HIRMethodCall):
-                count_in_expr(expr.receiver)
-                for arg in expr.args:
-                    count_in_expr(arg)
-            elif isinstance(expr, HIRArrayIndex):
-                count_in_expr(expr.array)
-                count_in_expr(expr.index)
-            elif isinstance(expr, HIRFieldAccess):
-                count_in_expr(expr.base)
-            elif isinstance(expr, HIRDereference):
-                count_in_expr(expr.pointer)
-            elif isinstance(expr, HIRAddressOf):
-                count_in_expr(expr.operand)
-            elif isinstance(expr, HIRBlockExpression):
-                for s in expr.statements:
-                    count_in_stmt(s)
-                count_in_expr(expr.final_expr)
-            elif isinstance(expr, HIRIfExpression):
-                count_in_expr(expr.condition)
-                count_in_expr(expr.then_block)
-                count_in_expr(expr.else_block)
-            elif isinstance(expr, HIRMatchExpression):
-                count_in_expr(expr.scrutinee)
-                for arm in expr.arms:
-                    # An arm body is an expression, or a statement when the arm
-                    # ends in control flow (return/break/continue).
-                    if isinstance(arm.body, HIRStatement):
-                        count_in_stmt(arm.body)
-                    else:
-                        count_in_expr(arm.body)
-            elif isinstance(expr, HIRLoopExpression):
-                count_in_block(expr.body)
-
-        def count_in_stmt(stmt):
-            """Recursively count parameter uses in a statement."""
-            if stmt is None:
-                return
-
-            if isinstance(stmt, HIRLetStmt):
-                count_in_expr(stmt.initializer)
-            elif isinstance(stmt, HIRExprStmt):
-                count_in_expr(stmt.expr)
-            elif isinstance(stmt, HIRReturnStmt):
-                for val in stmt.values:
-                    count_in_expr(val)
-            elif isinstance(stmt, HIRIfStmt):
-                count_in_expr(stmt.condition)
-                count_in_block(stmt.then_block)
-                if stmt.else_block:
-                    if isinstance(stmt.else_block, HIRIfStmt):
-                        count_in_stmt(stmt.else_block)
-                    else:
-                        count_in_block(stmt.else_block)
-            elif isinstance(stmt, HIRWhileStmt):
-                count_in_expr(stmt.condition)
-                count_in_block(stmt.body)
-            elif isinstance(stmt, HIRMultiLetStmt):
-                count_in_expr(stmt.initializer)
-            elif isinstance(stmt, HIRBlock):
-                count_in_block(stmt)
-
-        def count_in_block(block):
-            """Count parameter uses in a block."""
-            if block is None:
-                return
-            for stmt in block.statements:
-                count_in_stmt(stmt)
-
-        # Count in function body
-        count_in_block(hir_func.body)
-
+        # A bare identifier target is a pure write - `x = 5` does not read x.
+        # Any compound target does (`arr[i] = v` reads i, `*p = v` reads p), so
+        # only the bare one is skipped. The walk yields the assignment before
+        # its target, so the skip is recorded in time.
+        writes = set()
+        for node in walk_hir(hir_func.body):
+            if isinstance(node, HIRAssignment) and isinstance(node.target, HIRIdentifier):
+                writes.add(id(node.target))
+            elif (isinstance(node, HIRIdentifier) and id(node) not in writes
+                    and id(node.symbol) in param_ids):
+                counts[id(node.symbol)] = counts.get(id(node.symbol), 0) + 1
         return counts
 
     def _invalidate_memloc_cache(self):
@@ -2777,7 +2597,7 @@ class MIRBuilder:
     # in codegen emit X-touching code. Missing one here = a stale X is reused
     # and an indexed store/load lands at a garbage address (silent memory
     # corruption — the same drift-bug class as DCE _READ_FIELDS vs liveness
-    # _GET_USES). When adding a new MIR node or changing a selector to use X,
+    # liveness_uses). When adding a new MIR node or changing a selector to use X,
     # update this list. Verified clobberers:
     #   Call / TraitDispatch ...... ABI: A/X/Y volatile across the call
     #   JumpTable / LookupTable ... emit TAX to index the dispatch table
@@ -2966,26 +2786,3 @@ class MIRBuilder:
         from r65.compiler.hir.hir_const_eval import try_eval_const_bool
         symbol_table = self._hir_program.symbol_table if self._hir_program else None
         return try_eval_const_bool(expr, symbol_table)
-
-
-def _walk_hir(node):
-    """Every HIR node under *node*, *node* included.
-
-    Follows dataclass fields holding HIR nodes or lists of them; a Symbol is
-    not an HIR node, so a reference never leads back into a declaration.
-    """
-    import dataclasses
-    from r65.compiler.hir.nodes import HIRNode
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, (list, tuple)):
-            stack.extend(current)
-            continue
-        if not isinstance(current, HIRNode):
-            continue
-        yield current
-        for f in dataclasses.fields(current):
-            value = getattr(current, f.name, None)
-            if isinstance(value, (HIRNode, list, tuple)):
-                stack.append(value)

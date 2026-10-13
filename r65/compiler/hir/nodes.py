@@ -6,7 +6,7 @@ These nodes represent the program after name resolution, attribute processing,
 and desugaring, but before full type checking.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from typing import Optional, List, Union, Any
 from r65.compiler.hir.errors import *
 
@@ -838,3 +838,25 @@ class HIRMatchExpression(HIRExpression):
     # 'if_let' / 'let_else' when the parser desugared this match from
     # `if let` / `while let` / `let ... else` (see ast.MatchExpression).
     origin: Optional[str] = None
+
+
+def walk_hir(node):
+    """Every HIR node under *node*, *node* included, each parent before its
+    children.
+
+    Follows dataclass fields holding HIR nodes or lists of them; a Symbol is
+    not an HIR node, so a reference never leads back into a declaration.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, (list, tuple)):
+            stack.extend(reversed(current))
+            continue
+        if not isinstance(current, HIRNode):
+            continue
+        yield current
+        for f in reversed(dataclass_fields(current)):
+            value = getattr(current, f.name, None)
+            if isinstance(value, (HIRNode, list, tuple)):
+                stack.append(value)
