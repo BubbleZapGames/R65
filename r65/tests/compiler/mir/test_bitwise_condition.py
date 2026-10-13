@@ -304,11 +304,10 @@ class TestLogicalVsBitwiseCondition:
         assert branch_count >= 2, f"Logical && should have multiple branches, got {branch_count}"
 
 
-class TestVolatileNotOptimized:
-    """Tests that volatile variables are not optimized (preserve order)."""
+class TestVolatileChain:
+    """#[hw] operands are chained: one read each, in source order."""
 
-    def test_volatile_hw_not_optimized(self):
-        """Test that #[hw] volatile variables don't get bitwise optimization."""
+    def test_volatile_hw_read_once_in_order(self):
         source = """
         #[hw(0x4212)]
         static mut HVBJOY: u8;
@@ -326,15 +325,17 @@ class TestVolatileNotOptimized:
         mir = build_mir(source)
         instrs = get_mir_instructions(mir, "test")
 
-        # Should NOT use the bitwise optimization for volatile vars
-        # This means it will use normal comparison path (Compare + CondBranch)
-        # rather than ORA + CondBranch on result
-        has_compare = any(isinstance(i, Compare) for i in instrs)
-
-        # If volatile, should fall back to Compare instruction path
-        # (The bitwise optimization should be skipped)
-        assert has_compare or has_binary_op(instrs, '|'), \
-            "Should either use Compare or fall back to ORA"
+        reads = []
+        for i in instrs:
+            for operand in (getattr(i, 'source', None), getattr(i, 'right', None)):
+                symbol = getattr(operand, 'symbol', None)
+                if getattr(operand, 'is_volatile', False) and symbol is not None:
+                    reads.append(symbol.name)
+        assert reads == ['HVBJOY', 'JOYSER0']
+        # ORA straight from the register, not from a vreg copy of it.
+        assert any(isinstance(i, BinaryOp) and i.op == '|'
+                   and getattr(i.right, 'is_volatile', False) for i in instrs)
+        assert count_cond_branches(instrs) == 1
 
 
 class TestBitwiseWithComparison:

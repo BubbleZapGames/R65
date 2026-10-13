@@ -500,11 +500,11 @@ class ConditionLowerer:
         Safe operands:
         - Integer/boolean literals
         - Hardware registers (A, X, Y)
-        - Non-volatile static variables
+        - Variables, including volatile #[hw] statics: the chain reads each
+          operand exactly once, in source order, as the general path does
         - Nested bitwise ops with safe operands
 
-        Unsafe (require short-circuit or order preservation):
-        - Volatile #[hw] variables
+        Unsafe:
         - Function calls
         - Complex expressions with side effects
         """
@@ -516,12 +516,7 @@ class ConditionLowerer:
         if isinstance(expr, HIRRegister):
             return True
 
-        # Static variables - check for volatile
         if isinstance(expr, HIRIdentifier):
-            symbol = expr.symbol
-            # Reject volatile #[hw] variables - must preserve evaluation order
-            if hasattr(symbol, 'hw_address') and symbol.hw_address is not None:
-                return False
             return True
 
         # Bitwise ops on safe operands (recursive check)

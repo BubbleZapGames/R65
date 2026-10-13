@@ -5,23 +5,12 @@ Shared multiplication helpers for MIR lowering.
 Provides shift-and-add multiplication for struct array indexing optimization.
 Used by both expression.py and assignment.py lowerers.
 
-LIMITATION - Large Struct Array Indexing:
-    For structs larger than 16 bytes, array indexing uses the SNES hardware
-    multiplier (8x8=16 bit) via mul16(). This limits VARIABLE indices to 0-255.
-
-    | Struct Size  | Index Type | Max Index | Method              |
-    |--------------|------------|-----------|---------------------|
-    | 1-16 bytes   | any        | 65535     | Shift-and-add       |
-    | 17-255 bytes | constant   | 65535     | Compile-time calc   |
-    | 17-255 bytes | variable   | 255       | mul16() hardware    |
-
-    Constant indices work correctly for any value because the multiplication
-    is computed at compile time. Variable indices > 255 will silently use
-    only the low 8 bits, producing incorrect results.
-
-    To support larger arrays of large structs with variable indexing:
-    - Restructure to use smaller structs (≤16 bytes)
-    - Use manual pointer arithmetic with a software 16x8 multiply
+Struct array indexing scales a variable index by the element size:
+    - 1-16 bytes: shift-and-add, inline.
+    - over 16 bytes: a call to stdlib `mul16(size, index)`, a 16x16 -> 16
+      multiply, so `include!("lib/math.r65")` is required. Any u16 index
+      whose byte offset fits in 16 bits is exact.
+    A constant index is scaled at compile time.
 """
 
 from typing import TYPE_CHECKING, Callable
@@ -34,6 +23,7 @@ from r65.compiler.errors import MIRLoweringError
 
 if TYPE_CHECKING:
     from r65.compiler.mir.context import LoweringContext
+    from r65.compiler.mir.lowerers.call import CallLowerer
 
 
 def _check_runtime_mul_available(ctx: 'LoweringContext', struct_size: int):
@@ -276,13 +266,13 @@ def compute_scaled_index(
     type_info,
     ctx: 'LoweringContext',
     emit: Callable,
+    call_lowerer: 'CallLowerer',
 ):
     """
     Compute scaled index for array element access: index * struct_size.
 
-    Unlike compute_array_field_offset(), does NOT add the field offset.
-    The field offset should be folded into the MemoryLocation address
-    constant instead, saving a CLC+ADC per non-zero field access.
+    Does NOT add a field offset: the caller folds that into the
+    MemoryLocation address constant, saving a CLC+ADC per field access.
 
     Args:
         index_operand: The index value (VirtualRegister, HardwareRegister, or Immediate)
@@ -290,6 +280,7 @@ def compute_scaled_index(
         type_info: Type information for intermediate values
         ctx: Lowering context for allocating virtual registers
         emit: Function to emit MIR instructions
+        call_lowerer: Emits the mul16 call for sizes over 16 bytes
 
     Returns:
         Operand containing index * struct_size
@@ -305,7 +296,6 @@ def compute_scaled_index(
     from r65.compiler.hir.types import BasicTypeInfo
     from r65.compiler.mir.nodes import TypeConvert
     from r65.compiler.mir.nodes import VirtualRegister
-    u8_type = BasicTypeInfo('u8')
     u16_type = BasicTypeInfo('u16')
 
     from r65.compiler.hir.types import strip_newtype
@@ -333,64 +323,14 @@ def compute_scaled_index(
     else:
         _check_runtime_mul_available(ctx, struct_size)
 
+        # An ordinary call to the declared mul16(multA, multB): the
+        # arguments are passed per its parameters (and the ABI), and the
+        # Call carries its entry/exit modes.
         scaled_index = ctx.alloc_vreg(u16_type, "scaled_index")
-        emit(Call(
-            function='mul16',
-            args=[
-                Argument(value=Immediate(struct_size), mechanism=ArgumentMechanism.REGISTER,
-                         location=HardwareRegister('A'), param_type=u8_type),
-                Argument(value=index_operand, mechanism=ArgumentMechanism.STACK,
-                         location=None, param_type=u16_type),
-            ],
-            returns=[scaled_index],
-            is_far=True
-        ))
+        call_lowerer.emit_runtime_call(
+            ctx.function_decls['mul16'],
+            [Immediate(struct_size), index_operand],
+            [scaled_index],
+        )
         return scaled_index
 
-
-def compute_array_field_offset(
-    index_operand,
-    struct_size: int,
-    field_offset: int,
-    type_info,
-    ctx: 'LoweringContext',
-    emit: Callable,
-):
-    """
-    Compute byte offset for array[index].field access.
-
-    Result = (index * struct_size) + field_offset
-
-    Optimization strategies (see docs/struct-array-indexing.md):
-    - struct_size == 1: no multiplication needed
-    - struct_size <= 16: use shift or shift-and-add decomposition
-    - struct_size > 16: call mul() runtime function
-
-    Args:
-        index_operand: The index value (VirtualRegister, HardwareRegister, or Immediate)
-        struct_size: Size of each struct element in bytes
-        field_offset: Offset of the field within the struct
-        type_info: Type information for intermediate values
-        ctx: Lowering context for allocating virtual registers
-        emit: Function to emit MIR instructions
-
-    Returns:
-        Operand containing the computed byte offset
-    """
-    scaled_index = compute_scaled_index(
-        index_operand, struct_size, type_info, ctx, emit
-    )
-
-    # Add field offset if non-zero
-    if field_offset == 0:
-        return scaled_index
-    else:
-        final_offset = ctx.alloc_vreg(type_info, "field_offset")
-        emit(BinaryOp(
-            dest=final_offset,
-            left=scaled_index,
-            right=Immediate(field_offset),
-            op='+',
-            type_info=type_info
-        ))
-        return final_offset

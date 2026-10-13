@@ -139,10 +139,11 @@ class MatchLowerer:
 
         An or-pattern is just several values sharing one arm, which the table
         already represents natively — `value_to_arm` is a plain value->arm
-        dict, and range patterns have always relied on that. Nesting is
-        allowed because the parser permits it; a catch-all inside an
-        or-pattern makes the whole alternation a catch-all.
+        dict, as it is for a range. Nesting is allowed because the parser
+        permits it; a catch-all is decided by `_is_catchall`.
         """
+        if self._is_catchall(pattern):
+            return []
         if isinstance(pattern, HIRLiteralPattern):
             # bool literals are not table-indexable.
             if isinstance(pattern.value, bool) or not isinstance(pattern.value, int):
@@ -155,8 +156,6 @@ class MatchLowerer:
         if isinstance(pattern, HIRRangePattern):
             upper = pattern.end + 1 if pattern.inclusive else pattern.end
             return list(range(pattern.start, upper))
-        if isinstance(pattern, (HIRWildcardPattern, HIRIdentifierPattern)):
-            return []
         if isinstance(pattern, HIROrPattern):
             if not pattern.patterns:
                 return None   # matches nothing; not a catch-all
@@ -165,10 +164,28 @@ class MatchLowerer:
                 sub_values = self._pattern_integer_values(sub)
                 if sub_values is None:
                     return None
-                if not sub_values:
-                    return []   # a catch-all alternative swallows the arm
                 values.extend(sub_values)
             return values
+        return None
+
+    def _is_catchall(self, pattern) -> bool:
+        """Whether `pattern` matches every value.
+
+        `_`, a binding, or an or-pattern with such an alternative (which
+        swallows the arm's other alternatives). The table analysis and both
+        table lowerings take their default arm from this one predicate.
+        """
+        if isinstance(pattern, (HIRWildcardPattern, HIRIdentifierPattern)):
+            return True
+        if isinstance(pattern, HIROrPattern):
+            return any(self._is_catchall(sub) for sub in pattern.patterns)
+        return False
+
+    def _default_arm_index(self, expr: HIRMatchExpression) -> Optional[int]:
+        """The first catch-all arm, or None. Later arms are unreachable."""
+        for i, arm in enumerate(expr.arms):
+            if self._is_catchall(arm.pattern):
+                return i
         return None
 
     def _analyze_for_jump_table(self, expr: HIRMatchExpression) -> Tuple[bool, Optional[int], Optional[int], Optional[Dict[int, int]]]:
@@ -179,21 +196,20 @@ class MatchLowerer:
             tuple: (use_jump_table, min_value, max_value, value_to_arm_index)
                    or (False, None, None, None) if not suitable
         """
-        # Extract literal/enum values from patterns
+        # Extract literal/enum values from the arms up to the first catch-all.
+        # The catch-all is the default rather than a table entry, and the
+        # arms after it are unreachable, so their values stay out of the
+        # table (first match wins).
         pattern_values = []
-        has_catchall = False
+        default_arm = self._default_arm_index(expr)
+        reachable_arms = expr.arms if default_arm is None else expr.arms[:default_arm]
 
-        for i, arm in enumerate(expr.arms):
+        for i, arm in enumerate(reachable_arms):
             values = self._pattern_integer_values(arm.pattern)
             if values is None:
                 # Not an integer-valued pattern (a bool literal, or something
                 # this analysis does not model) — no jump table.
                 return (False, None, None, None)
-            if not values:
-                # Wildcard / identifier: matches anything, so it is the
-                # default rather than a table entry.
-                has_catchall = True
-                continue
             for value in values:
                 pattern_values.append((value, i))
 
@@ -226,7 +242,7 @@ class MatchLowerer:
         # `pattern_values` is in arm order, so an earlier arm must keep the
         # value: assigning would hand it to the *last* arm that mentions it.
         # Overlap is reachable through a range (`1..=2` then `2..=3`) and
-        # through the far more natural `1 | 2` then `2 | 3`.
+        # through an or-pattern (`1 | 2` then `2 | 3`).
         value_to_arm = {}
         for value, arm_index in pattern_values:
             value_to_arm.setdefault(value, arm_index)
@@ -255,27 +271,21 @@ class MatchLowerer:
         if result_size not in (1, 2):
             return None
 
-        # Evaluate each arm body as a constant
+        # Evaluate each reachable arm body (up to and including the default
+        # arm) as a constant.
         arm_constants = {}  # arm_index -> constant value
-        default_value = None
+        default_arm = self._default_arm_index(expr)
+        last_arm = len(expr.arms) - 1 if default_arm is None else default_arm
 
-        for i, arm in enumerate(expr.arms):
-            if isinstance(arm.pattern, (HIRWildcardPattern, HIRIdentifierPattern)):
-                # Default arm — must also be constant
-                val = try_eval_const_int(arm.body)
-                if val is None:
-                    return None
-                default_value = val
-                arm_constants[i] = val
-            else:
-                val = try_eval_const_int(arm.body)
-                if val is None:
-                    return None
-                arm_constants[i] = val
+        for i, arm in enumerate(expr.arms[:last_arm + 1]):
+            val = try_eval_const_int(arm.body)
+            if val is None:
+                return None
+            arm_constants[i] = val
 
-        if default_value is None:
-            # No default arm — use 0 as default
-            default_value = 0
+        # Without a catch-all the match is exhaustive over the table's values,
+        # so the out-of-range default is never taken.
+        default_value = 0 if default_arm is None else arm_constants[default_arm]
 
         # Build values array
         range_size = max_val - min_val + 1
@@ -414,12 +424,7 @@ class MatchLowerer:
         for _ in expr.arms:
             arm_blocks.append(self.ctx.new_block())
 
-        # Find default arm (wildcard or identifier pattern)
-        default_arm_index = None
-        for i, arm in enumerate(expr.arms):
-            if isinstance(arm.pattern, (HIRWildcardPattern, HIRIdentifierPattern)):
-                default_arm_index = i
-                break
+        default_arm_index = self._default_arm_index(expr)
 
         # Build jump table: array of block IDs indexed by (value - min_val)
         range_size = max_val - min_val + 1
@@ -433,8 +438,8 @@ class MatchLowerer:
                 # Use default arm for missing values
                 jump_table.append(arm_blocks[default_arm_index].block_id)
             else:
-                # No default - this shouldn't happen if exhaustiveness checking works
-                # For now, jump to merge (unreachable in correct code)
+                # No catch-all: the match is exhaustive, so a value with no
+                # arm (a gap between enum values) cannot occur.
                 jump_table.append(merge_block.block_id)
 
         # Determine default target (for out-of-bounds)

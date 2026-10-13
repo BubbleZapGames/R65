@@ -102,3 +102,35 @@ class TestOverlappingPatternsPreferTheFirstArm:
         result = e2e.run(_src(first, second, probe),
                          ExpectedState(memory={0x7E0010: want}))
         assert result.success, f"dispatch({probe}): {result.failures}"
+
+
+_JUMP_ARMS = "\n".join(
+    f"                {i} => {{ OUT = 0x{0xA0 + i:02X}; }}," for i in range(9)
+)
+
+
+@pytest.mark.parametrize("match_body,probe,want", [
+    # LookupTable: the catch-all hides inside an or-pattern.
+    ("0 => 0xA0, 1 => 0xA1, 2 => 0xA2, 3 | _ => 0xEE", 7, 0xEE),
+    # LookupTable: an arm after the catch-all is unreachable.
+    ("0 => 0xA0, 1 => 0xA1, 2 => 0xA2, _ => 0xEE, 3 => 0xA3", 3, 0xEE),
+    # Jump table: statement bodies, catch-all inside an or-pattern.
+    (f"\n{_JUMP_ARMS}\n                9 | _ => {{ OUT = 0xEE; }},", 20, 0xEE),
+], ids=["lut-or-catchall", "lut-arm-after-catchall", "jump-table-or-catchall"])
+def test_catchall_arm_is_the_table_default(match_body, probe, want, e2e):
+    """The first catch-all arm -- `_`, a binding, or an or-pattern holding
+    one -- takes every value no earlier arm names."""
+    value_arm = "let r: u8 = match K { %s }; OUT = r;" % match_body
+    stmt = "match K { %s };" % match_body
+    body = stmt if "OUT =" in match_body else value_arm
+    src = f'''
+        #[zeropage(0x10)]
+        static mut OUT: u8;
+        #[zeropage(0x11)]
+        static mut K: u8;
+
+        #[entry]
+        fn main() {{ K = {probe}; {body} }}
+    '''
+    result = e2e.run(src, ExpectedState(memory={0x7E0010: want}))
+    assert result.success, f"match K={probe}: {result.failures}"

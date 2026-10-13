@@ -1918,7 +1918,7 @@ class MIRBuilder:
                 self.emit(Move(dest=held, source=operand, type_info=index.expr_type))
                 operand = held
             scaled = compute_scaled_index(operand, stride, index.expr_type,
-                                          self.ctx, self.emit)
+                                          self.ctx, self.emit, self.call_lowerer)
             if total is None:
                 total = scaled
             else:
@@ -1995,7 +1995,8 @@ class MIRBuilder:
                     self.emit(Move(dest=held, source=operand, type_info=index.expr_type))
                     operand = held
                 hoisted[key] = compute_scaled_index(operand, stride, index.expr_type,
-                                                    self.ctx, self.emit)
+                                                    self.ctx, self.emit,
+                                                    self.call_lowerer)
         self._hoisted_index_terms.append(hoisted)
 
     def multi_index_memloc(self, base_memloc, terms, last_index, last_operand,
@@ -2235,6 +2236,7 @@ class MIRBuilder:
         # non-power-of-2 sizes, always returning a u16 operand.
         scaled = compute_scaled_index(
             index_operand, element_size, element_type, self.ctx, self.emit,
+            self.call_lowerer,
         )
         u16 = BasicTypeInfo('u16')
         if const_offset != 0:
@@ -2387,7 +2389,8 @@ class MIRBuilder:
             # The scaled index is a byte offset (u16), NOT the struct type —
             # sizing the Move as the struct corrupts the index high byte.
             scaled_operand = compute_scaled_index(
-                index_operand, struct_size, struct_type, self.ctx, self.emit)
+                index_operand, struct_size, struct_type, self.ctx, self.emit,
+                self.call_lowerer)
             self.emit(Move(dest=HardwareRegister('X'), source=scaled_operand,
                            type_info=BasicTypeInfo('u16')))
             self.x_index_cache_set(reuse_key)

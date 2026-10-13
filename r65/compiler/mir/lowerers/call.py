@@ -355,17 +355,7 @@ class CallLowerer:
             param = func_decl.parameters[i + 1]  # +1 to skip self
             arg_vreg = self.builder.lower_expression(arg_expr)
 
-            # Determine argument mechanism and location from parameter binding
-            mechanism = ArgumentMechanism.STACK
-            location = None
-            if param.binding:
-                if isinstance(param.binding, RegisterBinding):
-                    mechanism = ArgumentMechanism.REGISTER
-                    location = HardwareRegister(param.binding.register_name)
-                elif isinstance(param.binding, VariableBinding):
-                    mechanism = ArgumentMechanism.VARIABLE
-                    location = param.binding.variable_symbol
-
+            mechanism, location = self._get_argument_mechanism(param, arg_vreg)
             args.append(Argument(
                 value=arg_vreg,
                 mechanism=mechanism,
@@ -555,6 +545,23 @@ class CallLowerer:
             pascal_result_bytes=pascal_result_bytes,
         ))
 
+    def emit_runtime_call(
+        self,
+        func_decl: HIRFunctionDecl,
+        arg_values: List[Union[VirtualRegister, HardwareRegister, Immediate]],
+        returns: List[VirtualRegister],
+    ):
+        """Emit a compiler-generated call to `func_decl` (e.g. mul16 for
+        index scaling) with already-lowered argument values, passing each
+        argument and recording the callee's modes as a source-level call
+        would."""
+        args = []
+        for param, value in zip(func_decl.parameters, arg_values):
+            mechanism, location = self._get_argument_mechanism(param, value)
+            args.append(Argument(value=value, mechanism=mechanism,
+                                 location=location, param_type=param.param_type))
+        self._emit_call_with_mode_transition(func_decl, args, returns)
+
     # ========================================================================
     # Argument Lowering
     # ========================================================================
@@ -628,11 +635,11 @@ class CallLowerer:
             return mechanism, location
 
         elif isinstance(param.binding, VariableBinding):
-            # Variable-bound parameter
+            # Variable-bound parameter. This Store is what writes the
+            # variable: it is sized by the parameter type, and the inliner
+            # relies on it when it drops the Call.
             mechanism = ArgumentMechanism.VARIABLE
             location = self.builder.get_memory_location(param.binding.variable_symbol)
-
-            # Store argument to variable location
             self.emit(Store(source=arg_value, dest=location, type_info=param.param_type))
 
             return mechanism, location

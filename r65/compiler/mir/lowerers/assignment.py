@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING, Union
 from r65.compiler.hir import (
     HIRAssignment, HIRMultiAssignment, HIRBinaryOp, HIRRegister, HIRIdentifier,
     HIRFieldAccess, HIRArrayIndex, HIRDereference, HIRStatusFlagAccess, HIRBooleanLiteral,
-    HIRTypeCast,
+    HIRTypeCast, HIRIntegerLiteral, HIREnumVariantExpr,
 )
+from r65.compiler.hir.symbol_table import SymbolKind
 from r65.compiler.hir.types import MultiReturnTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, Load, Move, Store,
@@ -56,6 +57,29 @@ class AssignmentLowerer:
     def emit(self, instr):
         """Emit an instruction to the current block."""
         self.builder.emit(instr)
+
+    def _code_free_operand(self, expr):
+        """Return the operand for `expr` if lowering it emits no instruction.
+
+        That is a literal, a register, or an identifier that is a constant, a
+        register alias, a symbol with a memory home (used in place as a
+        MemoryLocation) or one already cached in a vreg. Returns None for
+        anything that would need code to evaluate.
+        """
+        if isinstance(expr, (HIRIntegerLiteral, HIRBooleanLiteral,
+                             HIREnumVariantExpr, HIRRegister)):
+            return self.builder.lower_expression(expr)
+        if not isinstance(expr, HIRIdentifier):
+            return None
+        symbol = expr.symbol
+        if self.ctx.current_function.alias_tracker.get_alias(symbol) is not None:
+            return self.builder.lower_expression(expr)
+        if self.builder.has_explicit_location(symbol):
+            return self.builder.get_memory_location(symbol)
+        if ((symbol.kind == SymbolKind.CONST and symbol.const_value is not None)
+                or id(symbol) in self.ctx.symbol_to_vreg):
+            return self.builder.lower_expression(expr)
+        return None
 
     # ========================================================================
     # Main Entry Point
@@ -103,32 +127,12 @@ class AssignmentLowerer:
                 # Direct hardware register op: A = A + TEMP becomes BinaryOp(dest=A, left=A, right=memloc)
                 hw_reg = HardwareRegister(expr.target.name)
 
-                # CRITICAL: For reg = reg op EXPR, lowering EXPR must NOT emit
-                # instructions that clobber the target register.
-                #
-                # Safe right operands (emit no A-clobbering instructions):
-                # - HIRIdentifier with explicit memory location → MemoryLocation
-                # - HIRIntegerLiteral → Immediate
-                # - HIRIdentifier/HIRRegister mapped to vreg → existing vreg reference
-                #
-                # Unsafe right operands (emit TypeConvert/Load that clobber A):
-                # - HIRTypeCast, complex expressions
-                # For unsafe cases, fall through to the normal path which uses vregs.
-                right = None
-                if isinstance(binary_op.right, HIRIdentifier):
-                    symbol = binary_op.right.symbol
-                    # Check if it has explicit memory location (not an alias)
-                    alias = self.ctx.current_function.alias_tracker.get_alias(symbol)
-                    if alias is None and self.builder.has_explicit_location(symbol):
-                        # Use memory location directly - no Load instruction needed
-                        right = self.builder.get_memory_location(symbol)
-
-                if right is None:
-                    # Try lowering - safe for immediates, vregs, hw regs
-                    # but NOT for TypeCast which emits A-clobbering TypeConvert
-                    if not isinstance(binary_op.right, HIRTypeCast):
-                        right = self.builder.lower_expression(binary_op.right)
-
+                # The target register already holds the left operand, so the
+                # right operand must lower without emitting any instruction
+                # (see _code_free_operand). Anything else (a call, an array
+                # index, a cast, a load) goes through the general path, which
+                # saves the register before lowering the right operand.
+                right = self._code_free_operand(binary_op.right)
                 if right is not None:
                     self.emit(BinaryOp(
                         dest=hw_reg,
@@ -138,10 +142,6 @@ class AssignmentLowerer:
                         type_info=expr.expr_type
                     ))
                     return hw_reg
-
-                # Right operand is a TypeCast or other complex expression that
-                # may clobber A during lowering. Fall through to the normal
-                # assignment path which uses vregs for both operands.
 
         # OPTIMIZATION: Direct memory-to-register load for X/Y registers
         # Avoid going through a virtual register (which gets allocated to stack)

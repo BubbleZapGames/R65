@@ -53,6 +53,22 @@ class TestArithmetic:
 
         assert result.success, f"Failures: {result.failures}"
 
+    def test_addition_of_call_result(self, e2e):
+        """`A = A + f()`: the call must not overwrite the left operand in A."""
+        result = e2e.run('''
+            #[zeropage(0x20)]
+            static mut OUT: u8;
+            fn seven() -> u8 { return 7; }
+            #[entry]
+            fn main() {
+                A = 3;
+                A = A + seven();
+                OUT = A;
+            }
+        ''', ExpectedState(memory={0x7E0020: 10}))
+
+        assert result.success, f"Failures: {result.failures}"
+
     def test_subtraction(self, e2e):
         """Test subtraction operation."""
         result = e2e.run('''

@@ -9,6 +9,8 @@ struct initializers, arrays of structs, and pointer-loop indexed reads.
 
 from pathlib import Path
 
+import pytest
+
 from r65.tests.e2e import ExpectedState
 
 STDLIB_DIR = Path(__file__).parent.parent.parent.parent / "stdlib"
@@ -213,6 +215,33 @@ class TestArrayOfStructs:
             0x7E050E: 10,    # arr[15].a
             0x7E0511: 251,   # arr[15].d (offset 3)
         }), max_instructions=300000)
+        assert result.success, f"Failures: {result.failures}"
+
+    @pytest.mark.parametrize("extra_args", [None, ["-O2", "--abi", "Pascal"]],
+                             ids=["default-abi", "pascal-abi"])
+    def test_large_struct_index_over_255(self, e2e, extra_args):
+        """mul16 scales the index 16x16, and is passed its arguments per
+        the ABI (Pascal puts `multA @ A` on the stack too)."""
+        result = e2e.run(f'''
+            include!("{SNESLIB_PATH}")
+            include!("{MATH_PATH}")
+
+            struct Big {{ a: u8, b: u8, pad: [u8; 14], z: u8 }}  // 17 bytes
+            #[lowram(0x200)]
+            static mut ARR: [Big; 300];
+
+            fn put(i: u16) {{
+                ARR[i].b = 0x5A;
+                ARR[i].z = 0xA5;
+            }}
+
+            #[entry]
+            fn main() {{ put(280); }}
+        ''', ExpectedState(memory={
+            # 0x200 + 280*17 = 0x1498
+            0x7E1499: 0x5A,   # .b, offset 1
+            0x7E14A8: 0xA5,   # .z, offset 16
+        }), max_instructions=300000, extra_args=extra_args)
         assert result.success, f"Failures: {result.failures}"
 
     def test_sequential_same_index_reuses_x(self, e2e):

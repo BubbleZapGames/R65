@@ -87,3 +87,22 @@ class TestInlineSubstitutionBehavior:
             fn main() { store5(&OUT); A = OUT; }
         ''', ExpectedState(A=5, memory={0x40: 5}), extra_args=["-O2"])
         assert result.success, f"Failures: {result.failures}"
+
+    def test_method_variable_bound_param(self, e2e):
+        """`t @ TEMP` on a method: inlining drops the Call, so the argument
+        must already be stored to TEMP (both bytes of a u16)."""
+        result = e2e.run('''
+            #[zeropage(0x20)]
+            static mut TEMP: u16;
+            #[zeropage(0x24)]
+            static mut OUT: u16;
+            struct Thing { v: u8 }
+            #[lowram]
+            static mut THING: Thing;
+            impl Thing {
+                fn put(*self, t @ TEMP: u16) { OUT = t; }
+            }
+            #[entry]
+            fn main() { THING.put(0x1234); }
+        ''', ExpectedState(memory={0x7E0024: [0x34, 0x12]}), extra_args=["-O2"])
+        assert result.success, f"Failures: {result.failures}"
