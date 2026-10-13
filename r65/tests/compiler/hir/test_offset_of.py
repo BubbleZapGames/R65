@@ -127,6 +127,15 @@ class TestOffsetOf:
                   if isinstance(d, HIRConstDecl)}
         assert consts == {'SZ_KIND': width, 'SZ_REC': width + 1, 'OFF_TAIL': width}
 
+    def test_union_field_offset_is_zero(self):
+        """Every union field overlays offset 0."""
+        source = """
+        union U { a: u8, b: u16 }
+        const OFF: u8 = offset_of(U, b);
+        """
+        hir = build_hir(source)
+        assert hir.declarations[1].evaluated_value == 0
+
     def test_error_wrong_arg_count(self):
         """offset_of with wrong number of args should error."""
         source = """

@@ -251,6 +251,14 @@ class TestCfgEvaluator:
         assert evaluator.evaluate(complex_condition) == False
 
 
+def test_cfg_in_const():
+    """cfg(flag) folds in a const initializer."""
+    from r65.compiler.hir import HIRBuilder
+    program = parse("const DBG: bool = cfg(debug);")
+    hir = HIRBuilder(cfg_evaluator=CfgEvaluator.from_string_list(["debug"])).build_program(program)
+    assert hir.declarations[0].evaluated_value is True
+
+
 if __name__ == '__main__':
     # Run basic parsing tests
     test_cfg_simple_identifier()

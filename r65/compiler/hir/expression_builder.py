@@ -601,6 +601,10 @@ class ExpressionBuilder:
                             # size_of: if const evaluation fails, fall back to runtime call
                             pass
 
+                    # cfg(flag) is const-only: it always folds to a bool literal
+                    if func_name == "cfg":
+                        return hir.HIRBooleanLiteral(value=self.const_evaluator.eval(expr), source_loc=src_loc)
+
                     # Const math builtins - try to fold if all args are const
                     if builtin and builtin.kind is BuiltinKind.CONST_MATH:
                         # Args may be runtime vars inside a const fn.
@@ -645,20 +649,8 @@ class ExpressionBuilder:
             return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name, source_loc=src_loc)
 
         elif isinstance(expr, ast.CfgFunctionCall):
-            # cfg!(flag) evaluates to true/false based on compiler cfg options
-            condition_name = None
-            if isinstance(expr.condition, ast.Identifier):
-                condition_name = expr.condition.name
-            elif hasattr(expr.condition, 'value'):
-                condition_name = str(expr.condition.value)
-
-            # Check if this cfg flag is set
-            if self.cfg_evaluator and condition_name:
-                cond = ast.CfgIdentifier(name=condition_name)
-                result = self.cfg_evaluator.evaluate(cond)
-            else:
-                result = False
-
+            # cfg!(flag) folds to the compiler's cfg options (shared with consts)
+            result = self.const_evaluator.eval_cfg(expr.condition, src_loc)
             return hir.HIRBooleanLiteral(value=result, source_loc=src_loc)
 
         elif isinstance(expr, ast.ArrayIndex):

@@ -397,6 +397,16 @@ fn bad(val @ A: i16, extra @ B: i8) {
             build_hir(source)
         assert "B register" in str(excinfo.value)
 
+    def test_b_param_rejected_with_u16_newtype_a(self):
+        """A 16-bit newtype in A rejects a B parameter, naming the newtype."""
+        source = """
+struct W(u16);
+fn bad(a @ A: W, b @ B: u8) {
+}
+"""
+        with pytest.raises(HIRError, match=r"B register.*@ A: W"):
+            build_hir(source)
+
     def test_b_param_allowed_with_u8_a(self):
         """Test that B register parameter is allowed when A is 8-bit (m8 mode)."""
         source = """
@@ -508,6 +518,12 @@ static mut MSG: [u8; 8] = "Hello";
         init = hir.declarations[0].initializer
         assert isinstance(init, HIRStringLiteral)
         assert init.value == "Hello"
+
+    def test_const_condition_folds_cast(self):
+        """A folded condition applies its casts: (0x1234 as u8) == 0x34."""
+        from r65.compiler.hir.hir_const_eval import try_eval_const_bool
+        hir = build_hir("fn f() { if (0x1234 as u8) == 0x34 { A = 1; } }")
+        assert try_eval_const_bool(hir.declarations[0].body.statements[0].condition) is True
 
 
 class TestStatementBuilding:

@@ -526,6 +526,22 @@ class TestInclusiveForLoops:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_inclusive_for_loop_to_255_terminates(self, e2e):
+        """0..=255 at depth 3 (a memory counter, not X/Y) runs 256 times."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut N: u16;
+
+            #[entry]
+            fn main() {
+                N = 0;
+                for i in 0..2 { for j in 0..2 { for k in 0..=255 { N = N + 1; } } }
+            }
+        ''', ExpectedState(memory={
+            0x7E0010: [0x00, 0x04],
+        }), max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
 
 class TestLoopExpression:
     """Test loop expression with break values."""

@@ -1003,9 +1003,11 @@ class HIRBuilder:
                 elif reg_name == "B":
                     b_param = param
 
-        # Validate: B register parameter is incompatible with 16-bit A parameter
+        # Validate: B register parameter is incompatible with 16-bit A parameter.
+        # Only a 16-bit A parameter sets M16, so a_param is set; the message
+        # names its declared type (str() — a newtype has no `.name`).
         if entry_mode == ModeState.M16 and b_param is not None:
-            a_type_name = a_param.param_type.name if a_param else 'u16'
+            a_type_name = str(a_param.param_type)
             raise HIRError(
                 f"Function '{func_name}' has a B register parameter '{b_param.name}' "
                 f"but also has a 16-bit A parameter (@ A: {a_type_name}), which puts the "
@@ -3853,9 +3855,10 @@ class HIRBuilder:
     def _infer_for_loop_type(self, start: ast.Expression, end: ast.Expression, src_loc, inclusive: bool = False) -> TypeInfo:
         """Infer the appropriate type for a for loop variable based on range bounds.
 
-        Examines both start and end values to determine the smallest type that
-        can hold all values in the range. Falls back to u16 if bounds cannot
-        be const-evaluated.
+        Picks the smallest type that holds every value the counter takes,
+        including the exit value (`end` for `..`, `end + 1` for `..=`). Falls
+        back to u16 if bounds cannot be const-evaluated; a const inclusive
+        range whose exit value exceeds 16 bits is an error.
 
         Args:
             start: Start expression of the range
@@ -3874,12 +3877,13 @@ class HIRBuilder:
         if start_val is None or end_val is None:
             return BasicTypeInfo('u16')
 
-        # Determine the range of values. The loop var type must hold BOTH the
-        # iteration values AND the comparison value (end_val), since the loop
-        # condition compares against end_val directly. For exclusive `0..256`,
-        # iteration reaches 255 but comparison is `i < 256`, so type must hold 256.
-        min_val = min(start_val, end_val)
-        max_val = max(start_val, end_val)
+        # The counter must hold every value it takes, including the one that
+        # fails the test: `i < end` exits at `end`, `i <= end` exits at
+        # `end + 1`. So `0..256` needs a u16, and so does `0..=255` — a u8
+        # counter would wrap to 0 and `i <= 255` would never fail.
+        last_val = end_val + 1 if inclusive else end_val
+        min_val = min(start_val, last_val)
+        max_val = max(start_val, last_val)
 
         # Check if values fit in each type (prefer unsigned, smallest first)
         if min_val >= 0:
@@ -3895,7 +3899,14 @@ class HIRBuilder:
             elif min_val >= -32768 and max_val <= 32767:
                 return BasicTypeInfo('i16')
 
-        # Default to u16 if nothing fits
+        # An inclusive range ending at the 16-bit maximum has no counter that
+        # can step past its end, so the loop would never exit.
+        if inclusive:
+            raise HIRError(
+                f"for-loop range {start_val}..={end_val} never terminates: its "
+                f"counter would have to pass {end_val}, beyond 16 bits",
+                source_loc=src_loc,
+            )
         return BasicTypeInfo('u16')
 
     def _for_var_indexes_array(self, for_stmt: ast.ForStmt) -> bool:

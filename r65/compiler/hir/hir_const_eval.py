@@ -49,7 +49,10 @@ def try_eval_const_int(expr, symbol_table: 'SymbolTable' = None) -> Optional[int
         return None
 
     elif isinstance(expr, HIRTypeCast):
-        return try_eval_const_int(expr.expr, symbol_table)
+        value = try_eval_const_int(expr.expr, symbol_table)
+        if value is None:
+            return None
+        return _cast_const_int(value, expr.target_type)
 
     elif isinstance(expr, HIRUnaryOp):
         operand = try_eval_const_int(expr.operand, symbol_table)
@@ -129,7 +132,9 @@ def try_eval_const_bool(expr, symbol_table: 'SymbolTable' = None) -> Optional[bo
         return None
 
     elif isinstance(expr, HIRTypeCast):
-        return try_eval_const_bool(expr.expr, symbol_table)
+        # A cast can change the value (`0x100 as u8` is 0), so fold it as an int
+        value = try_eval_const_int(expr, symbol_table)
+        return None if value is None else value != 0
 
     elif isinstance(expr, HIRUnaryOp):
         if expr.op == '!':
@@ -286,6 +291,46 @@ def _eval_binary_bool(expr, symbol_table: 'SymbolTable') -> Optional[bool]:
             return result != 0
 
     return None
+
+
+def wrap_int(value: int, type_name: str) -> int:
+    """Reduce `value` to what an integer type of `type_name` holds.
+
+    Unsigned types keep the low bits; signed types keep the low bits as a
+    two's-complement value. This is the single const-eval definition of an
+    integer cast (`x as u8`), shared by the AST and HIR evaluators.
+    """
+    if type_name == 'u8':
+        return value & 0xFF
+    if type_name == 'i8':
+        v = value & 0xFF
+        return v - 0x100 if v >= 0x80 else v
+    if type_name == 'u16':
+        return value & 0xFFFF
+    if type_name == 'i16':
+        v = value & 0xFFFF
+        return v - 0x10000 if v >= 0x8000 else v
+    raise ValueError(f"not an integer type: {type_name}")
+
+
+def _cast_const_int(value: int, target_type) -> int:
+    """Apply `as target_type` to a folded integer value."""
+    from r65.compiler.hir.types import (
+        BasicTypeInfo, PointerTypeInfo, FunctionTypeInfo, strip_newtype
+    )
+
+    target = strip_newtype(target_type) if target_type is not None else None
+    if isinstance(target, BasicTypeInfo):
+        if target.name == 'bool':
+            return 1 if value else 0
+        if target.name == 'u24':
+            return value & 0xFFFFFF
+        return wrap_int(value, target.name)
+    if isinstance(target, (PointerTypeInfo, FunctionTypeInfo)):
+        return value & (0xFFFFFF if target.is_far else 0xFFFF)
+    # `t.0` before type checking (target not yet known), or a cast to an enum:
+    # the value is unchanged.
+    return value
 
 
 def _get_type_mask(type_info) -> int:

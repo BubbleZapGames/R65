@@ -9,7 +9,7 @@ from typing import Any, Optional, Union
 from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
 from r65.compiler.errors import compiler_assert
-from r65.compiler.hir.unified_type_utils import get_unified_type_size
+from r65.compiler.hir.unified_type_utils import get_unified_type_size, layout_fields
 from r65.compiler.hir.types import ArrayTypeInfo, INTEGER_TYPE_NAMES
 from r65.compiler.builtins.registry import BuiltinRegistry, BuiltinKind
 from r65.compiler.frontend.ast import CfgIdentifier
@@ -183,6 +183,9 @@ class ConstEvaluator:
 
         elif isinstance(expr, ast.FunctionCall):
             return self._eval_function_call(expr)
+
+        elif isinstance(expr, ast.CfgFunctionCall):
+            return self.eval_cfg(expr.condition, expr.source_loc)
 
         elif isinstance(expr, ast.MatchExpression):
             return self._eval_match_expr(expr)
@@ -416,19 +419,8 @@ class ConstEvaluator:
 
             # Cast to integer types
             if type_name in INTEGER_TYPE_NAMES:
-                int_val = self._ensure_int(value)
-
-                # Apply type bounds
-                if type_name == 'u8':
-                    return int_val & 0xFF
-                elif type_name == 'i8':
-                    val = int_val & 0xFF
-                    return val if val < 128 else val - 256
-                elif type_name == 'u16':
-                    return int_val & 0xFFFF
-                elif type_name == 'i16':
-                    val = int_val & 0xFFFF
-                    return val if val < 32768 else val - 65536
+                from r65.compiler.hir.hir_const_eval import wrap_int
+                return wrap_int(self._ensure_int(value), type_name)
 
             # Cast to bool
             elif type_name == 'bool':
@@ -506,13 +498,39 @@ class ConstEvaluator:
         if func_name == "offset_of":
             return self._eval_offset_of(expr)
 
-        # Handle cfg! specifically - requires cfg evaluator to be passed
         if func_name == "cfg":
-            if not hasattr(self, 'cfg_evaluator') or self.cfg_evaluator is None:
-                raise HIRError("cfg! function requires cfg configuration to be provided", source_loc=expr.source_loc)
-            return self._eval_cfg(expr)
+            if len(expr.args) != 1:
+                raise HIRError("cfg expects exactly 1 argument", source_loc=expr.source_loc)
+            return self.eval_cfg(expr.args[0], expr.source_loc)
 
         raise HIRError(f"Unsupported const built-in function: {func_name}", source_loc=expr.source_loc)
+
+    def eval_cfg(self, condition: ast.Expression, source_loc=None) -> bool:
+        """Evaluate the argument of `cfg(...)` / `cfg!(...)`.
+
+        The argument is a flag name (`debug`) or a key-value test
+        (`target = "snes"`). With no `--cfg` options every flag is unset, the
+        same default `#[cfg]` attributes use.
+        """
+        from r65.compiler.hir.cfg import CfgEvaluator
+        from r65.compiler.frontend.ast import CfgComparison
+
+        if isinstance(condition, ast.Identifier):
+            cfg_cond = CfgIdentifier(name=condition.name)
+        elif (isinstance(condition, ast.Assignment)
+              and isinstance(condition.target, ast.Identifier)
+              and isinstance(condition.value, ast.StringLiteral)):
+            cfg_cond = CfgComparison(key=condition.target.name, operator='=',
+                                     value=condition.value.value)
+        else:
+            raise HIRError("cfg condition must be a flag name or `key = \"value\"`",
+                           source_loc=source_loc)
+
+        evaluator = self.cfg_evaluator or CfgEvaluator(set(), {})
+        try:
+            return evaluator.evaluate(cfg_cond)
+        except CompilerError as e:
+            raise HIRError(str(e), source_loc=source_loc)
 
     def _eval_size_of(self, expr: ast.FunctionCall) -> int:
         """Evaluate size_of builtin function using unified type utilities."""
@@ -561,12 +579,12 @@ class ConstEvaluator:
                     return field.offset
             raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'", source_loc=expr.source_loc)
 
-        # AST struct: compute offset by summing field sizes
-        offset = 0
-        for field in struct_def.fields:
+        # AST struct or union: offsets come from the shared aggregate layout
+        sizes = [get_unified_type_size(f.field_type, self.symbol_table) for f in struct_def.fields]
+        offsets, _ = layout_fields(sizes, getattr(struct_def, 'is_union', False))
+        for field, offset in zip(struct_def.fields, offsets):
             if field.name == field_name:
                 return offset
-            offset += get_unified_type_size(field.field_type, self.symbol_table)
 
         raise HIRError(f"Struct '{struct_name}' has no field '{field_name}'", source_loc=expr.source_loc)
 
