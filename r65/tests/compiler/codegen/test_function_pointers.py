@@ -451,14 +451,14 @@ def test_function_pointer_with_arguments():
     assert 'LDA #$0A' in asm_output or 'LDA #$14' in asm_output, \
         "Should load argument values"
 
-    # With caller-owned outgoing args, callee does NOT clean up stack parameters.
+    # The caller pops its pushed args, so the callee does NOT clean them up.
     # Callee just returns with RTS — no PLX/TSC/ADC/TCS/PHX sequence.
     callee_start = asm_output.find('process:')
     callee_end = asm_output.find('\n\n', callee_start) if callee_start != -1 else -1
     if callee_end == -1:
         callee_end = len(asm_output)
     callee_section = asm_output[callee_start:callee_end]
-    assert 'PLX' not in callee_section, "Callee should NOT clean up stack params (caller-owned)"
+    assert 'PLX' not in callee_section, "Callee should NOT clean up stack params (caller pops them)"
 
     # Verify trampoline has SEC/SBC address-1 adjustment
     caller_start = asm_output.find('caller:')

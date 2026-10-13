@@ -114,33 +114,11 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_load_store('STA', dest_loc)
                 return
 
-        # Load source into A
-        if isinstance(src_operand, MIRImmediate):
-            value = src_operand.value & 0xFF
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-        elif isinstance(src_operand, HardwareRegister):
-            # Transfer from hardware register to A
-            if src_operand.name == 'X':
-                self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
-            elif src_operand.name == 'Y':
-                self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
-            elif src_operand.name == 'B':
-                self.parent._access_b_value_in_a()
-            elif src_operand.name == 'A':
-                pass  # Already in A
-        else:
-            src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.is_hw():
-                if src_loc.hw_register == 'X':
-                    self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
-                elif src_loc.hw_register == 'Y':
-                    self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
-                elif src_loc.hw_register == 'B':
-                    self.parent._access_b_value_in_a()
-                elif src_loc.hw_register == 'A':
-                    pass  # Already in A
-            else:
-                self._emit_load_store('LDA', src_loc)
+        if dest_loc.is_hw('X') or dest_loc.is_hw('Y'):
+            self._emit_widening_into_index(src_operand, dest_loc.hw_register, source_signed)
+            return
+
+        self._load_byte_into_a(src_operand)
 
         # Store low byte
         self._emit_load_store('STA', dest_loc)
@@ -151,6 +129,41 @@ class TypeConversionSelector(BaseSelector):
         else:
             # Zero extension for u8 -> u16
             self._emit_zero_extension(dest_loc)
+
+    def _load_byte_into_a(self, src_operand):
+        """Bring the 8-bit source into A's low byte."""
+        if isinstance(src_operand, MIRImmediate):
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(src_operand.value & 0xFF))
+            return
+        if isinstance(src_operand, HardwareRegister):
+            src_reg, src_loc = src_operand.name, None
+        else:
+            src_loc = self.parent._get_operand_location(src_operand)
+            src_reg = src_loc.hw_register if src_loc.is_hw() else None
+        if src_reg == 'X':
+            self._emit_instr(Opcode.TXA, comment="Widen X to 16-bit")
+        elif src_reg == 'Y':
+            self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
+        elif src_reg == 'B':
+            self.parent._access_b_value_in_a()
+        elif src_reg is None:
+            self._emit_load_store('LDA', src_loc)
+        # 'A': already there
+
+    def _emit_widening_into_index(self, src_operand, reg: str, source_signed: bool):
+        """Widen into X or Y, which have no store form: extend in A (m16) and
+        transfer. Reached when a loop counter promoted to X/Y starts from a
+        u8 value."""
+        self.parent._ensure_m8_mode()
+        self._load_byte_into_a(src_operand)
+        self.parent._ensure_m16_mode()
+        self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend u8 to u16")
+        if source_signed:
+            self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate(0x0080), "Negative?")
+            self._emit_instr(Opcode.BCC, Address("+"), "Branch if positive")
+            self._emit_instr(Opcode.ORA_IMMEDIATE, Immediate(0xFF00), "Sign-extend")
+            self._emit_label("+")
+        self._emit_instr(Opcode.TAX if reg == 'X' else Opcode.TAY)
 
     def _emit_zero_extension_through_a(self, src_operand, dest_loc) -> bool:
         """Zero-extend in m16 when the source or the result lives in A.

@@ -162,11 +162,12 @@ class BranchFixup:
         """
         Iteratively determine which branches need long form.
 
-        Continues until no branch changes status (convergence).
+        Lengthening a branch never shortens a distance, so a branch only
+        ever goes short -> long. Each pass that changes anything lengthens
+        at least one branch, and the loop ends within len(branches) + 1
+        passes.
         """
-        max_iterations = 20  # Safety limit
-
-        for _ in range(max_iterations):
+        while True:
             # Calculate byte offsets for all nodes
             offsets = self._calculate_offsets(nodes, branches)
 
@@ -183,10 +184,8 @@ class BranchFixup:
                 target_offset = offsets[target_idx]
                 distance = target_offset - branch_end_offset
 
-                needs_long = abs(distance) > MAX_BRANCH_DISTANCE
-
-                if needs_long != branch.is_long:
-                    branch.is_long = needs_long
+                if not branch.is_long and abs(distance) > MAX_BRANCH_DISTANCE:
+                    branch.is_long = True
                     changed = True
 
             if not changed:

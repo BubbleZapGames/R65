@@ -23,13 +23,21 @@ from r65.compiler.codegen.opcodes import (
     Opcode, PUSH_OPCODES, PULL_OPCODES, mnemonic, addressing_mode,
     ACCUMULATOR_OPCODES, REGISTER_WRITES,
 )
-from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction, RawAsm
+from r65.compiler.codegen.asm_nodes import (
+    Immediate, Address, StackOffset, Instruction, RawAsm, ModeChange)
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 from r65.compiler.codegen.abi_model import emit_d_equals_s_keeping_c
 from r65.compiler.errors import CodegenError
+from r65.compiler.analysis.far_ptr_strategy import far_self_body_needs_dbr
 
 # Control leaves the handler: whatever runs there may write anything.
 _LEAVES = frozenset({'JSR', 'JSL', 'BRK', 'COP', 'WDM'})
+
+
+def _block_mode_switch(bits: int):
+    """(opcode, operand, comment) of the block-entry switch to m`bits`."""
+    opcode = Opcode.REP_IMMEDIATE if bits == 16 else Opcode.SEP_IMMEDIATE
+    return opcode, Immediate(M_FLAG), f"REQUIRED: restore m{bits} mode for block"
 
 
 def interrupt_body_written_regs(nodes) -> 'set | None':
@@ -134,20 +142,16 @@ class FunctionCodeGenerator:
         # ABIs that promote to scratch). If we allow local variables at those addresses, the callee's locals
         # overwrite the caller's params. Globally reserving all param addresses
         # prevents this collision.
-        global_addrs = getattr(mir_func, '_global_scratch_param_addrs', None)
-        if global_addrs:
-            for scratch in scratch_pool.scratches:
-                if scratch.address in global_addrs:
-                    scratch.is_free = False
+        for scratch in scratch_pool.scratches:
+            if scratch.address in mir_func.global_scratch_param_bytes:
+                scratch.is_free = False
 
         # Mark trait dispatch scratch addresses as occupied (caller-scoped).
         # These are only reserved in functions that contain TraitDispatch calls,
         # keeping the pool available for functions that don't use trait dispatch.
-        trait_addrs = getattr(mir_func, '_trait_dispatch_scratch_addrs', None)
-        if trait_addrs:
-            for scratch in scratch_pool.scratches:
-                if scratch.address in trait_addrs:
-                    scratch.is_free = False
+        for scratch in scratch_pool.scratches:
+            if scratch.address in mir_func.trait_dispatch_scratch_bytes:
+                scratch.is_free = False
 
         # Analyze far self trait methods to determine if D=S prologue is needed
         # Must run before ABIInfo creation since it may set has_far_ptr_stack_params
@@ -167,21 +171,14 @@ class FunctionCodeGenerator:
         from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
         instr_liveness = InstructionLivenessAnalyzer(mir_func)
 
-        outgoing_arg_bytes = mir_func.max_outgoing_arg_bytes
-
         # Build preliminary layout (local_frame_size filled in after allocation)
-        layout = StackFrameLayout(
-            abi=abi_info,
-            local_frame_size=0,
-            outgoing_arg_bytes=outgoing_arg_bytes,
-        )
+        layout = StackFrameLayout(abi=abi_info, local_frame_size=0)
 
         reg_alloc = RegisterAllocator(
             scratch_pool=scratch_pool,
             mir_func=mir_func,
             prologue_stack_bytes=prologue_bytes,
             instr_liveness=instr_liveness,
-            outgoing_arg_bytes=outgoing_arg_bytes,
             layout=layout,
         )
 
@@ -275,7 +272,7 @@ class FunctionCodeGenerator:
 
         # Update layout with actual local frame size from allocation
         layout.local_frame_size = local_frame_size
-        frame_size = layout.total_frame_size
+        frame_size = layout.local_frame_size
 
         # Update register allocator with frame info
         reg_alloc.frame_size = frame_size
@@ -358,6 +355,11 @@ class FunctionCodeGenerator:
         # exit, and the depth each block was entered at (emitter.x_slot).
         codegen_exit_slots = {}
         entry_depth = {}
+        # Loop headers entered in their own mode from every emitted
+        # predecessor: (node index, expected bits, back-edge predecessors).
+        # Their mode switch is inserted afterwards, only if a back edge
+        # actually exits in another mode.
+        pending_back_edge_switches = []
 
         for block_id in block_order:
             block = mir_func.blocks[block_id]
@@ -394,34 +396,25 @@ class FunctionCodeGenerator:
                     self.emitter.x_slot = xs.pop()
 
             # Determine if we need to force a mode switch at block entry.
-            # This is needed when:
-            # 1. A predecessor hasn't been emitted yet (back-edge from loop)
-            #    - We can't know what mode it will exit in, so force the switch
-            # 2. An emitted predecessor exits in a different mode than expected
-            #    - The codegen may have switched modes for u16 ops without
-            #      switching back (by design, to avoid redundant SEP/REP)
+            # This is needed when an emitted predecessor exits in a different
+            # mode than expected: the codegen may have switched modes for u16
+            # ops without switching back (by design, to avoid redundant
+            # SEP/REP). A predecessor not emitted yet (a back edge) is decided
+            # once it has been, from its actual exit mode (see below).
             force_mode = False
             if block.entry_mode is not None:
                 from r65.compiler.typeck.processor_mode import ModeState
                 expected_is_m16 = (block.entry_mode.m_mode == ModeState.M16)
-                for pred_id in block.predecessors:
-                    if pred_id not in codegen_exit_modes:
-                        # Back-edge: predecessor not yet emitted.
-                        # Check if it's safe to skip: if the predecessor
-                        # enters in the same mode and doesn't contain
-                        # mode-changing operations, it will exit in the
-                        # same mode as our expected mode.
-                        if self._back_edge_may_change_mode(
-                            mir_func, pred_id, expected_is_m16, reg_alloc
-                        ):
-                            force_mode = True
-                            break
-                    else:
-                        pred_is_m16 = (codegen_exit_modes[pred_id] == 16)
-                        if pred_is_m16 != expected_is_m16:
-                            # Emitted predecessor exits in wrong mode
-                            force_mode = True
-                            break
+                expected_bits = 16 if expected_is_m16 else 8
+                back_edge_preds = [p for p in block.predecessors
+                                   if p not in codegen_exit_modes]
+                force_mode = any(codegen_exit_modes[p] != expected_bits
+                                 for p in block.predecessors
+                                 if p in codegen_exit_modes)
+                if (back_edge_preds and not force_mode
+                        and self.emitter.get_accu_mode() == expected_bits):
+                    pending_back_edge_switches.append(
+                        (len(self.emitter.nodes), expected_bits, back_edge_preds))
             elif block.entry_mode is None and hasattr(block, 'predecessors'):
                 # Inlined blocks may lack entry_mode. Check if any
                 # predecessor exits in a mode that disagrees with the
@@ -463,6 +456,9 @@ class FunctionCodeGenerator:
                         f"internal: stack depth {self.emitter.stack_depth} leaving "
                         f"block {block_id} of {mir_func.name} disagrees with the "
                         f"{entry_depth[succ]} block {succ} was emitted with")
+
+        self._insert_back_edge_mode_switches(pending_back_edge_switches,
+                                             codegen_exit_modes)
 
         # Emit shared epilogue if function has multiple returns.
         # Each Return instruction branched here instead of emitting inline.
@@ -589,138 +585,20 @@ class FunctionCodeGenerator:
         """Block emission order (see compute_block_order)."""
         return compute_block_order(mir_func)
 
-    def _back_edge_may_change_mode(
-        self, mir_func: MIRFunction, pred_id: int, expected_is_m16: bool,
-        reg_alloc=None
-    ) -> bool:
+    def _insert_back_edge_mode_switches(self, pending, codegen_exit_modes):
+        """Insert the mode switch at each pending loop header that a back edge
+        reaches in the other mode (or from a block never emitted).
+
+        Emission past the header is the same either way: the switch only
+        brings the CPU to the mode the header was emitted in.
         """
-        Check if a back-edge predecessor might exit in a different mode
-        than expected. Used to avoid redundant SEP/REP at loop headers.
-
-        Returns True (conservative, force mode switch) if:
-        - The predecessor block's entry mode differs from expected
-        - The predecessor contains instructions that may change accumulator mode
-        - The predecessor can't be analyzed (missing data)
-
-        Returns False (safe to skip mode switch) if the predecessor enters
-        in the same mode as expected and contains no mode-changing instructions.
-        """
-        from r65.compiler.typeck.processor_mode import ModeState
-        from r65.compiler.mir.nodes import (
-            BinaryOp, UnaryOp, Compare, LoadIndirect, Load, Store,
-            StoreIndirect, IncDecMemory, BitTest, Move, Jump, CondBranch,
-            VirtualRegister, Immediate as MIRImmediate,
-        )
-        from r65.compiler.codegen.type_utils import get_type_size
-
-        pred_block = mir_func.blocks.get(pred_id)
-        if not pred_block:
-            return True  # Can't analyze
-
-        # Check if predecessor's entry mode matches our expected mode
-        if pred_block.entry_mode is None:
-            return True
-        pred_is_m16 = (pred_block.entry_mode.m_mode == ModeState.M16)
-        if pred_is_m16 != expected_is_m16:
-            return True  # Different entry mode
-
-        # Check if the block contains instructions that change accumulator mode.
-        # Operations on u16 values switch to m16; returns may switch for
-        # return value setup. Calls can leave mode in any state.
-        #
-        # Exception: operations targeting X/Y hardware registers don't touch
-        # accumulator mode even though they're u16 — but only when codegen
-        # actually emits INX/DEX/INY/DEY (or CPX/CPY). For BinaryOp the
-        # INC/DEC path requires the (possibly pointer-scaled) immediate to
-        # be exactly 1; otherwise codegen emits TXA/TYA + CLC + ADC + TAX/TAY
-        # which switches A to m16. CPX/CPY always preserves mode.
-        from r65.compiler.mir.nodes import HardwareRegister
-
-        def _xy_register(operand):
-            """If `operand` will resolve to X or Y at runtime, return the name; else None.
-
-            Mirrors what InstructionSelector's INC/DEC fast path checks:
-              - HardwareRegister: trust its name.
-              - VirtualRegister: must be ALLOCATED to X or Y, not merely hinted.
-                A hint='X' vreg that the allocator spilled to stack / scratch /
-                A would NOT take INC/INX path in codegen.
-
-            Returns None when allocation is unknown (no reg_alloc passed, or
-            vreg not yet allocated) — caller treats unknown as not-X/Y, which
-            is conservative (forces a possibly-redundant SEP at the loop head).
-            """
-            if isinstance(operand, HardwareRegister):
-                return operand.name if operand.name in ('X', 'Y') else None
-            if isinstance(operand, VirtualRegister):
-                if reg_alloc is None:
-                    return None
-                loc = reg_alloc.allocations.get(operand.id)
-                if loc is not None and loc.is_hw() and loc.hw_register in ('X', 'Y'):
-                    return loc.hw_register
-                return None
-            return None
-
-        def _is_xy(operand):
-            return _xy_register(operand) is not None
-
-        def _binary_op_preserves_a_mode(instr):
-            """True iff codegen for this BinaryOp emits INX/INY/DEX/DEY.
-
-            Mirrors the INC/DEC fast-path in InstructionSelector.select_binary_op:
-            requires op +/-, immediate RHS that scales to exactly 1, and
-            dest == left both resolving to the same X or Y register.
-            """
-            if instr.op not in ('+', '-'):
-                return False
-            dest_reg = _xy_register(instr.dest)
-            if dest_reg is None:
-                return False
-            if not isinstance(instr.right, MIRImmediate):
-                return False
-            # Apply pointer-element-size scaling (matches codegen).
-            elem_size = pointer_element_size(instr.type_info)
-            scaled = instr.right.value * elem_size if elem_size > 1 else instr.right.value
-            if scaled != 1:
-                return False  # Will use TXA/TYA + ADC, switches to m16
-            # left and dest must resolve to the SAME register for the INC/DEC
-            # in-place pattern. _xy_register handles the hw/vreg→allocation
-            # resolution uniformly.
-            return _xy_register(instr.left) == dest_reg
-
-        # Deny by default: an instruction keeps the width only if it is known
-        # to.
-        def _size(instr):
-            t = getattr(instr, 'type_info', None)
-            return get_type_size(t) if t else 0
-
-        for instr in pred_block.instructions:
-            if isinstance(instr, (Jump, CondBranch)):
+        for index, bits, preds in reversed(pending):
+            if all(codegen_exit_modes.get(p) == bits for p in preds):
                 continue
-            if expected_is_m16:
-                # Every 8-bit operation SEPs; only branches are safe to skip.
-                return True
-            size = _size(instr)
-            if isinstance(instr, BinaryOp):
-                if size >= 2 and not _binary_op_preserves_a_mode(instr):
-                    return True
-            elif isinstance(instr, Compare):
-                # CPX/CPY: left is X or Y - no mode change
-                if size >= 2 and not _is_xy(instr.left):
-                    return True
-            elif isinstance(instr, Move):
-                # LDX/LDY/TAX/TAY into an index register leave A's width.
-                if size >= 2 and not _is_xy(instr.dest):
-                    return True
-            elif isinstance(instr, (UnaryOp, Load, Store, LoadIndirect,
-                                    StoreIndirect, IncDecMemory, BitTest)):
-                if size >= 2:
-                    return True
-            else:
-                # Return, TypeConvert, calls, block moves, inline asm, status
-                # writes, tables, pushes and pulls: may leave either width.
-                return True
-
-        return False  # Block is mode-preserving
+            self.emitter.nodes[index:index] = [
+                Instruction(*_block_mode_switch(bits), required=True),
+                ModeChange("ACCU", bits),
+            ]
 
     def _emit_block_entry_mode_switch(self, block, instr_selector, force=False,
                                        codegen_exit_modes=None):
@@ -776,17 +654,13 @@ class FunctionCodeGenerator:
         current_is_m16 = (current_mode_bits == 16)
         expected_is_m16 = (expected_m_mode == ModeState.M16)
 
-        # Emit mode switch if needed (or forced for back-edge targets)
-        # Use "REQUIRED" comment to prevent peephole from removing it
+        # Emit mode switch if needed (or forced by an emitted predecessor),
+        # marked required so the peephole keeps it
         if force or current_is_m16 != expected_is_m16:
-            if expected_is_m16:
-                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
-                               "REQUIRED: restore m16 mode for block")
-                self.emitter.emit_accu_mode(16)
-            else:
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
-                               "REQUIRED: restore m8 mode for block")
-                self.emitter.emit_accu_mode(8)
+            bits = 16 if expected_is_m16 else 8
+            self._emit_instr(*_block_mode_switch(bits))
+            self.emitter.nodes[-1].required = True
+            self.emitter.emit_accu_mode(bits)
 
     # ========================================================================
     # Register Allocation
@@ -1070,9 +944,7 @@ class FunctionCodeGenerator:
             push_order = ['STATUS', 'A', 'X', 'Y', 'D', 'DBR']
             for reg in push_order:
                 if reg in preserved_regs:
-                    push_opcode = PUSH_OPCODES.get(reg)
-                    if push_opcode:
-                        self._emit_instr(push_opcode, comment=f"Preserve {reg}")
+                    self._emit_instr(PUSH_OPCODES[reg], comment=f"Preserve {reg}")
 
         # Set up far pointer access for stack parameters
         # Must come AFTER all other prologue pushes so offsets are final
@@ -1170,8 +1042,7 @@ class FunctionCodeGenerator:
 
         # Adjust for everything pushed before this point:
         # PHB has already been pushed, so include full prologue_stack_bytes
-        abi = ABIInfo.from_mir_function(mir_func)
-        return bank_byte_base + abi.prologue_stack_bytes + frame_size
+        return bank_byte_base + mir_func.abi_info.prologue_stack_bytes + frame_size
 
     def _emit_entry_setup(self, mir_func: MIRFunction):
         """
@@ -1589,31 +1460,7 @@ class FunctionCodeGenerator:
             mir_func.self_far_uses_d_equals_s = True
             return
 
-        # Analyze MIR instructions to determine if DBR:Y is safe
-        needs_d_equals_s = False
-
-        for block in mir_func.blocks.values():
-            for instr in block.instructions:
-                # Any function call means we need D=S (callee expects normal DBR)
-                if isinstance(instr, CallBase):
-                    needs_d_equals_s = True
-                    break
-
-                # ROM static access uses absolute addressing which depends on DBR
-                if isinstance(instr, (Load, Store)):
-                    if hasattr(instr, 'source') and isinstance(instr.source, MemoryLocation):
-                        if instr.source.storage_type in ('rom', 'hw'):
-                            needs_d_equals_s = True
-                            break
-                    if hasattr(instr, 'dest') and isinstance(instr.dest, MemoryLocation):
-                        if instr.dest.storage_type in ('rom', 'hw'):
-                            needs_d_equals_s = True
-                            break
-
-            if needs_d_equals_s:
-                break
-
-        if needs_d_equals_s:
+        if far_self_body_needs_dbr(mir_func):
             mir_func.self_far_uses_d_equals_s = True
             mir_func.has_far_ptr_stack_params = True
 
@@ -1676,9 +1523,7 @@ class FunctionCodeGenerator:
 
         for reg in pop_order:
             if reg in preserved_regs:
-                pull_opcode = PULL_OPCODES.get(reg)
-                if pull_opcode:
-                    self._emit_instr(pull_opcode, comment=f"Restore {reg}")
+                self._emit_instr(PULL_OPCODES[reg], comment=f"Restore {reg}")
 
     def _emit_dbr_restore(self, mir_func: MIRFunction):
         """Restore DBR for databank=inline functions."""

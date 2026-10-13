@@ -12,7 +12,7 @@ from r65.compiler.codegen import (
 from r65.compiler.mir.nodes import (
     Load, Store, Move,
     BinaryOp, UnaryOp,
-    Jump, CondBranch, Return,
+    Jump, CondBranch,
     SetMode,
     VirtualRegister, HardwareRegister,
     Immediate,
@@ -169,7 +169,7 @@ def test_arithmetic_operations():
 def test_control_flow():
     """Test control flow instruction selection."""
     print("=" * 80)
-    print("Test 3: Control Flow (Jump, Branch, Return)")
+    print("Test 3: Control Flow (Jump, Branch)")
     print("=" * 80)
     print()
 
@@ -203,13 +203,6 @@ def test_control_flow():
     emitter.clear()
     print()
 
-    # Test return
-    print("Return:")
-    return_instr = Return(values=[])
-    selector.select_instruction(return_instr)
-    print(emitter.to_string())
-    emitter.clear()
-    print()
 
 
 
@@ -417,3 +410,14 @@ def test_memory_fill_stores_wram_long_and_bytes_in_m8():
     assert instruction_size(store.opcode) == 4
     fill = asm.split("; Fill 8 x 1B elements with #7", 1)[1].splitlines()
     assert fill[1].split(";")[0].strip() == "SEP #$20"
+
+
+def test_pointer_spill_skips_a_scratch_holding_a_live_value(codegen):
+    """A pointer spilled from a register borrows a free scratch, not the first."""
+    from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
+    codegen.pool.add_scratch(0x10, 2, "SCRATCH0")
+    codegen.pool.add_scratch(0x12, 2, "SCRATCH1")
+    codegen.pool.allocate(VirtualRegister(id=0, type_info=BasicTypeInfo('u16')))
+    spilled = codegen.selector.memory_selector._spill_pointer_to_scratch(
+        PhysicalLocation(kind=LocationKind.HARDWARE, hw_register='X', size=2))
+    assert spilled.scratch_addr == 0x12

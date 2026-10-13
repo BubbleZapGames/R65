@@ -5,7 +5,7 @@ Base class for instruction selector components.
 Provides common functionality shared across all selector classes:
 - Parent reference and emitter property
 - Common emit helper methods
-- Location resolution through LocationResolver
+- Loads and stores through the parent's opcode selection
 - Abstract interface for selector composition
 """
 
@@ -14,9 +14,6 @@ from typing import TYPE_CHECKING
 
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate, Address
-from r65.compiler.codegen.location_resolver import (
-    LocationResolver, default_resolver
-)
 from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
 
 if TYPE_CHECKING:
@@ -28,13 +25,13 @@ class BaseSelector(ABC):
     """
     Base class for instruction selector components.
 
-    Provides common emit helpers, location resolution, and parent reference
+    Provides common emit helpers, load/store emission, and parent reference
     pattern used by all selector classes (CallInstructionSelector, CompareSelector, ...).
 
     Subclasses should:
     1. Implement instruction-specific selection methods
     2. Use the provided emit helpers for code generation
-    3. Use location resolution methods for addressing mode selection
+    3. Use _emit_load_store (the parent's opcode selection) for addressing mode selection
     """
 
     def __init__(self, parent: 'InstructionSelector'):
@@ -45,17 +42,11 @@ class BaseSelector(ABC):
             parent: Parent instruction selector (for emitter and helper access)
         """
         self.parent = parent
-        self._resolver = default_resolver
 
     @property
     def emitter(self) -> 'AssemblyEmitter':
         """Get the assembly emitter from parent."""
         return self.parent.emitter
-
-    @property
-    def resolver(self) -> LocationResolver:
-        """Get the location resolver."""
-        return self._resolver
 
     # ========================================================================
     # Common Emit Helpers
@@ -223,8 +214,7 @@ class BaseSelector(ABC):
         """Emit a load/store instruction using the parent's opcode selection.
 
         Routes through parent._get_opcode_for_location, which applies the
-        D=S / SET_DBR / spill-offset addressing adjustments. (The resolver-only
-        path bypasses those, so callers must use this.)
+        D=S / SET_DBR / spill-offset addressing adjustments.
         """
         opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
         self._emit_instr(opcode, operand, comment)

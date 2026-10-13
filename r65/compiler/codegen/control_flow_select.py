@@ -9,8 +9,8 @@ with proper signed/unsigned comparison handling.
 from r65.compiler.mir.nodes import Jump, JumpTable, LookupTable, CondBranch, Return
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
-from r65.compiler.codegen.opcodes import Opcode, PULL_OPCODES
-from r65.compiler.codegen.asm_nodes import Address
+from r65.compiler.codegen.opcodes import Opcode
+from r65.compiler.codegen.asm_nodes import Address, Immediate
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.type_utils import is_16bit_scalar
 
@@ -463,15 +463,12 @@ class ControlFlowInstructionSelector(BaseSelector):
     def _emit_value_based_branch(self, instr: CondBranch):
         """Emit branch based on condition value (zero/non-zero)."""
         cond_loc = self.parent._get_operand_location(instr.condition)
-        # Skip load if condition is already in A (from bitwise optimization)
-        # The Z flag is already set from the previous BinaryOp
-        if cond_loc.is_hw('A'):
-            pass  # Z flag already set from previous operation
-        else:
-            # Ensure accumulator mode matches the condition value's size before
-            # loading. Without this, loading a u8/bool variable in m16 mode reads
-            # 2 bytes — including garbage from the byte above the local frame —
-            # causing BEQ/BNE to branch on a corrupted 16-bit value.
+        in_a = cond_loc.is_hw('A')
+        # A condition already in A, with N/Z still from the instruction that
+        # put it there, needs nothing before the branch.
+        if not (in_a and self.emitter.nz_valid_for == 'A'):
+            # Work at the condition's width: a u8/bool tested in m16 would
+            # also see the byte above it.
             from r65.compiler.codegen.type_utils import get_vreg_size
             from r65.compiler.mir.nodes import VirtualRegister
             if isinstance(instr.condition, VirtualRegister):
@@ -480,7 +477,10 @@ class ControlFlowInstructionSelector(BaseSelector):
                     self.parent._ensure_m8_mode()
                 elif cond_size == 2:
                     self.parent._ensure_m16_mode()
-            self.parent._emit_load('LDA', cond_loc)
+            if in_a:
+                self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate(0))
+            else:
+                self.parent._emit_load('LDA', cond_loc)
 
         true_target = self._block_label(instr.true_target)
         false_target = self._block_label(instr.false_target)
@@ -526,13 +526,7 @@ class ControlFlowInstructionSelector(BaseSelector):
             self._emit_instr(Opcode.BRA, Address(shared_label))
             return
 
-        # Use consolidated emit_epilogue from FunctionCodeGenerator
-        if self.parent.func_gen:
-            self.parent.func_gen.emit_epilogue(self.current_function, self.parent.reg_alloc)
-        else:
-            # Fallback to inline methods if func_gen not available
-            self._emit_preserved_register_restores()
-            self._emit_dbr_restore()
+        self.parent.func_gen.emit_epilogue(self.current_function, self.parent.reg_alloc)
 
         self._emit_return_instruction()
 
@@ -616,45 +610,6 @@ class ControlFlowInstructionSelector(BaseSelector):
         """Emit return values. Delegates to ABIModel.emit_return_values."""
         self.parent.abi_model.emit_return_values(self, instr)
 
-    def _emit_preserved_register_restores(self):
-        """Restore preserved registers in reverse order."""
-        if not (self.current_function and self.current_function.preserves_attr):
-            return
-
-        preserved_regs = self.current_function.preserves_attr.registers
-        pop_order = ['DBR', 'D', 'Y', 'X', 'A', 'STATUS']
-
-        for reg in pop_order:
-            if reg in preserved_regs:
-                pull_opcode = PULL_OPCODES.get(reg)
-                if pull_opcode:
-                    self._emit_implied(pull_opcode, f"Restore {reg}")
-
-    def _emit_dbr_restore(self):
-        """Restore DBR for databank=inline functions."""
-        if not (self.current_function and self.current_function.is_far and self.current_function.mode_attr):
-            return
-
-        from r65.compiler.hir.attributes import DataBankMode
-        if self.current_function.mode_attr.databank == DataBankMode.INLINE:
-            self._emit_implied(Opcode.PLB, "Restore data bank")
-
-    def _emit_mode_restore(self):
-        """Restore processor mode for m16 functions.
-
-        In the simplified mode system, if a function runs in m16 mode,
-        we need to restore m8 mode before returning so the caller
-        (which is in m8 mode) can continue correctly.
-        """
-        if not self.current_function:
-            return
-
-        from r65.compiler.typeck.processor_mode import ModeState
-        from r65.compiler.codegen.constants import M_FLAG
-
-        if self.current_function.entry_m_mode == ModeState.M16:
-            self.parent._force_accu_mode(8, "Restore m8 mode")
-
     def _emit_return_instruction(self):
         """Emit appropriate return instruction (RTL, RTS, or infinite loop).
 
@@ -689,8 +644,8 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         Calculate total bytes of stack parameters for callee cleanup.
 
-        With caller-owned outgoing args convention (Default ABI), the callee does
-        NOT clean up stack parameters — they live in the caller's outgoing area.
+        Under the Default ABI the callee does NOT clean up stack parameters —
+        the caller pops what it pushed.
 
         With Pascal ABI, the callee DOES clean up stack parameters (but NOT
         result space — that stays on stack for the caller to pull).

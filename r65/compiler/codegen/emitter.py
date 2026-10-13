@@ -335,9 +335,6 @@ class AssemblyEmitter:
         self.stack_depth: int = 0
         # Track banks that have had data/code emitted to avoid .ORG 0 overlap
         self._used_banks: set = set()
-        # HiROM flag, set by emit_memory_map (the .BASE emission itself
-        # reads rom_base).
-        self.is_hirom: bool = False
         # Base bank byte for ROM labels, emitted as `.BASE $xx` before each
         # `.BANK`. WLA-DX resolves a label's bank as `.BASE + its ROM bank`
         # (doc/asmdiv.rst), so this is what puts `:label`, `#:label`, `JSL`,
@@ -588,8 +585,7 @@ class AssemblyEmitter:
 
         # Pick the ROM base that emit_bank_directive and emit_ramsection
         # restore with .BASE before each section.
-        self.is_hirom = rom_type.lower() != "lorom"
-        if self.is_hirom:
+        if rom_type.lower() != "lorom":
             # $C0-$FF is both the fully-ROM-mapped and the FastROM-capable
             # HiROM region, so HiROM needs no separate fastrom base.
             self.rom_base = 0xC0

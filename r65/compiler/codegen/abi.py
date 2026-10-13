@@ -169,17 +169,12 @@ class StackFrameLayout:
     """Describes a function's stack frame structure.
 
     Single source of truth for the frame layout.  Encodes the relationship
-    between prologue bytes, local frame, outgoing arg area, and parameter
-    offsets.
+    between prologue bytes, local frame, and parameter offsets.
     """
     abi: ABIInfo
-    local_frame_size: int = 0        # From slot allocator
-    outgoing_arg_bytes: int = 0      # Max outgoing stack args across all calls
-
-    @property
-    def total_frame_size(self) -> int:
-        """Bytes the prologue's frame allocation reserves (pushes or TSC/SBC/TCS)."""
-        return self.local_frame_size + self.outgoing_arg_bytes
+    # Bytes the prologue's frame allocation reserves (pushes or
+    # TSC/SBC/TCS); filled in by the slot allocator.
+    local_frame_size: int = 0
 
     @property
     def stack_base_offset(self) -> int:
@@ -197,22 +192,18 @@ class StackFrameLayout:
 
     def local_offset(self, slot_num: int) -> int:
         """Stack offset for a local variable slot (from SP after frame alloc)."""
-        return self.stack_base_offset + self.outgoing_arg_bytes + slot_num
+        return self.stack_base_offset + slot_num
 
     def param_offset(self, base_offset: int) -> int:
         """Final stack offset for a parameter with given initial base_offset.
 
         base_offset comes from builder.py (return_addr_size + 1 + position).
         """
-        return base_offset + self.abi.prologue_stack_bytes + self.total_frame_size
-
-    def outgoing_arg_offset(self, arg_position: int) -> int:
-        """Stack offset for writing to the outgoing arg area (1-indexed from SP)."""
-        return 1 + arg_position
+        return base_offset + self.abi.prologue_stack_bytes + self.local_frame_size
 
     @property
     def has_frame(self) -> bool:
-        return self.total_frame_size > 0
+        return self.local_frame_size > 0
 
 
 class StackStateTracker:

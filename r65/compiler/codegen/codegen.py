@@ -12,10 +12,13 @@ from r65.compiler.mir import MIRProgram, MIRFunction
 from r65.compiler.mir.nodes import SymbolByte
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator, rom_static_bank
+from r65.compiler.codegen.symbol_gen import (
+    SymbolDefinitionGenerator, auto_bank_number, rom_static_bank,
+)
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.optimize.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
+from r65.compiler.codegen.bank_size import rom_bank_size
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER, calculate_rom_size
 from r65.compiler.codegen.debug_info import DebugInfoCollector
@@ -231,7 +234,7 @@ class ProgramCodeGenerator:
         self.emitter.emit_processor_directive()
 
         # Organize functions by bank first to determine bank count
-        functions_by_bank = self._organize_functions_by_bank(mir_program.functions)
+        functions_by_bank = self._organize_functions_by_bank(mir_program)
         # ROM data goes in its static's bank; open a window for each such bank.
         rom_data_by_bank = self._rom_data_by_bank(mir_program)
         for data_bank in rom_data_by_bank:
@@ -285,7 +288,8 @@ class ProgramCodeGenerator:
 
         # Symbol definitions
         symbol_gen = SymbolDefinitionGenerator(self.emitter, self.allocator)
-        symbol_gen.emit_all_definitions(mir_program.constants)
+        symbol_gen.emit_all_definitions(mir_program.constants, auto_bank_number(mir_program),
+                                        rom_bank_size(is_hirom))
 
         # Function code generation
         self.func_gen = ProgramFunctionGenerator(self.emitter, self.allocator)
@@ -313,9 +317,6 @@ class ProgramCodeGenerator:
         if not disable_loop_promotion:
             from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion
             analyze_loop_promotion(mir_program)
-
-        # Compute max outgoing arg bytes for caller-owned outgoing args convention
-        abi_model.compute_outgoing_args(mir_program, self._compute_outgoing_arg_bytes)
 
         # Whether the program needs a shared interrupt-vector placeholder.
         # The vector table is 16-bit and an interrupt clears PB, so
@@ -412,9 +413,6 @@ class ProgramCodeGenerator:
         # Interrupt vectors
         self._emit_interrupt_vectors(mir_program)
 
-        # Symbol exports (for debugging and linking)
-        self._emit_symbol_exports(mir_program)
-
         # Get structured nodes from emitter
         nodes = self.emitter.get_nodes()
 
@@ -439,9 +437,6 @@ class ProgramCodeGenerator:
 
         if num_branch_fixups > 0:
             print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed", file=sys.stderr)
-
-        # Validate bank sizes
-        self._validate_bank_sizes(final_nodes, mir_program)
 
         # Convert nodes to assembly string
         assembly = emit_nodes(final_nodes)
@@ -537,24 +532,25 @@ class ProgramCodeGenerator:
         self.emitter.emit_raw("    STP")
         self.emitter.emit_blank_line()
 
-    def _emit_near_dispatch(self, dispatch_label, table_label, trait_name, method_name,
-                            method_idx, implementors, max_type_id):
-        """Emit near dispatch wrapper and jump table for a trait method."""
-        # Dispatch wrapper function
+    def _emit_dispatch_wrapper(self, dispatch_label, table_label):
+        """Emit a dispatch entry: jump through the word table *table_label*
+        by the TypeId at offset 0 of the trait object. The self pointer is
+        in Y (DBR:Y addressing; a far caller has set DBR to the object's
+        bank)."""
         self.emitter.emit_label(dispatch_label)
-
-        # Self pointer is in Y register (DBR:Y addressing)
-        # Load TypeId from offset 0 of the trait object: LDA abs,Y with abs=0
-        self.emitter.emit_raw("    LDA $0000,Y")            # Load TypeId byte from DBR:Y+0
-
-        # Zero-extend to 16-bit and compute table index
-        self.emitter.emit_raw("    REP #$20")               # Switch to m16
+        self.emitter.emit_raw("    LDA $0000,Y")            # TypeId byte at DBR:Y+0
+        self.emitter.emit_raw("    REP #$20")
         self.emitter.emit_raw("    AND #$00FF")              # Zero-extend
         self.emitter.emit_raw("    ASL A")                   # x2 for word table entries
         self.emitter.emit_raw("    TAX")
-        self.emitter.emit_raw("    SEP #$20")                # Back to m8
+        self.emitter.emit_raw("    SEP #$20")
         self.emitter.emit_raw(f"    JMP ({table_label},X)")
         self.emitter.emit_blank_line()
+
+    def _emit_near_dispatch(self, dispatch_label, table_label, trait_name, method_name,
+                            method_idx, implementors, max_type_id):
+        """Emit near dispatch wrapper and jump table for a trait method."""
+        self._emit_dispatch_wrapper(dispatch_label, table_label)
 
         # Jump table
         self.emitter.emit_label(table_label)
@@ -593,20 +589,7 @@ class ProgramCodeGenerator:
         table_label = f"{trait_name}__{method_name}__table"
         trampoline_label = f"{trait_name}__{method_name}__trampoline"
 
-        self.emitter.emit_label(dispatch_label)
-
-        # Self pointer is in Y register, DBR set to object's bank by caller
-        # Load TypeId from offset 0: LDA abs,Y with abs=0
-        self.emitter.emit_raw("    LDA $0000,Y")            # Load TypeId byte from DBR:Y+0
-
-        # Compute table offset: TypeId * 2 (word table entries)
-        self.emitter.emit_raw("    REP #$20")               # Switch to m16
-        self.emitter.emit_raw("    AND #$00FF")              # Zero-extend
-        self.emitter.emit_raw("    ASL A")                   # x2 for word table
-        self.emitter.emit_raw("    TAX")
-        self.emitter.emit_raw("    SEP #$20")                # Back to m8
-        self.emitter.emit_raw(f"    JMP ({table_label},X)")
-        self.emitter.emit_blank_line()
+        self._emit_dispatch_wrapper(dispatch_label, table_label)
 
         # Word table: addresses of JML stubs
         self.emitter.emit_label(table_label)
@@ -661,43 +644,17 @@ class ProgramCodeGenerator:
 
         return volatile_names, volatile_addresses
 
-    def _compute_outgoing_arg_bytes(self, mir_program: MIRProgram):
-        """
-        Compute max outgoing stack argument bytes for each function.
-
-        For the caller-owned outgoing args convention, each function reserves
-        space at the bottom of its frame for the largest set of stack arguments
-        across all call sites. The caller writes args via STA d,S instead of PHA.
-        """
-        from r65.compiler.mir.nodes import CallBase, ArgumentMechanism
-        from r65.compiler.codegen.type_utils import arg_param_size
-
-        for func in mir_program.functions:
-            max_bytes = 0
-            for block in func.blocks.values():
-                for instr in block.instructions:
-                    if isinstance(instr, CallBase):
-                        call_bytes = 0
-                        for arg in instr.args:
-                            if arg.mechanism == ArgumentMechanism.STACK:
-                                call_bytes += arg_param_size(arg)
-                        max_bytes = max(max_bytes, call_bytes)
-            func.max_outgoing_arg_bytes = max_bytes
-
-    def _organize_functions_by_bank(self, functions: List[MIRFunction]) -> Dict[int, List[MIRFunction]]:
+    def _organize_functions_by_bank(self, mir_program: MIRProgram) -> Dict[int, List[MIRFunction]]:
         """
         Organize functions by bank number.
 
         - Functions with #[bank(n)] attribute go to bank n.
         - Functions with no bank attribute default to bank 0.
         - Functions with #[bank(auto)] (bank_attr present, bank_number=None,
-          guaranteed `far` by HIR validation) are placed together in bank
-          max(highest explicit bank + 1, 4). wlalink reports an overflow if
+          guaranteed `far` by HIR validation) are placed together in
+          `auto_bank_number(mir_program)`. wlalink reports an overflow if
           they do not fit; the user can then split with explicit #[bank(n)]
           directives.
-
-        Args:
-            functions: List of MIR functions
 
         Returns:
             Dictionary mapping bank number to list of functions
@@ -705,7 +662,7 @@ class ProgramCodeGenerator:
         by_bank: Dict[int, List[MIRFunction]] = {}
         auto_bank_funcs: List[MIRFunction] = []
 
-        for func in functions:
+        for func in mir_program.functions:
             if func.bank_attr is None:
                 # No bank attribute: default to bank 0
                 by_bank.setdefault(0, []).append(func)
@@ -717,19 +674,9 @@ class ProgramCodeGenerator:
                 auto_bank_funcs.append(func)
 
         if auto_bank_funcs:
-            by_bank.setdefault(self._auto_bank_number(functions), []).extend(auto_bank_funcs)
+            by_bank.setdefault(auto_bank_number(mir_program), []).extend(auto_bank_funcs)
 
         return by_bank
-
-    @staticmethod
-    def _auto_bank_number(functions: List[MIRFunction]) -> int:
-        """The bank #[bank(auto)] code and ROM data go in: the one above the
-        highest explicit function bank, at least bank 4 (the data-side
-        convention of symbol_gen.py)."""
-        explicit = [0 if f.bank_attr is None else f.bank_attr.bank_number
-                    for f in functions
-                    if f.bank_attr is None or f.bank_attr.bank_number is not None]
-        return max(max(explicit, default=-1) + 1, 4)
 
     def _program_needs_interrupt_vectors(self, mir_program: MIRProgram) -> bool:
         """True iff the program needs an SNES vector table (and a
@@ -870,7 +817,7 @@ class ProgramCodeGenerator:
         Everything else - a RAM static's initializer, an inline string -
         goes in bank 0.
         """
-        auto_bank = self._auto_bank_number(mir_program.functions)
+        auto_bank = auto_bank_number(mir_program)
         bank_of_label: Dict[str, int] = {}
         for decl in mir_program.statics:
             label = getattr(getattr(decl, 'symbol', None), 'rom_label', None)
@@ -899,48 +846,6 @@ class ProgramCodeGenerator:
 
         for rom_data in rom_data_tables:
             self._emit_rom_data_table(rom_data)
-
-    def _emit_symbol_exports(self, mir_program: MIRProgram):
-        """
-        Emit symbol exports for linking with external modules.
-
-        Note: In WLA-DX, .EXPORT is only for .DEFINE symbols, not labels.
-        Function labels are automatically visible within single-file assembly.
-        This method is currently a no-op but preserved for future multi-file
-        linking support where we might export .DEFINE symbols.
-
-        Args:
-            mir_program: MIR program
-        """
-        # In WLA-DX, labels (function entry points) don't need .EXPORT
-        # They are automatically visible within the assembly file.
-        # .EXPORT is only for .DEFINE symbols used in multi-file linking.
-        pass
-
-    def _validate_bank_sizes(self, nodes: list, mir_program: MIRProgram):
-        """
-        No-op: bank sizes are checked by wlalink, not here.
-
-        Args:
-            nodes: Optimized assembly nodes
-            mir_program: MIR program (for snesrom config)
-        """
-        # Determine ROM type from snesrom config
-        is_hirom = False
-        if mir_program.snesrom_config:
-            is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
-
-        # Check if we have a header (any entry point or interrupt handler)
-        has_header = any(
-            func.is_entry or func.interrupt_attr
-            for func in mir_program.functions
-        )
-
-        # Bank size validation is handled by WLA-DX linker, which has
-        # accurate bank boundaries from .BANK directives in the emitted assembly.
-        # bank_size.calculate_bank_sizes looks for `.BANK` as a Directive node,
-        # but it is emitted as RawAsm, so node-based validation would miscount
-        # all code as bank 0.
 
     # ========================================================================
     # Linkfile Generation
@@ -1030,10 +935,10 @@ class ProgramCodeGenerator:
             is_hirom: Whether using HiROM mapping
         """
         # Organize functions by bank to determine which banks are used
-        functions_by_bank = self._organize_functions_by_bank(mir_program.functions)
+        functions_by_bank = self._organize_functions_by_bank(mir_program)
 
         # Bank size in bytes
-        bank_size = 0x10000 if is_hirom else 0x8000
+        bank_size = rom_bank_size(is_hirom)
 
         # Create segment for each bank
         for bank_num in sorted(functions_by_bank.keys()):
@@ -1081,14 +986,17 @@ class ProgramCodeGenerator:
         _, label_addresses = calc.calculate_with_labels(nodes)
 
         # Add function symbols
+        auto_bank = auto_bank_number(mir_program)
         for func in mir_program.functions:
             # Get address from label
             addr = label_addresses.get(func.name, base_address)
 
-            # Determine segment (bank)
+            # Determine segment (bank): the one _organize_functions_by_bank put it in
             bank_num = 0
-            if func.bank_attr and func.bank_attr.bank_number is not None:
+            if func.bank_attr is not None:
                 bank_num = func.bank_attr.bank_number
+                if bank_num is None:
+                    bank_num = auto_bank
 
             # Find segment ID for this bank (segments carry the CPU bank)
             seg_id = None

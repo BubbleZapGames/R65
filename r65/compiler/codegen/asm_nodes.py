@@ -115,8 +115,10 @@ class Instruction(AsmNode):
     operand: Operand | None = None
     comment: str | None = None
     source_loc: SourceLocation | None = None
+    # A block-entry SEP/REP the peephole must keep (function_gen emits it).
+    required: bool = False
 
-    def size(self, m16: bool = False, x16: bool = False) -> int:
+    def size(self, m16: bool = False, x16: bool = True) -> int:
         """Get instruction size in bytes."""
         return instruction_size(self.opcode, m16, x16)
 

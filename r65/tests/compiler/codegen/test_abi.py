@@ -127,16 +127,6 @@ class TestABIInfo:
 # ========================================================================
 
 class TestStackFrameLayout:
-    def test_total_frame_size(self):
-        abi = ABIInfo()
-        layout = StackFrameLayout(abi=abi, local_frame_size=10, outgoing_arg_bytes=4)
-        assert layout.total_frame_size == 14
-
-    def test_total_frame_size_zero(self):
-        abi = ABIInfo()
-        layout = StackFrameLayout(abi=abi)
-        assert layout.total_frame_size == 0
-
     def test_stack_base_offset_entry(self):
         abi = ABIInfo(is_entry=True)
         layout = StackFrameLayout(abi=abi)
@@ -154,24 +144,18 @@ class TestStackFrameLayout:
 
     def test_local_offset(self):
         abi = ABIInfo(preserves=('X',))  # 2 prologue bytes
-        layout = StackFrameLayout(abi=abi, outgoing_arg_bytes=4)
-        # stack_base_offset = 3, + outgoing=4, + slot_num
-        assert layout.local_offset(0) == 7
-        assert layout.local_offset(1) == 8
-        assert layout.local_offset(5) == 12
+        layout = StackFrameLayout(abi=abi)
+        # stack_base_offset = 3, + slot_num
+        assert layout.local_offset(0) == 3
+        assert layout.local_offset(1) == 4
+        assert layout.local_offset(5) == 8
 
     def test_param_offset(self):
         abi = ABIInfo(preserves=('X',))  # 2 prologue bytes
-        layout = StackFrameLayout(abi=abi, local_frame_size=6, outgoing_arg_bytes=2)
-        # param_offset = base_offset + prologue(2) + total_frame(8) = base + 10
-        assert layout.param_offset(3) == 13
-        assert layout.param_offset(5) == 15
-
-    def test_outgoing_arg_offset(self):
-        abi = ABIInfo()
-        layout = StackFrameLayout(abi=abi)
-        assert layout.outgoing_arg_offset(0) == 1
-        assert layout.outgoing_arg_offset(2) == 3
+        layout = StackFrameLayout(abi=abi, local_frame_size=6)
+        # param_offset = base_offset + prologue(2) + frame(6) = base + 8
+        assert layout.param_offset(3) == 11
+        assert layout.param_offset(5) == 13
 
     def test_has_frame_true(self):
         abi = ABIInfo()
@@ -182,11 +166,6 @@ class TestStackFrameLayout:
         abi = ABIInfo()
         layout = StackFrameLayout(abi=abi)
         assert layout.has_frame is False
-
-    def test_has_frame_outgoing_only(self):
-        abi = ABIInfo()
-        layout = StackFrameLayout(abi=abi, outgoing_arg_bytes=2)
-        assert layout.has_frame is True
 
 
 # ========================================================================

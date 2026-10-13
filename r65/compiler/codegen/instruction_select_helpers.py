@@ -70,14 +70,6 @@ class XBAStateManager:
             self.state = XBAState.UNKNOWN
         # NORMAL and UNKNOWN stay the same
 
-    def mark_b_modified(self):
-        """Mark that B has been modified through XBA pattern."""
-        if self.state == XBAState.NORMAL:
-            # B was holding its original value, now modified
-            # This typically means we did XBA, modified A, XBA
-            pass
-        # State tracking for B modifications is complex
-
     def access_b_value_in_a(self):
         """
         Set up to access B's value in A register.

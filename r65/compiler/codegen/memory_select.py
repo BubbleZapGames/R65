@@ -7,7 +7,7 @@ addressing modes for the 65816 processor.
 """
 
 from r65.compiler.mir.nodes import Load, Store, IncDecMemory, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
-from r65.compiler.codegen.register_alloc import LocationKind
+from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.constants import M_FLAG
@@ -120,36 +120,13 @@ class MemoryOperationSelector(BaseSelector):
 
         is_u16 = self.parent._is_16bit(instr.type_info)
 
+        # The destination is memory: every register destination returned above.
         if is_u16:
-            # Check for hardware register destination - handle differently
-            if dest_loc.is_hw():
-                if dest_loc.hw_register == 'A':
-                    # Load 16-bit into A - need 16-bit mode
-                    self._ensure_m16_mode()
-                    self._emit_load_store('LDA', src_loc)
-                    # Note: Do NOT switch back - mode will be restored when needed
-                elif dest_loc.hw_register in ('X', 'Y'):
-                    # Load into A then transfer to X/Y - need 16-bit A for the transfer
-                    self._ensure_m16_mode()
-                    self._emit_load_store('LDA', src_loc)
-                    if dest_loc.hw_register == 'X':
-                        self._emit_implied(Opcode.TAX, "Transfer to X")
-                    else:
-                        self._emit_implied(Opcode.TAY, "Transfer to Y")
-                    # Note: Do NOT switch back - mode will be restored when needed
-                else:
-                    raise InstructionSelectionError(f"Cannot load 16-bit into hardware register {dest_loc.hw_register}", source_loc=self.parent._current_source_loc)
-            else:
-                self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
+            self.parent._emit_16bit_mem_to_mem(src_loc, dest_loc)
         else:
-            # 8-bit load - ensure we're in m8 mode for A register
             self._ensure_m8_mode()
             self._emit_load_store('LDA', src_loc)
-            # Skip store if destination is already the accumulator
-            if dest_loc.is_hw('A'):
-                pass  # Value already in A from LDA
-            else:
-                self._emit_load_store('STA', dest_loc)
+            self._emit_load_store('STA', dest_loc)
 
     def select_inc_dec_memory(self, instr: IncDecMemory):
         """
@@ -793,39 +770,18 @@ class MemoryOperationSelector(BaseSelector):
         Returns:
             New PhysicalLocation with pointer in scratch memory
         """
-        from r65.compiler.codegen.register_alloc import PhysicalLocation
-
         if ptr_loc.kind != LocationKind.HARDWARE:
             return ptr_loc
 
-        # Find a scratch register with at least 2 bytes.
-        # Must skip scratches occupied by parameters (scratch_param_addrs)
-        # since those hold values that persist across the function body.
-        # Free scratches and scratches used only for compiler temporaries
-        # can be safely reused for a single instruction sequence.
-        scratch_addr = None
-        param_scratch_addrs = set()
-        cur_func = getattr(self.parent, 'current_function', None)
-        if cur_func and hasattr(cur_func, 'scratch_param_addrs'):
-            param_scratch_addrs = set(cur_func.scratch_param_addrs.values())
-        if hasattr(self.parent.reg_alloc, 'scratch_pool') and self.parent.reg_alloc.scratch_pool:
-            for scratch in self.parent.reg_alloc.scratch_pool.scratches:
-                if scratch.size >= 2 and scratch.address not in param_scratch_addrs:
-                    scratch_addr = scratch.address
-                    break
-
-        if scratch_addr is None:
+        # Borrowed for this one access, by the selector's transient-scratch rule.
+        scratch_loc = self.parent._get_transient_temp_location(size=2)
+        if scratch_loc is None:
             raise InstructionSelectionError(
                 f"No scratch register available for pointer spill. "
                 f"Define a 2-byte scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u16;",
                 source_loc=self.parent._current_source_loc
             )
-
-        scratch_loc = PhysicalLocation(
-            kind=LocationKind.SCRATCH,
-            scratch_addr=scratch_addr,
-            size=2
-        )
+        scratch_addr = scratch_loc.scratch_addr
 
         # Spill the pointer from hardware register to scratch.
         #

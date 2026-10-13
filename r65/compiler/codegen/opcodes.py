@@ -1098,14 +1098,12 @@ del _op
 # Mappings from register name to push/pull opcodes
 PUSH_OPCODES: dict[str, Opcode] = {
     'A': Opcode.PHA, 'X': Opcode.PHX, 'Y': Opcode.PHY,
-    'STATUS': Opcode.PHP, 'P': Opcode.PHP,
-    'D': Opcode.PHD, 'DBR': Opcode.PHB, 'B': Opcode.PHB,
+    'STATUS': Opcode.PHP, 'D': Opcode.PHD, 'DBR': Opcode.PHB,
 }
 
 PULL_OPCODES: dict[str, Opcode] = {
     'A': Opcode.PLA, 'X': Opcode.PLX, 'Y': Opcode.PLY,
-    'STATUS': Opcode.PLP, 'P': Opcode.PLP,
-    'D': Opcode.PLD, 'DBR': Opcode.PLB, 'B': Opcode.PLB,
+    'STATUS': Opcode.PLP, 'D': Opcode.PLD, 'DBR': Opcode.PLB,
 }
 
 # Mappings for register transfers
@@ -1156,14 +1154,14 @@ DECREMENT_OPCODES: dict[str, Opcode] = {'X': Opcode.DEX, 'Y': Opcode.DEY, 'A': O
 # Power-of-2 to shift count mapping (for multiply/divide optimization)
 POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7, 256: 8}
 
-def instruction_size(op: Opcode, m16: bool = False, x16: bool = False) -> int:
+def instruction_size(op: Opcode, m16: bool = False, x16: bool = True) -> int:
     """
     Get the size of an instruction in bytes.
 
     Args:
         op: The opcode
         m16: True if accumulator is 16-bit
-        x16: True if index registers are 16-bit
+        x16: True if index registers are 16-bit (always, in R65 code)
 
     Returns:
         Size in bytes

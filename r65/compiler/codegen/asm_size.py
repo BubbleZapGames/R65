@@ -4,9 +4,9 @@ Byte sizes of assembly written as text.
 
 An `Instruction` the compiler emits is sized exactly from its Opcode. Text is
 not: `asm!()` blocks, the inline tables `AssemblyEmitter.emit_directive` writes as
-`RawAsm`, the entry stub, and data `Directive`s. Branch fixup, address
-calculation and bank sizing all lay out code that contains it, and size it
-here so they agree.
+`RawAsm`, the entry stub, and data `Directive`s. Branch fixup and address
+calculation both lay out code that contains it, and size it here so they
+agree.
 """
 
 from typing import Sequence

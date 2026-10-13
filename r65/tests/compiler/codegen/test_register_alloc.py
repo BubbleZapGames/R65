@@ -12,69 +12,24 @@ from r65.compiler.hir.types import BasicTypeInfo
 
 
 def test_scratch_pool():
-    """Test scratch register pool management."""
-    print("=" * 80)
-    print("Test 1: Scratch Register Pool")
-    print("=" * 80)
-    print()
-
-    # Create scratch pool
+    """The pool hands out the first free scratch large enough, until exhausted."""
     pool = ScratchRegisterPool()
     pool.add_scratch(0x16, 1, "SCRATCH0")
     pool.add_scratch(0x17, 1, "SCRATCH1")
     pool.add_scratch(0x18, 2, "SCRATCH2")  # 2-byte scratch
 
-    print("Scratch pool created:")
-    for scratch in pool.scratches:
-        print(f"  ${scratch.address:04X}: {scratch.name} ({scratch.size} bytes)")
-    print()
-
-    # Allocate some virtual registers
     vreg0 = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="temp")
     vreg1 = VirtualRegister(id=1, type_info=BasicTypeInfo('u8'), hint="count")
     vreg2 = VirtualRegister(id=2, type_info=BasicTypeInfo('u16'), hint="value")
-
-    print("Allocating virtual registers:")
-    scratch0 = pool.allocate(vreg0)
-    if scratch0:
-        print(f"  %0 (u8) → ${scratch0.address:04X} ({scratch0.name})")
-    else:
-        print(f"  %0 (u8) → FAILED (no scratch)")
-
-    scratch1 = pool.allocate(vreg1)
-    if scratch1:
-        print(f"  %1 (u8) → ${scratch1.address:04X} ({scratch1.name})")
-    else:
-        print(f"  %1 (u8) → FAILED (no scratch)")
-
-    scratch2 = pool.allocate(vreg2)
-    if scratch2:
-        print(f"  %2 (u16) → ${scratch2.address:04X} ({scratch2.name})")
-    else:
-        print(f"  %2 (u16) → FAILED (no scratch)")
-
-    print()
-
-    # Try to allocate when pool exhausted
     vreg3 = VirtualRegister(id=3, type_info=BasicTypeInfo('u8'), hint="extra")
-    scratch3 = pool.allocate(vreg3)
-    if scratch3:
-        print(f"  %3 (u8) → ${scratch3.address:04X} ({scratch3.name})")
-    else:
-        print(f"  ✅ %3 (u8) → Correctly failed (pool exhausted)")
 
-    print()
+    assert pool.allocate(vreg0).name == "SCRATCH0"
+    assert pool.allocate(vreg1).name == "SCRATCH1"
+    assert pool.allocate(vreg2).name == "SCRATCH2"
+    assert pool.allocate(vreg3) is None
 
-    # Free a scratch and reallocate
-    print("Freeing %0, then reallocating:")
-    pool.free(vreg0)
-    scratch3_retry = pool.allocate(vreg3)
-    if scratch3_retry:
-        print(f"  ✅ %3 (u8) → ${scratch3_retry.address:04X} ({scratch3_retry.name}) (reused freed scratch)")
-    else:
-        print(f"  ❌ %3 (u8) → FAILED (should have reused freed scratch)")
-
-    print()
+    pool.reset()
+    assert pool.allocate(vreg3).name == "SCRATCH0"
 
 
 def test_register_allocator():

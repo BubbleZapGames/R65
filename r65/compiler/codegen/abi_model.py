@@ -34,10 +34,6 @@ class ABIModel(ABC):
         """Run the parameter promotion pass appropriate for this ABI."""
 
     @abstractmethod
-    def compute_outgoing_args(self, mir_program, compute_fn):
-        """Compute outgoing arg bytes, or no-op if ABI doesn't use them."""
-
-    @abstractmethod
     def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
         """Emit stack frame allocation instructions."""
 
@@ -118,19 +114,11 @@ class ABIModel(ABC):
 
     # -- call argument emission --
 
-    def _use_pha_for_stack_args(self, spill_offset: int) -> bool:
-        """When True, stack args go through PHA; otherwise through a fixed outgoing area.
-
-        Overridden by ABIs that always push via PHA (e.g. Default).
-        """
-        return spill_offset > 0
-
     def emit_call_args(self, selector, instr, pre_arg_stack_adj=0) -> int:
-        """Emit call arguments. Returns stack_bytes_pushed (>0 only in PHA path).
+        """Emit call arguments. Returns the bytes the stack args pushed.
 
-        Shared across Default and FixedStack. Pascal overrides to push all args
-        L→R after result space. Default overrides only _use_pha_for_stack_args
-        to force the PHA branch.
+        Shared across Default and FixedStack (which has no stack args). Pascal
+        overrides to push all args L→R after result space.
 
         Args:
             selector: CallInstructionSelector instance
@@ -143,11 +131,8 @@ class ABIModel(ABC):
         stack_args = [a for a in instr.args if a.mechanism == ArgumentMechanism.STACK]
         other_args = [a for a in instr.args if a.mechanism != ArgumentMechanism.STACK]
 
-        spill_offset = selector.get_current_spill_offset()
-        use_pha = self._use_pha_for_stack_args(spill_offset)
-
-        a_save_reg, a_param_is_16bit, a_resident_stack_idx = (
-            self._compute_a_save_for_call(selector, stack_args, other_args, use_pha))
+        a_save_reg, a_param_is_16bit = (
+            self._compute_a_save_for_call(selector, stack_args, other_args))
 
         if a_save_reg:
             op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
@@ -155,12 +140,8 @@ class ABIModel(ABC):
 
         stack_bytes_pushed = 0
         if stack_args:
-            if use_pha:
-                stack_bytes_pushed = self._emit_stack_args_pha(
-                    selector, stack_args, a_save_reg, pre_arg_stack_adj)
-            else:
-                self._emit_stack_args_outgoing(
-                    selector, stack_args, a_resident_stack_idx, pre_arg_stack_adj)
+            stack_bytes_pushed = self._emit_stack_args_pha(
+                selector, stack_args, a_save_reg, pre_arg_stack_adj)
 
         if a_save_reg:
             self._restore_a_from(selector, a_save_reg, a_param_is_16bit)
@@ -196,11 +177,11 @@ class ABIModel(ABC):
     def _register_target_name(arg) -> str:
         return arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
 
-    def _compute_a_save_for_call(self, selector, stack_args, other_args, use_pha):
+    def _compute_a_save_for_call(self, selector, stack_args, other_args):
         """Decide whether A must be saved across stack-arg setup.
 
-        Returns (a_save_reg, a_param_is_16bit, a_resident_stack_idx) where
-        a_save_reg is 'Y', 'X', or None.
+        Returns (a_save_reg, a_param_is_16bit) where a_save_reg is 'Y', 'X',
+        or None.
 
         A save is needed when:
           - any non-stack arg's value is in A (LDA in stack setup would
@@ -212,7 +193,7 @@ class ABIModel(ABC):
         from r65.compiler.mir.nodes import ArgumentMechanism
 
         if not stack_args:
-            return None, False, None
+            return None, False
 
         a_resident_stack_idx = None
         for i, arg in enumerate(stack_args):
@@ -238,23 +219,22 @@ class ABIModel(ABC):
         a_stack_needs_save = (
             a_resident_stack_idx is not None
             and a_resident_stack_idx != len(stack_args) - 1
-            and use_pha
         )
         if not a_in_other and a_stack_needs_save:
             a_param_is_16bit = self._arg_size(stack_args[a_resident_stack_idx]) >= 2
 
         if not (a_in_other or a_stack_needs_save):
-            return None, a_param_is_16bit, a_resident_stack_idx
+            return None, a_param_is_16bit
 
         reg_targets = {
             self._register_target_name(a)
             for a in other_args if a.mechanism == ArgumentMechanism.REGISTER
         }
         if 'Y' not in reg_targets:
-            return 'Y', a_param_is_16bit, a_resident_stack_idx
+            return 'Y', a_param_is_16bit
         if 'X' not in reg_targets:
-            return 'X', a_param_is_16bit, a_resident_stack_idx
-        return None, a_param_is_16bit, a_resident_stack_idx
+            return 'X', a_param_is_16bit
+        return None, a_param_is_16bit
 
     def _emit_stack_args_pha(self, selector, stack_args, a_save_reg, pre_arg_stack_adj) -> int:
         """Push stack args right-to-left via PHA. Returns bytes pushed."""
@@ -283,30 +263,6 @@ class ABIModel(ABC):
             if not arg_loc.is_hw('A'):
                 a_clobbered = True
         return stack_bytes_pushed
-
-    def _emit_stack_args_outgoing(self, selector, stack_args,
-                                  a_resident_stack_idx, pre_arg_stack_adj):
-        """Write stack args into the pre-allocated outgoing area via STA."""
-        from r65.compiler.codegen.register_alloc import LocationKind
-
-        offsets = []
-        outgoing_offset = 1
-        for arg in stack_args:
-            offsets.append(outgoing_offset)
-            outgoing_offset += self._arg_size(arg)
-
-        # A-resident arg goes first so subsequent LDAs don't clobber its source.
-        indices = list(range(len(stack_args)))
-        if a_resident_stack_idx is not None and len(stack_args) > 1:
-            indices.remove(a_resident_stack_idx)
-            indices.insert(0, a_resident_stack_idx)
-
-        for i in indices:
-            arg = stack_args[i]
-            arg_loc = selector.parent._get_operand_location(arg.value)
-            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
-            selector.emit_outgoing_stack_argument(arg, arg_loc, offsets[i])
 
     def _restore_a_from(self, selector, a_save_reg, a_param_is_16bit):
         """Emit TYA/TXA to restore A, pinned to the width of the saved value.
@@ -559,12 +515,11 @@ class ABIModel(ABC):
         """Emit trait dispatch arguments. Returns stack_bytes_pushed.
 
         Scratch params first (they write to DP, not stack), then stack args.
-        Stack args use PHA or outgoing area per _use_pha_for_stack_args.
+        Stack args are pushed right-to-left via PHA.
         SELF_Y is deferred to the caller via pending fields so chain
         coalescing can elide the DBR-set on MIDDLE/END members.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
-        from r65.compiler.codegen.register_alloc import LocationKind
 
         stack_args = [a for a in instr.args if a.mechanism == ArgumentMechanism.STACK]
         scratch_args = [a for a in instr.args if a.mechanism == ArgumentMechanism.SCRATCH_PARAM]
@@ -575,24 +530,13 @@ class ABIModel(ABC):
             arg_loc = selector.parent._get_operand_location(arg.value)
             selector.emit_scratch_param_argument(arg, arg_loc)
 
-        spill_offset = selector.get_current_spill_offset()
-        use_pha = self._use_pha_for_stack_args(spill_offset)
         stack_bytes_pushed = 0
-
-        if stack_args:
-            if use_pha:
-                for arg in reversed(stack_args):
-                    arg_loc = selector.parent._get_operand_location(arg.value)
-                    arg_size = self._arg_size(arg)
-                    selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
-                    stack_bytes_pushed += arg_size
-                    selector.region_state.stack_tracker.push(arg_size)
-            else:
-                outgoing_offset = 1
-                for arg in stack_args:
-                    arg_loc = selector.parent._get_operand_location(arg.value)
-                    selector.emit_outgoing_stack_argument(arg, arg_loc, outgoing_offset)
-                    outgoing_offset += self._arg_size(arg)
+        for arg in reversed(stack_args):
+            arg_loc = selector.parent._get_operand_location(arg.value)
+            arg_size = self._arg_size(arg)
+            selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
+            stack_bytes_pushed += arg_size
+            selector.region_state.stack_tracker.push(arg_size)
 
         # stack_bytes_pushed is tracked via region_state.stack_tracker; the
         # resolver applies it centrally, so pending_self_y_stack_bytes stays 0.
@@ -865,9 +809,8 @@ class ABIFixedStack(ABIModel):
     """Fixed-stack ABI with no dynamic frame allocation (--abi FixedStack).
 
     All parameters are promoted to hardware registers or direct-page scratch
-    locations — no stack-passed parameters are permitted. This eliminates
-    the need for an outgoing-arg area and simplifies frame layout to just
-    preserves and a minimal local frame.
+    locations — no stack-passed parameters are permitted, which leaves the
+    frame layout to just preserves and a minimal local frame.
 
     Frame allocation uses PHB per byte, except TSC/SBC/TCS when
     force_direct_stack (interrupt handlers); deallocation always uses PLA per byte (max_pla_dealloc_size is
@@ -886,9 +829,6 @@ class ABIFixedStack(ABIModel):
     def run_param_analysis(self, mir_program, scratch_pool, disable_scratch_params: bool):
         from r65.compiler.analysis.fixedstack_params import promote_all_stack_params
         promote_all_stack_params(mir_program, scratch_pool)
-
-    def compute_outgoing_args(self, mir_program, compute_fn):
-        pass  # no outgoing arg area in FixedStack
 
     def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
         if frame_size <= 0:
@@ -914,7 +854,7 @@ class ABIPascal(ABIModel):
     @ X, @ Y annotations are ignored). Parameters are pushed left-to-right
     via PHA — the first parameter is pushed first and ends up deepest, the
     last parameter sits closest to the return address. No scratch promotion
-    or outgoing-arg area is used.
+    is used.
 
     The caller pushes result space (sized to the return type) onto the stack
     before any parameters. After the call returns, the callee has cleaned
@@ -934,12 +874,6 @@ class ABIPascal(ABIModel):
     def run_param_analysis(self, mir_program, scratch_pool, disable_scratch_params: bool):
         # No scratch promotion — all params stay on stack
         pass
-
-    def compute_outgoing_args(self, mir_program, compute_fn):
-        # Pascal callers push via PHA (not STA to outgoing area)
-        # No outgoing arg area needed
-        for func in mir_program.functions:
-            func.max_outgoing_arg_bytes = 0
 
     def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
         if frame_size <= 0:
@@ -1024,10 +958,9 @@ class ABIPascal(ABIModel):
         frame_size = 0
         if selector.parent.reg_alloc and selector.parent.reg_alloc.has_frame_allocation:
             frame_size = selector.parent.reg_alloc.frame_size
-        prologue_bytes = func.abi_info.prologue_stack_bytes if func.abi_info else 0
-        return_addr_size = 3 if func.is_far else 2
-
-        result_offset = frame_size + prologue_bytes + return_addr_size + total_param_bytes + 1
+        abi_info = func.abi_info
+        result_offset = (frame_size + abi_info.prologue_stack_bytes
+                         + abi_info.return_addr_size + total_param_bytes + 1)
 
         value = instr.values[0]
         value_loc = selector.parent._get_operand_location(value)
@@ -1039,7 +972,12 @@ class ABIPascal(ABIModel):
                                          "16-bit A for Pascal result store")
                 selector.parent.emitter.emit_accu_mode(16)
 
-        if not value_loc.is_hw('A'):
+        # A loop-promoted value can sit in X or Y; those are transfers, not loads.
+        if value_loc.is_hw('X'):
+            selector._emit_implied(Opcode.TXA, "Return value from X")
+        elif value_loc.is_hw('Y'):
+            selector._emit_implied(Opcode.TYA, "Return value from Y")
+        elif not value_loc.is_hw('A'):
             selector.parent._emit_load('LDA', value_loc)
         selector.emitter.emit_instr(
             Opcode.STA_STACK, StackOffset(result_offset),
@@ -1049,18 +987,10 @@ class ABIPascal(ABIModel):
 class ABIDefault(ABIModel):
     """Default calling convention with PHA-based argument passing (--abi Default).
 
-    Eliminates the permanent outgoing-arg area from caller stack frames.
-    Instead, arguments are pushed via PHA before each call and cleaned up
-    by the caller via PLX after the call returns. This produces smaller
-    frames (no outgoing area inflation) and smaller code (PHA is 1 byte
-    vs STA d,S at 2 bytes).
-
-    Parameter passing uses a hybrid mechanism (register, variable-bound,
-    scratch-promoted, and stack). Stack arguments are always emitted via
-    PHA — the only ABI-level difference from the base implementation is
-    that the outgoing-area STA path is never taken (see _use_pha_for_stack_args).
-    Callee behavior is unchanged — params appear at the same stack offsets
-    above the return address regardless.
+    Stack arguments are pushed via PHA before each call and cleaned up by
+    the caller via PLX after the call returns. Parameter passing uses a
+    hybrid mechanism (register, variable-bound, scratch-promoted, and
+    stack).
 
     Frame allocation uses register pushes (PHX/PHY for 2-byte chunks,
     PHB for 1-byte remainder) for frames up to 8 bytes, and
@@ -1080,11 +1010,6 @@ class ABIDefault(ABIModel):
             from r65.compiler.analysis.scratch_params import analyze_scratch_params
             analyze_scratch_params(mir_program, scratch_pool)
 
-    def compute_outgoing_args(self, mir_program, compute_fn):
-        # Default ABI uses PHA per call — no permanent outgoing area
-        for func in mir_program.functions:
-            func.max_outgoing_arg_bytes = 0
-
     def emit_frame_alloc(self, emit_instr, frame_size: int, force_direct_stack: bool):
         if frame_size <= 0:
             return
@@ -1100,9 +1025,6 @@ class ABIDefault(ABIModel):
     @property
     def frame_alloc_clobbers_a_threshold(self) -> int:
         return 8  # Register pushes (PHX/PHY/PHB) don't clobber A
-
-    def _use_pha_for_stack_args(self, spill_offset: int) -> bool:
-        return True  # Default ABI always uses PHA — never the outgoing-area STA path
 
 
 # Singleton instances

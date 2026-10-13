@@ -981,6 +981,30 @@ class TestNarrowerHintRejection:
         assert vreg_ret1 not in allocation.hw_coalesceable, \
             "First call result must NOT coalesce to A (second Call clobbers A)"
 
+    def test_call_return_not_coalesceable_into_far_pointer_offset(self):
+        """`p = p + f()` on a far pointer loads p into A before reading f()."""
+        from r65.compiler.hir.types import PointerTypeInfo
+        far_ptr = PointerTypeInfo(is_far=True, pointee_type=BasicTypeInfo('u8'))
+        vreg_alloc = VirtualRegisterAllocator()
+        vreg_p = vreg_alloc.alloc(far_ptr, "p")
+        vreg_n = vreg_alloc.alloc(BasicTypeInfo('u16'), "n")
+        vreg_sum = vreg_alloc.alloc(far_ptr, "sum")
+
+        block0 = BasicBlock(block_id=0)
+        block0.instructions = [
+            Move(dest=vreg_p, source=Immediate(0x7E2000), type_info=far_ptr),
+            Call(function='foo', args=[], returns=[vreg_n], is_far=False),
+            BinaryOp(dest=vreg_sum, left=vreg_p, op='+', right=vreg_n, type_info=far_ptr),
+            Return(values=[]),
+        ]
+        func = MIRFunction(
+            name="advance", parameters=[], return_type=BasicTypeInfo('void'),
+            blocks={0: block0}, entry_block_id=0, vreg_allocator=vreg_alloc,
+        )
+
+        allocation = StackSlotAllocator(func).allocate()
+        assert vreg_n not in allocation.hw_coalesceable
+
     def test_call_return_not_coalesceable_across_call_in_successor(self):
         """Regression test: Call return must not coalesce when used across blocks with a Call.
 

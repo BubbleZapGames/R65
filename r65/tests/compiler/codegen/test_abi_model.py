@@ -52,15 +52,6 @@ class TestFrameAllocClobbersAThreshold:
         assert ABI_DEFAULT.frame_alloc_clobbers_a_threshold == 8
 
 
-class TestComputeOutgoingArgs:
-    def test_fixed_stack_skips_compute_fn(self):
-        called = []
-        def compute_fn(prog):
-            called.append(prog)
-        ABI_FIXED_STACK.compute_outgoing_args("mir_prog", compute_fn)
-        assert called == []
-
-
 class TestAbiModelFromString:
     def test_fixed_stack(self):
         model = abi_model_from_string("FixedStack")
@@ -156,23 +147,16 @@ class _FakeParent:
 
 class _MockSelector:
     """Records which emission methods were called."""
-    def __init__(self, spill_offset=0):
+    def __init__(self):
         self.calls = []
         self.parent = _FakeParent()
         self.region_state = _FakeRegionState()
-        self._spill_offset = spill_offset
-
-    def get_current_spill_offset(self):
-        return self._spill_offset
 
     def _emit_push(self, reg, comment=""):
         self.calls.append(('push', reg, comment))
 
     def emit_pha_stack_argument(self, arg, arg_loc, arg_size):
         self.calls.append(('pha_stack', arg.mechanism.value, arg_size))
-
-    def emit_outgoing_stack_argument(self, arg, arg_loc, outgoing_offset):
-        self.calls.append(('outgoing_stack', arg.mechanism.value, outgoing_offset))
 
     def emit_register_argument(self, arg, arg_loc):
         self.calls.append(('register', arg.location.name))
@@ -429,16 +413,6 @@ class TestABIPascalParamAnalysis:
         """No crash, no side effects."""
         ABI_PASCAL.run_param_analysis("mir_program", "scratch_pool", False)
 
-    def test_compute_outgoing_args_sets_zero(self):
-        """Pascal sets max_outgoing_arg_bytes=0 on all functions."""
-        class FakeFunc:
-            max_outgoing_arg_bytes = 99
-        class FakeProg:
-            functions = [FakeFunc()]
-        ABI_PASCAL.compute_outgoing_args(FakeProg(), None)
-        assert FakeProg.functions[0].max_outgoing_arg_bytes == 0
-
-
 class TestPascalEmitCallArgs:
     """Pascal emit_call_args: all args PHA'd left-to-right."""
 
@@ -467,7 +441,7 @@ class TestPascalEmitCallArgs:
             _make_arg('stack', param_type=_FakeTypeInfo('u8')),
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
-        selector = _MockSelector(spill_offset=0)
+        selector = _MockSelector()
         result = ABI_PASCAL.emit_call_args(selector, instr)
         # Pascal always uses PHA, so all args produce pha_stack calls
         assert result == 2
@@ -547,6 +521,22 @@ class TestPascalCompileIntegration:
         # Callee should have TSC/CLC/ADC/TCS for param cleanup (2 bytes)
         assert 'TSC' in result
         assert 'TCS' in result
+
+    def test_pascal_result_from_loop_promoted_register(self):
+        """A loop-promoted return value in X reaches the result space via TXA."""
+        source = """
+        fn halve(value: u16, amount: u16) -> u16 {
+            loop {
+                value >>= 1;
+                amount--;
+                if amount == 0 { break; }
+            }
+            return value;
+        }
+        """
+        from r65.compiler.main import compile_string
+        result = compile_string(source, "test.r65", abi_model=ABI_PASCAL)
+        assert 'TXA  ; Return value from X' in result
 
     def test_pascal_caller_pushes_args(self):
         """Pascal caller should push all args via PHA."""
@@ -684,19 +674,6 @@ class TestABIDefaultFrameAlloc:
         assert ABI_DEFAULT.frame_alloc_clobbers_a_threshold == 8
 
 
-class TestABIDefaultParamAnalysis:
-    """Default ABI runs scratch param analysis like Default."""
-
-    def test_compute_outgoing_args_sets_zero(self):
-        """Default sets max_outgoing_arg_bytes=0 on all functions."""
-        class FakeFunc:
-            max_outgoing_arg_bytes = 99
-        class FakeProg:
-            functions = [FakeFunc()]
-        ABI_DEFAULT.compute_outgoing_args(FakeProg(), None)
-        assert FakeProg.functions[0].max_outgoing_arg_bytes == 0
-
-
 class TestDefaultEmitCallArgs:
     """Default emit_call_args: stack args always use PHA, register args unchanged."""
 
@@ -716,14 +693,11 @@ class TestDefaultEmitCallArgs:
             _make_arg('stack', param_type=_FakeTypeInfo('u8')),
         ]
         instr = Call(function='foo', args=args, returns=[], is_far=False)
-        selector = _MockSelector(spill_offset=0)  # No spills, but still uses PHA
+        selector = _MockSelector()
         result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 2  # 2 bytes pushed
         pha_calls = [c for c in selector.calls if c[0] == 'pha_stack']
         assert len(pha_calls) == 2
-        # Should NOT have any outgoing_stack calls
-        outgoing_calls = [c for c in selector.calls if c[0] == 'outgoing_stack']
-        assert len(outgoing_calls) == 0
 
     def test_stack_args_reversed_order(self):
         """Default pushes stack args right-to-left (reversed)."""
@@ -812,7 +786,7 @@ class TestDefaultEmitTraitDispatchArgs:
             trait_name='T', method_name='m',
             args=args, returns=[], is_far=False,
         )
-        selector = _MockSelector(spill_offset=0)
+        selector = _MockSelector()
         result = ABI_DEFAULT.emit_trait_dispatch_args(selector, instr)
         assert result == 1
         assert any(c[0] == 'pha_stack' for c in selector.calls)
@@ -858,7 +832,7 @@ class TestDefaultCompileIntegration:
     """Integration tests: compile R65 source with Default ABI, verify assembly."""
 
     def test_compact_caller_pushes_args(self):
-        """Default caller should push stack args via PHA, not STA to outgoing."""
+        """Default caller should push stack args via PHA."""
         source = """
         fn callee(a: u8) -> u8 {
             asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
@@ -887,23 +861,6 @@ class TestDefaultCompileIntegration:
         result = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
         # Should have PLX for cleanup (2 bytes pushed = 1 PLX)
         assert 'PLX' in result or 'PLY' in result
-
-    def test_compact_no_outgoing_area(self):
-        """Default should NOT have outgoing arg area in frame allocation."""
-        source = """
-        fn callee(a: u8) -> u8 {
-            asm!("NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP", "NOP");
-            return a;
-        }
-        fn caller() -> u8 {
-            let x: u8 = callee(42);
-            return x;
-        }
-        """
-        from r65.compiler.main import compile_string
-        result = compile_string(source, "test.r65", abi_model=ABI_DEFAULT)
-        # Should compile without errors
-        assert 'caller' in result
 
     def test_compact_leaf_function_unchanged(self):
         """Leaf functions produce identical output with Default ABI."""

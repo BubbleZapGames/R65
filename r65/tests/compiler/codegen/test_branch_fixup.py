@@ -479,7 +479,7 @@ class TestConvergence:
 
         nodes.append(Instruction(Opcode.RTS))
 
-        # Should complete without hanging (max 20 iterations in algorithm)
+        # Should complete without hanging
         fixed, num_fixups = fixup_nodes(nodes)
 
         # All branches should be fixed

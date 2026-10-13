@@ -34,6 +34,7 @@ from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.abi import StackStateTracker
 from r65.compiler.codegen.type_utils import arg_param_size, scalar_width
+from r65.compiler.codegen.arg_order import arg_sort_key
 
 
 class SpillInfo(NamedTuple):
@@ -155,8 +156,6 @@ class CallInstructionSelector(BaseSelector):
         self.region_state = ActiveRegionState()
         # Pre-computed regions for current function: {block_id: {hw_reg: [ClobberRegion]}}
         self._function_regions: Optional[Dict[int, Dict[str, List]]] = None
-        # Whether A is bound to a vreg (uses region-based spilling if True)
-        self._a_bound_to_vreg: bool = False
 
     def initialize_regions_for_function(self):
         """
@@ -167,7 +166,6 @@ class CallInstructionSelector(BaseSelector):
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc or not reg_alloc.instr_liveness:
             self._function_regions = None
-            self._a_bound_to_vreg = False
             return
 
         from r65.compiler.mir.liveness import ClobberRegionAnalyzer
@@ -175,16 +173,8 @@ class CallInstructionSelector(BaseSelector):
         # Build preserves map from function signatures in the current function
         preserves_map = self._build_preserves_map()
 
-        # Check if A is bound to a vreg (e.g., function parameter @ A)
-        # If so, include A in region-based spilling
-        a_alloc = reg_alloc.get_hw_alloc('A')
-        self._a_bound_to_vreg = a_alloc.allocated_vreg is not None
-
         analyzer = ClobberRegionAnalyzer(reg_alloc.instr_liveness)
-        self._function_regions = analyzer.analyze_function(
-            preserves_map,
-            include_a=self._a_bound_to_vreg
-        )
+        self._function_regions = analyzer.analyze_function(preserves_map)
 
     def initialize_regions_for_block(self, block_id: int):
         """
@@ -200,8 +190,9 @@ class CallInstructionSelector(BaseSelector):
             self.region_state = ActiveRegionState()
             return
 
-        default_regions = {'A': [], 'X': [], 'Y': []} if self._a_bound_to_vreg else {'X': [], 'Y': []}
-        regions = self._function_regions.get(block_id, default_regions)
+        # Hardware liveness tracks X and Y only, so only they get regions;
+        # A always takes the per-call path.
+        regions = self._function_regions.get(block_id, {'X': [], 'Y': []})
         self.region_state.set_block_regions(block_id, regions)
 
     def _build_preserves_map(self) -> Dict[str, Set[str]]:
@@ -241,56 +232,18 @@ class CallInstructionSelector(BaseSelector):
             self._emit_implied(opcode)
 
     def _emit_push(self, reg: str, comment: str = None):
-        """Emit a push instruction."""
-        opcode = PUSH_OPCODES.get(reg)
-        if opcode:
-            self._emit_implied(opcode, comment)
+        """Emit a push instruction ('DBR' for PHB; 'B' is A's high byte)."""
+        self._emit_implied(PUSH_OPCODES[reg], comment)
 
     def _emit_pull(self, reg: str, comment: str = None):
-        """Emit a pull instruction."""
-        opcode = PULL_OPCODES.get(reg)
-        if opcode:
-            self._emit_implied(opcode, comment)
+        """Emit a pull instruction ('DBR' for PLB; 'B' is A's high byte)."""
+        self._emit_implied(PULL_OPCODES[reg], comment)
 
     def _emit_load_immediate(self, reg: str, value: int, comment: str = None):
         """Emit a load immediate instruction."""
         opcode = LOAD_IMMEDIATE_OPCODES.get(reg)
         if opcode:
             self._emit_immediate(opcode, value, comment)
-
-    def _store_multibyte_outgoing(self, arg, arg_loc, source_size: int, target_size: int, outgoing_offset: int):
-        """
-        Store a multi-byte value to outgoing area byte by byte.
-
-        Handles zero-extension when source is smaller than target.
-        Stores in little-endian order (low byte at lowest offset).
-        Must be called in m8 mode.
-
-        Args:
-            arg: Argument being stored
-            arg_loc: Source location
-            source_size: Size of source value in bytes
-            target_size: Size of target parameter in bytes
-            outgoing_offset: Base stack-relative offset for storage
-        """
-        from r65.compiler.codegen.asm_nodes import StackOffset
-
-        for byte_idx in range(target_size):
-            if byte_idx >= source_size:
-                # Zero-extend: store 0 for bytes beyond source size
-                byte_name = {2: "bank", 1: "high", 0: "low"}.get(byte_idx, f"byte{byte_idx}")
-                self._emit_load_immediate('A', 0, f"Zero-extend {byte_name} byte")
-            else:
-                byte_name = {2: "bank", 1: "high", 0: "low"}.get(byte_idx, f"byte{byte_idx}")
-                if byte_idx > 0:
-                    loc = self.parent._offset_location(arg_loc, byte_idx)
-                else:
-                    loc = arg_loc
-                self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
-            self.emitter.emit_instr(
-                Opcode.STA_STACK, StackOffset(outgoing_offset + byte_idx),
-                f"Store {byte_name} byte to outgoing"
-            )
 
     # ========================================================================
     # Main Call Selection
@@ -375,7 +328,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Step 4: Restore DBR if caller-managed
         if needs_dbr_restore:
-            self._emit_pull('B', "Restore data bank (caller)")
+            self._emit_pull('DBR', "Restore data bank (caller)")
 
         # Step 5: Collect return values (in callee's exit mode)
         pascal_result_bytes = getattr(instr, 'pascal_result_bytes', 0)
@@ -485,7 +438,7 @@ class CallInstructionSelector(BaseSelector):
         )
 
         if emit_phb:
-            self._emit_push('B', "Save caller's DBR for far self dispatch")
+            self._emit_push('DBR', "Save caller's DBR for far self dispatch")
             self.region_state.stack_tracker.push(1)  # PHB = 1 byte
 
         # Set up arguments (same mechanism as regular calls). The ABI's
@@ -526,7 +479,7 @@ class CallInstructionSelector(BaseSelector):
 
         # Restore caller's DBR after far self dispatch
         if emit_plb:
-            self._emit_pull('B', "Restore caller's DBR after far self dispatch")
+            self._emit_pull('DBR', "Restore caller's DBR after far self dispatch")
             self.region_state.stack_tracker.pop(1)  # PLB = 1 byte
 
         # Reload spilled registers
@@ -558,7 +511,7 @@ class CallInstructionSelector(BaseSelector):
             use_region_based = (
                 instr_idx is not None and
                 self._function_regions is not None and
-                (reg_name in ('X', 'Y') or (reg_name == 'A' and self._a_bound_to_vreg))
+                reg_name in ('X', 'Y')
             )
 
             if use_region_based:
@@ -622,7 +575,7 @@ class CallInstructionSelector(BaseSelector):
             use_region_based = (
                 instr_idx is not None and
                 self._function_regions is not None and
-                (reg_name in ('X', 'Y') or (reg_name == 'A' and self._a_bound_to_vreg))
+                reg_name in ('X', 'Y')
             )
 
             if use_region_based:
@@ -759,7 +712,7 @@ class CallInstructionSelector(BaseSelector):
                 source_loc=self.parent._current_source_loc
             )
         self._emit_push('A', "Push bank byte")
-        self._emit_pull('B', "Set DBR to object's bank")
+        self._emit_pull('DBR', "Set DBR to object's bank")
 
     def _load_y_addr_from_far_self(self, arg: 'Argument', stack_bytes_pushed: int):
         """Load the 16-bit address of a 3-byte far self pointer into Y."""
@@ -858,12 +811,11 @@ class CallInstructionSelector(BaseSelector):
                 continue
 
             # Check if region-based spilling is available for this register
-            # - X/Y always use region-based when available
-            # - A uses region-based only when bound to a vreg
+            # (X/Y only: A has no regions)
             use_region_based = (
                 instr_idx is not None and
                 self._function_regions is not None and
-                (reg_name in ('X', 'Y') or (reg_name == 'A' and self._a_bound_to_vreg))
+                reg_name in ('X', 'Y')
             )
 
             if use_region_based:
@@ -880,7 +832,7 @@ class CallInstructionSelector(BaseSelector):
                     # Else: already in active region, no spill needed
                     continue
 
-            # Fall back to per-call analysis for A (when not bound) or when no region
+            # Per-call analysis for A, or for X/Y outside any region
             hw_alloc = reg_alloc.get_hw_alloc(reg_name)
             vreg = hw_alloc.allocated_vreg
 
@@ -946,9 +898,8 @@ class CallInstructionSelector(BaseSelector):
         # value back over the result.
         call_return_set = self._call_result_registers(instr)
 
-        # Check each active region for X/Y and A (when bound)
-        regs_to_check = ('A', 'X', 'Y') if self._a_bound_to_vreg else ('X', 'Y')
-        for hw_reg in regs_to_check:
+        # Check each active X/Y region
+        for hw_reg in ('X', 'Y'):
             if hw_reg in call_return_set:
                 # Don't reload — value just placed there is the return value.
                 # The matching spill was also skipped, so the stack stays
@@ -1097,109 +1048,7 @@ class CallInstructionSelector(BaseSelector):
         """Set up call arguments. Delegates to ABIModel.emit_call_args."""
         return self.parent.abi_model.emit_call_args(self, instr, pre_arg_stack_adj)
 
-    def arg_sort_key(self, arg):
-        """Sort key for argument processing order."""
-        if arg.mechanism == ArgumentMechanism.STACK:
-            return 0  # Stack first
-        elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
-            return 1  # Scratch params second (STA to DP, clobbers A)
-        elif arg.mechanism == ArgumentMechanism.VARIABLE:
-            return 2  # Variable-bound third
-        elif arg.mechanism == ArgumentMechanism.REGISTER:
-            target_reg = arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
-            if target_reg == 'B':
-                return 3  # B fourth (clobbers A)
-            elif target_reg in ['X', 'Y']:
-                return 4  # X, Y fifth
-            elif target_reg == 'A':
-                return 5  # A last (to avoid being clobbered)
-        return 6
-
-    def emit_outgoing_stack_argument(self, arg, arg_loc, outgoing_offset: int):
-        """Emit stack argument via STA d,S into caller's outgoing area.
-
-        Writes the argument value to a fixed stack offset without moving SP.
-        No current ABI takes this path: Default and Pascal push every stack
-        arg via PHA (``emit_pha_stack_argument``).
-
-        IMPORTANT: When source value is smaller than parameter type, we must
-        zero-extend. For example, an 8-bit loop variable passed to a u16
-        parameter needs its high byte set to 0, not loaded from garbage memory.
-
-        Args:
-            arg: Argument being emitted
-            arg_loc: Physical location of the source value
-            outgoing_offset: Stack-relative offset in the outgoing area ($01 for first param)
-        """
-        from r65.compiler.codegen.type_utils import get_type_size
-        from r65.compiler.codegen.constants import M_FLAG
-        from r65.compiler.codegen.asm_nodes import StackOffset
-
-        # Adjust outgoing offset for current spill offset.
-        # When region spills are active (PHY/PHX pushed before call),
-        # SP has moved down and the outgoing area is shifted by the same amount.
-        # Source locations are auto-adjusted via _emit_load -> _get_opcode_for_location,
-        # but STA destinations use StackOffset directly and need manual adjustment.
-        spill_offset = self.get_current_spill_offset()
-        outgoing_offset += spill_offset
-
-        # Determine PARAMETER size (what we need to store)
-        param_size = arg_param_size(arg)
-
-        # Determine SOURCE size for zero-extension
-        source_size = param_size
-        if hasattr(arg.value, 'type_info') and arg.value.type_info:
-            source_size = get_type_size(arg.value.type_info)
-        elif isinstance(arg.value, MIRImmediate):
-            source_size = param_size
-
-        if param_size == 3:
-            # 24-bit (far pointer): store byte by byte in m8
-            self._ensure_m8_mode("8-bit A for byte store")
-            if arg_loc.is_hw('A'):
-                raise InstructionSelectionError("Cannot store 24-bit value from A register", source_loc=self.parent._current_source_loc)
-            self._store_multibyte_outgoing(arg, arg_loc, source_size, 3, outgoing_offset)
-
-        elif param_size == 2:
-            # 16-bit: prefer single m16 STA d,S when possible
-            if source_size < 2:
-                # Source smaller than param — zero-extend byte by byte
-                self._ensure_m8_mode("8-bit A for zero-ext store")
-                self._store_multibyte_outgoing(arg, arg_loc, source_size, 2, outgoing_offset)
-            elif arg_loc.is_hw('A'):
-                # Value in A — ensure m16 for 16-bit store
-                current_mode = self.parent.emitter.get_accu_mode()
-                if current_mode != 16:
-                    self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 outgoing arg")
-                    self.parent.emitter.emit_accu_mode(16)
-                self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u16 arg")
-            elif isinstance(arg.value, MIRImmediate):
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 outgoing arg")
-                self.parent.emitter.emit_accu_mode(16)
-                self._emit_load_immediate('A', arg.value.value)
-                self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u16 arg")
-            else:
-                # Memory/stack/scratch source: load in m16, store
-                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 outgoing arg")
-                self.parent.emitter.emit_accu_mode(16)
-                self.parent._emit_load('LDA', arg_loc)
-                self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u16 arg")
-
-        else:
-            # 8-bit: ensure m8, load value, store to outgoing offset
-            self._ensure_m8_mode("8-bit A for u8 outgoing arg")
-            if arg_loc.is_hw('A'):
-                pass  # Already in A
-            elif arg_loc.is_hw():
-                if arg_loc.hw_register == 'X':
-                    self._emit_transfer('X', 'A')
-                elif arg_loc.hw_register == 'Y':
-                    self._emit_transfer('Y', 'A')
-            elif isinstance(arg.value, MIRImmediate):
-                self._emit_load_immediate('A', arg.value.value)
-            else:
-                self.parent._emit_load('LDA', arg_loc)
-            self.emitter.emit_instr(Opcode.STA_STACK, StackOffset(outgoing_offset), "Outgoing u8 arg")
+    arg_sort_key = staticmethod(arg_sort_key)
 
     def emit_pha_stack_argument(self, arg, arg_loc, param_size: int):
         """Push one stack argument via PHA (Default and Pascal pass every stack arg this way).
@@ -1653,10 +1502,10 @@ class CallInstructionSelector(BaseSelector):
         # adds the ROM base (.BASE $80 for LoROM FastROM, $C0 for HiROM).
         callee_bank = (getattr(self.emitter, 'rom_base', 0)
                        + instr.bank_attr.bank_number)
-        self._emit_push('B', "Save current data bank (caller)")
+        self._emit_push('DBR', "Save current data bank (caller)")
         self._emit_load_immediate('A', callee_bank, "Load callee's bank number")
         self._emit_push('A', "Push bank number")
-        self._emit_pull('B', "Set data bank for callee")
+        self._emit_pull('DBR', "Set data bank for callee")
         return True
 
     # ========================================================================
@@ -2144,11 +1993,19 @@ class CallInstructionSelector(BaseSelector):
     def _call_live_after_collection(self, instr) -> Set[str]:
         """Registers holding a result once the return values are collected.
 
-        As _call_result_registers, except that a void call leaves nothing in A.
+        The hw-allocated destination of each return vreg, plus the callee's
+        return register of each value no return vreg collects (separate
+        Moves capture those later, so they stay in place). A result stored
+        to memory leaves its register dead; a void call leaves nothing.
         """
-        regs = self._call_result_registers(instr)
         if not self._call_returns_in_a(instr):
-            regs.discard('A')
+            return set()
+        return_regs = self._get_callee_return_registers(instr)
+        regs = set(return_regs[len(instr.returns):self._call_num_returns(instr)])
+        for return_vreg in instr.returns:
+            dest_loc = self.parent._get_operand_location(return_vreg)
+            if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
+                regs.add(dest_loc.hw_register)
         return regs
 
     def _emit_return_value_collection(self, instr: Call):
@@ -2438,43 +2295,12 @@ class CallInstructionSelector(BaseSelector):
         self.region_state.stack_tracker.push(2)
 
     def _compute_live_regs_after_call(self, instr: Call, reloads: List[SpillInfo]) -> set:
+        """Hardware registers live after return value collection and spill
+        reloads (steps 5 through 6.5): every register holding a result
+        (_call_live_after_collection) plus every reloaded register.
         """
-        Determine which hardware registers (A, X, Y) are live after return
-        value collection and spill reloads (steps 5 through 6.5).
-
-        A register is live if:
-        - A return value landed in A and was hw-coalesced (stayed in A)
-        - A was reloaded from a spill
-
-        X/Y are live if:
-        - A return value was hw-coalesced to X or Y
-        - X or Y was reloaded from a spill
-
-        Args:
-            instr: The Call instruction
-            reloads: Spill reloads that were emitted in step 6.5
-
-        Returns:
-            Set of live hardware register names (e.g. {'A'}, {'A', 'X'})
-        """
-        live = set()
-
-        # Check spill reloads — any reloaded register is live
-        for spill in reloads:
-            live.add(spill.hw_reg)
-
-        # Check return values hw-coalesced to registers
-        if instr.returns:
-            return_registers = self._get_callee_return_registers(instr)
-            for i, return_vreg in enumerate(instr.returns):
-                if i >= len(return_registers):
-                    break
-                source_reg = return_registers[i]
-                dest_loc = self.parent._get_operand_location(return_vreg)
-                if dest_loc.is_hw(source_reg):
-                    # Return value stayed in its source register (hw-coalesced)
-                    live.add(source_reg)
-
+        live = self._call_live_after_collection(instr)
+        live.update(spill.hw_reg for spill in reloads)
         return live
 
     def _emit_d_equals_s_restore(self, live_regs: set):
@@ -2486,33 +2312,35 @@ class CallInstructionSelector(BaseSelector):
         1. Push D back onto the stack (since PLD popped it before the call)
         2. Set D = S for continued far pointer access
 
-        TSC clobbers A, so we use a tiered strategy based on which registers
-        are live at this point:
+        TSC writes all of C (A and B), so we use a tiered strategy based on
+        which registers are live at this point:
 
         Tier 1 - A is dead (common: void calls, returns stored to stack):
           PHD          ; push D (2 bytes)
           TSC          ; A = SP (clobbers dead A)
           TCD          ; D = SP = frame_base
 
-        Tier 2 - A is live, X or Y is dead:
+        Tier 2 - A is live, B is dead, X or Y is dead:
           PHD          ; push D
           TAX/TAY      ; save A in dead register
           TSC          ; A = SP
           TCD          ; D = SP = frame_base
           TXA/TYA      ; restore A
 
-        Tier 3 - A, X, Y all live (extremely rare):
+        Tier 3 - B is live, or A, X, Y all are (rare; the TXA/TYA of tier 2
+        restores only A in m8):
           PHD          ; push D (2 bytes), SP = frame_base
           (emit_d_equals_s_keeping_c: REP #$20 if m8; PHA, two bytes;
            TSC; INC A; INC A; TCD; PLA; SEP #$20 if it was m8)
 
         Updates the stack tracker to undo the displacement from PLD.
         """
-        from r65.compiler.codegen.constants import M_FLAG
-
-        a_live = 'A' in live_regs
-
-        if not a_live:
+        if 'B' in live_regs or {'A', 'X', 'Y'} <= live_regs:
+            # Tier 3: park C on the stack
+            self._emit_instr(Opcode.PHD, comment="Save D back to stack")
+            self.region_state.stack_tracker.push(2)
+            emit_d_equals_s_keeping_c(self.parent.emitter)
+        elif 'A' not in live_regs:
             # Tier 1: A is dead — fast path (3 instructions, ~8 cycles)
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
             self.region_state.stack_tracker.push(2)
@@ -2526,7 +2354,7 @@ class CallInstructionSelector(BaseSelector):
             self._emit_instr(Opcode.TSC, comment="A = SP")
             self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
             self._emit_instr(Opcode.TXA, comment="Restore A from X")
-        elif 'Y' not in live_regs:
+        else:
             # Tier 2b: A live, Y dead — use TAY/TYA (5 instructions, ~12 cycles)
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
             self.region_state.stack_tracker.push(2)
@@ -2534,11 +2362,6 @@ class CallInstructionSelector(BaseSelector):
             self._emit_instr(Opcode.TSC, comment="A = SP")
             self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
             self._emit_instr(Opcode.TYA, comment="Restore A from Y")
-        else:
-            # Tier 3: A, X and Y all live - park C on the stack
-            self._emit_instr(Opcode.PHD, comment="Save D back to stack")
-            self.region_state.stack_tracker.push(2)
-            emit_d_equals_s_keeping_c(self.parent.emitter)
 
     def _has_far_ptr_derefs_after_call(self, call_instr: Call) -> bool:
         """

@@ -88,9 +88,8 @@ class MoveOperationSelector(BaseSelector):
 
     def _move_to_hardware_register(self, instr: Move, dest_loc, src_operand, is_u16: bool):
         """Handle moving data to a hardware register."""
-        persist_mode = getattr(instr, 'persist_16bit_mode', False)
         if isinstance(src_operand, MIRImmediate):
-            self._load_immediate_to_hw_register(dest_loc.hw_register, src_operand.value, is_u16, persist_mode)
+            self._load_immediate_to_hw_register(dest_loc.hw_register, src_operand.value, is_u16)
         else:
             from r65.compiler.codegen.type_utils import get_vreg_size
             src_loc = self.parent._get_operand_location(src_operand)
@@ -122,13 +121,12 @@ class MoveOperationSelector(BaseSelector):
                     self.parent._ensure_m16_mode()
                 self.parent._emit_register_transfer(src_loc.hw_register, dest_loc.hw_register)
             else:
-                self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, is_u16, persist_mode)
+                self._load_memory_to_hw_register(dest_loc.hw_register, src_loc, is_u16)
 
-    def _load_immediate_to_hw_register(self, hw_register: str, value: int, is_u16: bool,
-                                        persist_16bit_mode: bool = False):
+    def _load_immediate_to_hw_register(self, hw_register: str, value: int, is_u16: bool):
         """Load an immediate value into a hardware register."""
         if hw_register in ['A', 'X', 'Y']:
-            self.parent._emit_load_immediate_to_register(hw_register, value, is_u16, persist_16bit_mode)
+            self.parent._emit_load_immediate_to_register(hw_register, value, is_u16)
         elif hw_register == 'B':
             value_masked = value & 0xFF
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value_masked))
@@ -158,15 +156,14 @@ class MoveOperationSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}", source_loc=self.parent._current_source_loc)
 
-    def _load_memory_to_hw_register(self, hw_register: str, src_loc, is_u16: bool = False,
-                                      persist_16bit_mode: bool = False):
+    def _load_memory_to_hw_register(self, hw_register: str, src_loc, is_u16: bool = False):
         """Load from memory into a hardware register.
 
         Args:
             hw_register: Target register ('A', 'X', 'Y', 'B')
             src_loc: Source memory location
-            is_u16: Whether this is a 16-bit load (DEST type)
-            persist_16bit_mode: Ignored; a 16-bit A load always stays in m16
+            is_u16: Whether this is a 16-bit load (DEST type); a 16-bit A
+                load leaves the accumulator in m16
         """
         # X and Y are always 16-bit registers in R65, so the Move's nominal
         # `is_u16` (derived from the dest type) is always True for X/Y dest —
@@ -365,8 +362,9 @@ class MoveOperationSelector(BaseSelector):
             addr_ref = f"${alloc.address + offset:04X}"
 
         if is_far_ptr:
-            # 24-bit far pointer: 3 byte-by-byte stores in m8 mode
-            # (m16 store + m8 bank store pattern is fragile with peephole)
+            # 24-bit far pointer: 3 byte stores in m8, as the other far
+            # pointer copies do. `<`/`>`/`:` take a label's bytes directly,
+            # with no 16-bit masking of a 24-bit label value.
             self.parent._ensure_m8_mode()
             # Low byte
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<{addr_ref}"),

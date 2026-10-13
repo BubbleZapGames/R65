@@ -38,41 +38,8 @@ class AddressCalculator:
         self.x16 = x16
 
     def calculate(self, nodes: List[AsmNode]) -> Dict[int, Tuple[int, int]]:
-        """
-        Calculate addresses for all nodes.
-
-        Tracks .ACCU and .INDEX mode changes to correctly size immediate
-        instructions based on the current processor mode.
-
-        Args:
-            nodes: List of AsmNode objects
-
-        Returns:
-            Dict mapping node index to (address, size) tuple.
-            Only nodes with non-zero size are included.
-        """
-        result = {}
-        offset = 0
-
-        # Track current processor mode (may change via .ACCU/.INDEX directives)
-        current_m16 = self.m16
-        current_x16 = self.x16
-
-        for i, node in enumerate(nodes):
-            # Track mode-changing directives — sizing of accumulator
-            # / index immediate operands depends on m / x flag width.
-            if isinstance(node, ModeChange):
-                if node.flag == 'ACCU':
-                    current_m16 = node.bits == 16
-                elif node.flag == 'INDEX':
-                    current_x16 = node.bits == 16
-
-            size = self._node_size_with_mode(node, current_m16, current_x16)
-            if size > 0:
-                result[i] = (self.base_address + offset, size)
-            offset += size
-
-        return result
+        """Node addresses only: calculate_with_labels without the labels."""
+        return self.calculate_with_labels(nodes)[0]
 
     def calculate_with_labels(self, nodes: List[AsmNode]) -> Tuple[Dict[int, Tuple[int, int]], Dict[str, int]]:
         """
@@ -116,7 +83,6 @@ class AddressCalculator:
             offset += size
 
         return node_addresses, label_addresses
-
 
     def _node_size(self, node: AsmNode) -> int:
         """

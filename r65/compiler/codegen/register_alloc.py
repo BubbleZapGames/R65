@@ -182,7 +182,6 @@ class ScratchRegisterPool:
     def __init__(self):
         """Initialize empty scratch pool."""
         self.scratches: List[ScratchRegister] = []
-        self.allocated: Dict[int, VirtualRegister] = {}  # vreg.id → VirtualRegister
         # Track used address ranges: list of (start, end, name) for overlap detection
         self._used_ranges: List[Tuple[int, int, str]] = []
 
@@ -228,61 +227,29 @@ class ScratchRegisterPool:
 
     def allocate(self, vreg: VirtualRegister) -> Optional[ScratchRegister]:
         """
-        Allocate a scratch register for a virtual register.
+        Take the first free scratch large enough for a virtual register.
 
-        Args:
-            vreg: Virtual register to allocate
+        Scratches are never freed within a function; reset() frees them all.
 
         Returns:
             ScratchRegister if available, None if pool exhausted
         """
-        # Check if already allocated
-        if vreg.id in self.allocated:
-            # Find the scratch
-            for scratch in self.scratches:
-                if not scratch.is_free and self.allocated.get(vreg.id) == vreg:
-                    # Find which scratch was allocated by checking all scratches
-                    # This is inefficient but simple for v1
-                    pass
-
-        # Find compatible free scratch (must match or exceed size)
         vreg_size = get_vreg_size(vreg)
         for scratch in self.scratches:
             if scratch.is_free and scratch.size >= vreg_size:
                 scratch.is_free = False
-                self.allocated[vreg.id] = vreg
                 return scratch
-
-        # No free scratch available
         return None
-
-    def free(self, vreg: VirtualRegister):
-        """
-        Free scratch register allocated to virtual register.
-
-        Args:
-            vreg: Virtual register to free
-        """
-        if vreg.id not in self.allocated:
-            return
-
-        # Find and free the scratch
-        for scratch in self.scratches:
-            if not scratch.is_free and self.allocated.get(vreg.id) == vreg:
-                scratch.is_free = True
-                del self.allocated[vreg.id]
-                return
 
     def reset(self):
         """
         Reset pool for a new function.
 
-        Marks all scratches as free and clears allocations.
+        Marks all scratches as free.
         Called before each function to allow scratch reuse across functions.
         """
         for scratch in self.scratches:
             scratch.is_free = True
-        self.allocated.clear()
 
 
 class RegisterAllocator:
@@ -301,7 +268,6 @@ class RegisterAllocator:
                  mir_func: Optional[MIRFunction] = None,
                  prologue_stack_bytes: int = 0,
                  instr_liveness: Optional['InstructionLivenessAnalyzer'] = None,
-                 outgoing_arg_bytes: int = 0,
                  layout: Optional[StackFrameLayout] = None):
         """
         Initialize register allocator.
@@ -311,15 +277,13 @@ class RegisterAllocator:
             mir_func: MIR function for liveness analysis (enables slot reuse)
             prologue_stack_bytes: Bytes pushed by prologue (affects stack param offsets)
             instr_liveness: Instruction-level liveness analyzer (for precise liveness)
-            outgoing_arg_bytes: Caller-owned outgoing argument area size
             layout: Optional StackFrameLayout (if provided, overrides prologue_stack_bytes
-                    and outgoing_arg_bytes for offset computations)
+                    for offset computations)
         """
         self.scratch_pool = scratch_pool or ScratchRegisterPool()
         self.mir_func = mir_func
         self.prologue_stack_bytes = prologue_stack_bytes
         self.instr_liveness = instr_liveness
-        self.outgoing_arg_bytes = outgoing_arg_bytes
         self.layout = layout
         self.slot_allocator: Optional[StackSlotAllocator] = None
         self.slot_allocation: Optional[SlotAllocation] = None
@@ -381,7 +345,7 @@ class RegisterAllocator:
         1. Check for explicit hardware register binding
         2. Check for hw-coalesceable (can stay in hardware register)
         3. Try register hint (for loop variables assigned to X/Y)
-        4. Try scratch register (respecting call graph constraints)
+        4. Try scratch register (only for vregs not live across a call)
         5. Spill to stack if no scratch available (using slot reuse if available)
 
         Args:
@@ -483,8 +447,7 @@ class RegisterAllocator:
                 if self.layout is not None:
                     stack_offset = self.layout.local_offset(slot_num)
                 else:
-                    # Fallback: inline formula (locals shifted above outgoing arg area)
-                    stack_offset = self.stack_base_offset + self.outgoing_arg_bytes + slot_num
+                    stack_offset = self.stack_base_offset + slot_num
                 location = PhysicalLocation(
                     kind=LocationKind.STACK,
                     stack_offset=stack_offset,
@@ -597,27 +560,16 @@ class RegisterAllocator:
             if self.mir_func.far_ptr_strategy != FarPtrStrategy.SET_DBR:
                 return None
 
-        vreg_size = get_vreg_size(vreg)
-
-        for scratch in self.scratch_pool.scratches:
-            if not scratch.is_free:
-                continue
-            if scratch.size < vreg_size:
-                continue
-
-            # Allocate this scratch
-            scratch.is_free = False
-            self.scratch_pool.allocated[vreg.id] = vreg
-
-            location = PhysicalLocation(
-                kind=LocationKind.SCRATCH,
-                scratch_addr=scratch.address,
-                size=vreg_size
-            )
-            self.allocations[vreg.id] = location
-            return location
-
-        return None
+        scratch = self.scratch_pool.allocate(vreg)
+        if scratch is None:
+            return None
+        location = PhysicalLocation(
+            kind=LocationKind.SCRATCH,
+            scratch_addr=scratch.address,
+            size=get_vreg_size(vreg)
+        )
+        self.allocations[vreg.id] = location
+        return location
 
 
     def get_location(self, vreg: VirtualRegister) -> PhysicalLocation:
@@ -707,7 +659,6 @@ class RegisterAllocator:
                 prologue_stack_bytes=self.prologue_stack_bytes,
                 instr_liveness=self.instr_liveness,
                 pre_allocated_vregs=pre_allocated_vregs,
-                outgoing_arg_bytes=self.outgoing_arg_bytes,
                 layout=self.layout,
                 pre_allocated_hw=pre_allocated_hw,
             )

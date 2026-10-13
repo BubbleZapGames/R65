@@ -135,9 +135,10 @@ class LocationResolver:
             if index_register == 'X':
                 return AddressingMode.LONG_X
             elif index_register == 'Y':
-                # Note: LONG_Y doesn't exist on 65816, would need workaround
-                # For now, fall back to ABSOLUTE_Y (caller should handle this case)
-                return AddressingMode.ABSOLUTE_Y
+                # There is no long,Y mode; abs,Y would read the DBR bank
+                # instead of the operand's. Callers index long operands by X.
+                raise InstructionSelectionError(
+                    "Cannot index a long (24-bit) address by Y", source_loc=None)
             else:
                 return AddressingMode.LONG
         elif is_dp:

@@ -21,6 +21,21 @@ def rom_static_bank(static_decl) -> Optional[int]:
     return bank_attr.bank_number
 
 
+# #[bank(auto)] never goes below this bank, leaving banks 0-3 to
+# hand-placed code and data.
+AUTO_BANK_FLOOR = 4
+
+
+def auto_bank_number(mir_program) -> int:
+    """The bank #[bank(auto)] code and ROM data start in: the one above every
+    explicit #[bank(n)] function or static, at least AUTO_BANK_FLOOR. Code
+    placement, ROM data placement and far_to_near all read it from here."""
+    explicit = [f.bank_attr.bank_number for f in mir_program.functions
+                if f.bank_attr is not None and f.bank_attr.bank_number is not None]
+    explicit += [b for b in map(rom_static_bank, mir_program.statics) if b is not None]
+    return max(max(explicit, default=-1) + 1, AUTO_BANK_FLOOR)
+
+
 class SymbolDefinitionGenerator:
     """
     Generates symbol definition sections in assembly.
@@ -285,12 +300,13 @@ class SymbolDefinitionGenerator:
     # ROM Data Definitions
     # ========================================================================
 
-    def emit_rom_data(self):
+    def emit_rom_data(self, auto_bank: int, bank_size: int):
         """
         Emit ROM data with initializers.
 
         For static variables in ROM with include_bytes! initializers,
-        emits .INCBIN directives. Respects #[bank(n)] attributes.
+        emits .INCBIN directives. Respects #[bank(n)] attributes; auto-bank
+        data packs upward from *auto_bank*, *bank_size* bytes per bank.
 
         Generated:
             ; ============================================================================
@@ -336,8 +352,6 @@ class SymbolDefinitionGenerator:
 
         self.emitter.emit_section_header("ROM Data")
 
-        bank_size = 0x8000  # 32KB per bank
-
         # Emit data for each explicit bank in order
         for bank_num in sorted(bank_data.keys()):
             self.emitter.emit_bank_directive(bank_num, slot=0)
@@ -347,17 +361,9 @@ class SymbolDefinitionGenerator:
                 alloc.symbol.rom_label = label
                 self.emitter.emit_incbin(filepath, label=label)
 
-        # Emit auto-bank data starting at bank 4 (or higher if explicit banks used)
+        # Auto-bank data packs upward from the program's auto bank
         if auto_bank_data:
-            # Find next available bank after explicit banks
-            if bank_data:
-                auto_start_bank = max(bank_data.keys()) + 1
-                if auto_start_bank < 4:
-                    auto_start_bank = 4
-            else:
-                auto_start_bank = 4
-
-            current_bank = auto_start_bank
+            current_bank = auto_bank
             current_size = 0
             self.emitter.emit_bank_directive(current_bank, slot=0)
 
@@ -402,12 +408,16 @@ class SymbolDefinitionGenerator:
     # All Definitions
     # ========================================================================
 
-    def emit_all_definitions(self, constants: Optional[list[HIRConstDecl]] = None):
+    def emit_all_definitions(self, constants: Optional[list[HIRConstDecl]], auto_bank: int,
+                             bank_size: int):
         """
         Emit all symbol definitions in order.
 
         Args:
             constants: Optional list of constant declarations
+            auto_bank: The bank #[bank(auto)] include_bytes! data starts in
+                (`auto_bank_number`)
+            bank_size: Bytes per ROM bank, for packing that data
 
         Order:
         1. Stack bounds (.DEFINE __R65_STACK_LO / __R65_STACK_HI)
@@ -434,7 +444,7 @@ class SymbolDefinitionGenerator:
         self.emit_overlay_definitions()
 
         # ROM data with initializers
-        self.emit_rom_data()
+        self.emit_rom_data(auto_bank, bank_size)
 
     # ========================================================================
     # Helper Methods

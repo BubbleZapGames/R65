@@ -248,12 +248,12 @@ class CompareSelector(BaseSelector):
         is_16bit = self._is_16bit_type(instr.type_info)
 
         left_loc = self.parent._get_operand_location(instr.left)
-        right_operand, is_immediate, pushed_reg = self._prepare_right_operand(instr.right, is_16bit)
+        right_operand, is_immediate, swapped = self._prepare_right_operand(instr.right, is_16bit)
 
         # Handle swapped comparison: right value is already in A, compare with left.
         # This avoids push/pop which clobbers flags needed by CondBranch.
         # CMP computes A - operand, so flags represent (right - left) = reversed.
-        if pushed_reg == 'SWAPPED':
+        if swapped:
             if is_16bit:
                 self.parent._ensure_m16_mode()
             else:
@@ -275,18 +275,6 @@ class CompareSelector(BaseSelector):
                 self._emit_cmp('CMP', left_loc, False)
             self.parent._comparison_reversed = True
             return
-
-        # If right operand was pushed to stack (PHX/PHY/PHA), all stack-relative
-        # offsets shift. Adjust the left operand if it's on the stack.
-        if pushed_reg and left_loc.kind == LocationKind.STACK:
-            from r65.compiler.codegen.register_alloc import PhysicalLocation
-            # X/Y pushes are 2 bytes (always 16-bit), A is 1 byte (m8)
-            push_size = 2 if pushed_reg in ('X', 'Y') else 1
-            left_loc = PhysicalLocation(
-                kind=LocationKind.STACK,
-                stack_offset=left_loc.stack_offset + push_size,
-                size=left_loc.size
-            )
 
         # Switch to appropriate mode for the comparison
         # Need 16-bit mode for any 16-bit comparison that uses the accumulator:
@@ -310,15 +298,6 @@ class CompareSelector(BaseSelector):
         # Leave the width as is: branches do not read M, and a loop back-edge
         # must arrive in the header's mode. Code paths that need m8 (like
         # function returns) switch explicitly.
-
-        # Pop register if we pushed it for temp storage
-        if pushed_reg:
-            if pushed_reg == 'X':
-                self._emit_instr(Opcode.PLX, comment="Restore X")
-            elif pushed_reg == 'Y':
-                self._emit_instr(Opcode.PLY, comment="Restore Y")
-            elif pushed_reg == 'A':
-                self._emit_instr(Opcode.PLA, comment="Restore A")
 
     def _is_signed_type(self) -> bool:
         """Check if the current comparison type is signed (i8, i16).
@@ -350,9 +329,9 @@ class CompareSelector(BaseSelector):
             is_16bit: Whether the comparison is 16-bit
 
         Returns:
-            Tuple of (operand, is_immediate, swapped): swapped is 'SWAPPED'
-            when the right value was moved into A and the compare must run
-            reversed, else False
+            Tuple of (operand, is_immediate, swapped): swapped is True when
+            the right value was moved into A and the compare must run
+            reversed
         """
         if isinstance(right, MIRImmediate):
             if is_16bit:
@@ -363,8 +342,8 @@ class CompareSelector(BaseSelector):
         right_loc = self.parent._get_operand_location(right)
 
         if right_loc.is_hw():
-            operand, needs_pop = self._store_hw_register_to_temp(right_loc)
-            return operand, False, needs_pop
+            operand, swapped = self._store_hw_register_to_temp(right_loc)
+            return operand, False, swapped
 
         return right_loc, False, False
 
@@ -374,7 +353,7 @@ class CompareSelector(BaseSelector):
 
         Returns:
             Tuple of (operand, swapped): (temp Address, False), or
-            (None, 'SWAPPED') when the value was moved into A and the compare
+            (None, True) when the value was moved into A and the compare
             must run reversed
         """
         if right_loc.hw_register in ['A', 'B']:
@@ -395,7 +374,7 @@ class CompareSelector(BaseSelector):
                 if right_loc.hw_register == 'B':
                     self.parent._access_b_value_in_a()
                     # A now has B's value, comparison will be reversed
-                return None, 'SWAPPED'
+                return None, True
 
         # X and Y need special handling - try scratch, fall back to swap
         temp_addr = self.parent._get_temp_address()
@@ -414,7 +393,7 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
             else:  # Y
                 self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
-            return None, 'SWAPPED'
+            return None, True
 
     def _can_elide_cmp_zero(self, reg: str, right_operand, is_immediate: bool) -> bool:
         """

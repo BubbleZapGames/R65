@@ -478,3 +478,29 @@ if __name__ == "__main__":
     test_16bit_stack_parameter()
 
     print("🎉 All tests passed!")
+
+
+def test_loop_header_skips_mode_switch_when_back_edge_exits_in_its_mode():
+    """A loop body doing u16 work but ending in m8 needs no SEP at the header."""
+    from r65.compiler.frontend import parse
+    from r65.compiler.hir import HIRBuilder
+    from r65.compiler.typeck import TypeChecker
+    from r65.compiler.mir import MIRBuilder
+    from r65.compiler.codegen import ProgramCodeGenerator
+    hir = HIRBuilder().build_program(parse('''
+        #[zeropage] static mut N: u8;
+        #[zeropage] static mut W: u16;
+        fn run() {
+            let mut i: u8 = 0;
+            while i < 10 {
+                W = W + 1;
+                N = N + 2;
+                i = i + 1;
+            }
+        }
+        #[entry] fn main() -> ! { run(); loop {} }
+    '''))
+    TypeChecker(hir).check()
+    asm = ProgramCodeGenerator().generate(MIRBuilder().build_program(hir), opt_level=0)
+    run = asm.split('\nrun:', 1)[1].split('RTS', 1)[0]
+    assert 'REQUIRED' not in run

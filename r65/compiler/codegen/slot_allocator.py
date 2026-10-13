@@ -26,7 +26,8 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.codegen.type_utils import (
-    get_vreg_size, is_a_resident_convert, convert_operand_widths, defines_in_a)
+    get_vreg_size, is_a_resident_convert, convert_operand_widths, defines_in_a,
+    is_far_ptr)
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
@@ -130,7 +131,6 @@ class StackSlotAllocator:
         prologue_stack_bytes: int = 0,
         instr_liveness: Optional[Any] = None,
         pre_allocated_vregs: Optional[Set[VirtualRegister]] = None,
-        outgoing_arg_bytes: int = 0,
         layout: Optional['StackFrameLayout'] = None,
         pre_allocated_hw: Optional[Dict[int, str]] = None,
     ):
@@ -144,7 +144,6 @@ class StackSlotAllocator:
             instr_liveness: Optional InstructionLivenessAnalyzer for call-liveness analysis
             pre_allocated_vregs: Vregs already allocated externally (scratch params,
                 loop-promoted hw vregs, ...), excluded from local slot allocation
-            outgoing_arg_bytes: Caller-owned outgoing argument area size
             layout: Optional StackFrameLayout for offset computation
             pre_allocated_hw: Subset of `pre_allocated_vregs` that the caller has
                 pinned to a hardware register (vreg_id -> 'A'/'X'/'Y'/'B'). Used by
@@ -161,7 +160,6 @@ class StackSlotAllocator:
         self.instr_liveness = instr_liveness
         self.pre_allocated_vregs = pre_allocated_vregs or set()
         self.pre_allocated_hw = pre_allocated_hw or {}
-        self.outgoing_arg_bytes = outgoing_arg_bytes
         self.layout = layout
 
         # Build vreg lookup for preassigned
@@ -224,9 +222,7 @@ class StackSlotAllocator:
                 self.layout.local_frame_size = frame_size
                 final_offset = self.layout.param_offset(slot.base_offset)
             else:
-                # Fallback: inline formula
-                total_frame_size = frame_size + self.outgoing_arg_bytes
-                final_offset = slot.base_offset + self.prologue_stack_bytes + total_frame_size
+                final_offset = slot.base_offset + self.prologue_stack_bytes + frame_size
             param_offsets[slot.vreg] = final_offset
             param_sizes[slot.vreg] = slot.size
 
@@ -762,6 +758,8 @@ class StackSlotAllocator:
             if defines_in_a(def_instr):
                 if not all(self._use_reads_a_in_place(use, vreg_id) for use in uses):
                     continue
+            if hw_reg == 'A' and any(self._use_loads_a_first(use, vreg_id) for use in uses):
+                continue
 
             candidates.append((vreg_id, def_instr, hw_reg, uses))
 
@@ -937,6 +935,18 @@ class StackSlotAllocator:
                 for a in use.args)):
             return True
         return False
+
+    @staticmethod
+    def _use_loads_a_first(use: Any, vreg_id: int) -> bool:
+        """Whether *use* loads another value into A before it reads the vreg.
+
+        The clobber scan stops short of the use itself, so this is checked
+        apart. Far-pointer `+`/`-` (select_binary_op) loads the pointer's low
+        word into A and only then adds or subtracts its right operand.
+        """
+        return (type(use) is BinaryOp and use.op in ('+', '-')
+                and is_far_ptr(use.type_info)
+                and type(use.right) is VirtualRegister and use.right.id == vreg_id)
 
     def _find_return_sinkable_vregs(self) -> Dict[VirtualRegister, 'MemoryLocation']:
         """

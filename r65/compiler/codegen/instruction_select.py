@@ -32,9 +32,7 @@ from r65.compiler.codegen.errors import (
     unknown_value, missing_allocation,
     requires_constant, unsupported_operation
 )
-from r65.compiler.codegen.instruction_select_helpers import (
-    XBAState, XBAStateManager
-)
+from r65.compiler.codegen.instruction_select_helpers import XBAStateManager
 from r65.compiler.codegen.hw_register_tracker import (
     HardwareRegisterTracker
 )
@@ -56,7 +54,6 @@ from r65.compiler.codegen.constants import (
 from r65.compiler.codegen.location_resolver import (
     default_resolver
 )
-from r65.compiler.codegen.selector_context import SelectorContext
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
 from r65.compiler.codegen.type_utils import is_16bit_scalar, is_far_ptr, pointer_element_size
 
@@ -101,18 +98,6 @@ class InstructionSelector:
 
         # Location resolver for addressing mode and opcode selection
         self._resolver = default_resolver
-
-        # Shared context for composed selectors
-        self._context = SelectorContext(
-            emitter=emitter,
-            register_allocator=register_allocator,
-            memory_allocator=memory_allocator,
-            resolver=self._resolver,
-            current_function=current_function
-        )
-        # Wire up callbacks for context
-        self._context.set_a_modified_callback(self._mark_a_modified)
-        self._context.set_operand_location_callback(self._get_operand_location)
 
         # Helper classes for modular instruction selection
         self.xba_manager = XBAStateManager(emitter)
@@ -404,16 +389,6 @@ class InstructionSelector:
         """Format a block label with function-scoped naming."""
         func_name = self.current_function.name if self.current_function else ""
         return f"{func_name}__L{block_id}"
-
-    @property
-    def xba_state(self) -> XBAState:
-        """XBA state (delegated to manager for backward compatibility)."""
-        return self.xba_manager.state
-
-    @xba_state.setter
-    def xba_state(self, value: XBAState):
-        """Set XBA state (delegated to manager)."""
-        self.xba_manager.state = value
 
     def _get_unique_label(self) -> str:
         """Generate a unique label for inline branching."""
@@ -1602,7 +1577,9 @@ class InstructionSelector:
                 return
             elif dest_reg == 'B' and src_reg in ('X', 'Y'):
                 # X/Y to B: Transfer low byte of X/Y to B
-                # Pattern: Save A, REP #$20, TXA/TYA, AND #$00FF, SEP #$20, XBA, Restore A
+                # Pattern: SEP #$20, Save A, REP #$20, TXA/TYA, AND #$00FF,
+                # SEP #$20, XBA, Restore A. The push and the pull are both m8.
+                self._ensure_m8_mode()
                 self._emit_implied(Opcode.PHA, "Save A")
                 self._ensure_m16_mode()
                 if src_reg == 'X':
@@ -1647,8 +1624,7 @@ class InstructionSelector:
             self._emit_register_transfer(src_reg, 'A')
             self._emit_register_transfer('A', dest_reg)
 
-    def _emit_load_immediate_to_register(self, reg: str, value: int, is_u16: bool,
-                                          persist_16bit_mode: bool = False):
+    def _emit_load_immediate_to_register(self, reg: str, value: int, is_u16: bool):
         """
         Emit load immediate into hardware register.
 
@@ -1659,8 +1635,6 @@ class InstructionSelector:
             reg: Register name ('A', 'X', 'Y')
             value: Immediate value
             is_u16: Whether to use 16-bit format
-            persist_16bit_mode: Deprecated - mode is always persisted now.
-                               Kept for API compatibility.
         """
         load_opcode = LOAD_IMMEDIATE_OPCODES[reg]
 
