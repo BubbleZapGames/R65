@@ -271,12 +271,8 @@ class ProgramCodeGenerator:
         # TraitDispatch and assign ChainRole values so codegen can emit
         # the PHB/PLB DBR bracket once per run instead of per-call.
         # Builds the trait-resolved call graph for soundness verification.
-        from r65.compiler.analysis.call_graph import CallGraphAnalyzer
-        _chain_call_graph = CallGraphAnalyzer(
-            mir_program,
-            trait_dispatch_info=getattr(mir_program, 'trait_dispatch_info', None),
-        ).analyze()
-        analyze_trait_dispatch_chains(mir_program, _chain_call_graph)
+        from r65.compiler.analysis.call_graph import build_call_graph
+        analyze_trait_dispatch_chains(mir_program, build_call_graph(mir_program))
 
         # Run loop register promotion analysis (after scratch params)
         if not disable_loop_promotion:
@@ -634,14 +630,14 @@ class ProgramCodeGenerator:
         space at the bottom of its frame for the largest set of stack arguments
         across all call sites. The caller writes args via STA d,S instead of PHA.
         """
-        from r65.compiler.mir.nodes import Call, TraitDispatch, ArgumentMechanism
+        from r65.compiler.mir.nodes import CallBase, ArgumentMechanism
         from r65.compiler.codegen.type_utils import arg_param_size
 
         for func in mir_program.functions:
             max_bytes = 0
             for block in func.blocks.values():
                 for instr in block.instructions:
-                    if isinstance(instr, (Call, TraitDispatch)):
+                    if isinstance(instr, CallBase):
                         call_bytes = 0
                         for arg in instr.args:
                             if arg.mechanism == ArgumentMechanism.STACK:

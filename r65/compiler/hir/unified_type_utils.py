@@ -10,7 +10,7 @@ AST type nodes — needed during const evaluation before HIR lowering.
 from typing import Any
 from r65.compiler.hir.symbol_table import SymbolKind
 from r65.compiler.hir.errors import HIRError
-from r65.compiler.hir.types import TypeInfo, _TYPE_SIZES
+from r65.compiler.hir.types import TypeInfo, _TYPE_SIZES, discriminant_type
 
 
 # Import AST types for isinstance checks
@@ -52,28 +52,8 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
 
     # --- AST type nodes (used during const evaluation before HIR lowering) ---
 
-    if ast_types and isinstance(type_obj, ast_types.BasicType):
-        type_name = type_obj.name
-        if type_name in _TYPE_SIZES:
-            return _TYPE_SIZES[type_name]
-        raise HIRError(f"Unknown basic type: {type_name}", source_loc=None)
-
-    if ast_types and isinstance(type_obj, ast_types.Identifier):
-        type_name = type_obj.name
-        if type_name in _TYPE_SIZES:
-            return _TYPE_SIZES[type_name]
-        if symbol_table:
-            symbol = symbol_table.lookup(type_name)
-            if symbol and hasattr(symbol, 'kind'):
-                if hasattr(symbol, 'definition') and symbol.definition:
-                    if hasattr(symbol.definition, 'fields'):
-                        return _get_ast_struct_size(symbol.definition, symbol_table)
-                elif symbol.kind is SymbolKind.ENUM:
-                    return 1
-        raise HIRError(
-            f"Cannot determine size of type: {type_name}",
-            source_loc=getattr(type_obj, 'source_loc', None),
-        )
+    if ast_types and isinstance(type_obj, (ast_types.BasicType, ast_types.Identifier)):
+        return _named_type_size(type_obj, symbol_table)
 
     if ast_types and isinstance(type_obj, ast_types.ArrayType):
         elem_size = get_unified_type_size(type_obj.element_type, symbol_table)
@@ -100,6 +80,42 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
 
     # Default to 1 byte if unknown
     return 1
+
+
+def _named_type_size(type_obj, symbol_table) -> int:
+    """Size of a type named in the AST: a basic type, a struct or an enum.
+
+    A field's named type parses as a `BasicType` and a `size_of` argument as an
+    `Identifier`, so both come here. This runs from const evaluation in pass 1,
+    where a struct's or enum's symbol still holds its AST declaration.
+    """
+    type_name = type_obj.name
+    if type_name in _TYPE_SIZES:
+        return _TYPE_SIZES[type_name]
+    symbol = symbol_table.lookup(type_name) if symbol_table else None
+    definition = getattr(symbol, 'definition', None)
+    if symbol is not None and symbol.kind is SymbolKind.ENUM:
+        return _enum_size(type_name, definition, symbol_table)
+    if definition is not None and hasattr(definition, 'fields'):
+        return _get_ast_struct_size(definition, symbol_table)
+    raise HIRError(
+        f"Cannot determine size of type: {type_name}",
+        source_loc=getattr(type_obj, 'source_loc', None),
+    )
+
+
+def _enum_size(name, definition, symbol_table) -> int:
+    """Discriminant width of enum *name*: 1 byte, or 2 once a variant exceeds 255.
+
+    The HIR declaration carries it; before that, pass 1 has already declared
+    every `Enum::Variant` symbol with its value.
+    """
+    underlying = getattr(definition, 'underlying_type', None)
+    if underlying is not None:
+        return underlying.size_bytes
+    values = (getattr(symbol_table.lookup(f"{name}::{v.name}"), 'const_value', 0)
+              for v in definition.variants)
+    return discriminant_type(max(values, default=0)).size_bytes
 
 
 def layout_fields(field_sizes, is_union: bool):

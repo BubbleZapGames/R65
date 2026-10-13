@@ -42,8 +42,8 @@ class DeadStaticMut(LintRule):
         # expression. Reading any plane is reading the pool.
         if decl.soa_planes:
             self._planes[id(decl.symbol)] = [
-                id(child.symbol) for (_name, _off, _stride, child) in decl.soa_planes
-                if child.symbol is not None
+                id(plane.child.symbol) for plane in decl.soa_planes
+                if plane.child.symbol is not None
             ]
 
     def visit_identifier(self, expr: HIRIdentifier, ctx: LintContext) -> None:

@@ -22,8 +22,8 @@ The optimization is safe when:
 from typing import Dict, Set, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch, BasicBlock
-from r65.compiler.analysis.param_utils import find_address_taken_functions
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call
+from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 
 
 @dataclass
@@ -35,7 +35,6 @@ class FunctionBankInfo:
     has_address_taken: bool = False
     is_interrupt: bool = False
     callers: Set[str] = field(default_factory=set)
-    callees: Set[str] = field(default_factory=set)
 
 
 def compute_auto_bank_num(mir_program: MIRProgram) -> int:
@@ -122,10 +121,14 @@ class FarToNearOptimizer:
         # so the JSR'd target ends up at a completely different address
         # from where the call points.
         self._auto_bank_num = compute_auto_bank_num(mir_program)
-        self._dispatch_targets = self._collect_dispatch_targets(mir_program)
+        graph = build_call_graph(mir_program)
+        # A far trait's dispatch wrapper enters each implementor with JML,
+        # so the implementor must still RTL even when every direct caller
+        # sits in its own bank.
+        self._dispatch_targets = graph.dispatch_targets
 
         # Analyze all functions
-        self._analyze_functions(mir_program)
+        self._analyze_functions(mir_program, graph)
 
         # Find functions that can be converted
         convertible = self._find_convertible_functions()
@@ -139,68 +142,26 @@ class FarToNearOptimizer:
 
         return len(convertible)
 
-    @staticmethod
-    def _collect_dispatch_targets(mir_program: MIRProgram) -> Set[str]:
-        """Return the mangled names of every trait-dispatch implementor.
-
-        A far trait's `T__m__dispatch` wrapper jumps into each implementor
-        with `JML`, so the implementor must still `RTL` even when every
-        *direct* caller sits in its own bank. Those dispatch edges never
-        appear as `Call` instructions, so the call-graph walk in
-        `_analyze_functions` can't see them; treat the targets as
-        externally referenced instead.
-        """
-        targets: Set[str] = set()
-        for trait_info in (mir_program.trait_dispatch_info or {}).values():
-            for impl in trait_info.get('implementors', []):
-                targets.update(impl.get('mangled', []))
-        return targets
-
     def _get_function_bank(self, func: MIRFunction) -> int:
         """Effective bank number for a function; see `effective_bank`."""
         return effective_bank(func, self._auto_bank_num)
 
-    def _analyze_functions(self, mir_program: MIRProgram):
+    def _analyze_functions(self, mir_program: MIRProgram, graph: CallGraph):
         """
         Analyze all functions to build bank and call relationship info.
 
         Args:
             mir_program: The MIR program to analyze
         """
-        # First pass: collect basic info for each function
         for func in mir_program.functions:
-            bank = self._get_function_bank(func)
-            is_interrupt = func.interrupt_attr is not None
-
             self.bank_info[func.name] = FunctionBankInfo(
                 name=func.name,
-                bank=bank,
+                bank=self._get_function_bank(func),
                 is_far=func.is_far,
-                is_interrupt=is_interrupt,
+                has_address_taken=func.name in graph.address_taken,
+                is_interrupt=func.interrupt_attr is not None,
+                callers=graph.callers_of(func.name, direct=True),
             )
-
-        # Second pass: analyze call relationships and address-taken
-        for func in mir_program.functions:
-            caller_name = func.name
-
-            for block in func.blocks.values():
-                for instr in block.instructions:
-                    if isinstance(instr, Call):
-                        if isinstance(instr.function, str):
-                            # Direct call
-                            callee_name = instr.function
-
-                            # Record caller -> callee relationship
-                            if caller_name in self.bank_info:
-                                self.bank_info[caller_name].callees.add(callee_name)
-
-                            # Record callee <- caller relationship
-                            if callee_name in self.bank_info:
-                                self.bank_info[callee_name].callers.add(caller_name)
-
-        for name in find_address_taken_functions(mir_program):
-            if name in self.bank_info:
-                self.bank_info[name].has_address_taken = True
 
     def _find_convertible_functions(self) -> List[str]:
         """

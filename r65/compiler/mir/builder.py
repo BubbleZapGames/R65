@@ -2064,7 +2064,7 @@ class MIRBuilder:
 
     @staticmethod
     def _soa_plane_for(base_memloc, field_offset):
-        """The `(name, aos_offset, stride, child)` plane owning *field_offset*.
+        """The `SoaPlane` owning *field_offset*.
 
         `peel_field_chain` hands the funnel a *summed* offset, so which
         top-level field a chain started at is recovered by range: struct layout
@@ -2078,15 +2078,15 @@ class MIRBuilder:
         planes = getattr(definition, 'soa_planes', None)
         if not planes:
             return None
-        for index, (name, offset, stride, child) in enumerate(planes):
-            nxt = planes[index + 1][1] if index + 1 < len(planes) else None
-            if offset <= field_offset and (nxt is None or field_offset < nxt):
-                return (name, offset, stride, child)
+        for index, plane in enumerate(planes):
+            nxt = planes[index + 1].aos_offset if index + 1 < len(planes) else None
+            if plane.aos_offset <= field_offset and (nxt is None or field_offset < nxt):
+                return plane
         return None
 
     def _soa_rebase(self, plane, base_memloc, field_offset, reuse_base_key):
         """Point a field access at its SoA plane instead of the parent array."""
-        _name, aos_offset, stride, child = plane
+        aos_offset, stride, child = plane.aos_offset, plane.stride, plane.child
         plane_memloc = self.get_memory_location(child.symbol)
         # The chain's residual offset within the plane's element, e.g. the `.y`
         # of `POOL[i].pos.y` where `pos` is the plane.

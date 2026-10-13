@@ -7,9 +7,7 @@ and fixedstack_params.py (FixedStack ABI).
 """
 
 from typing import Dict, Set, List, Optional, Tuple, Sequence
-from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, Call, FunctionPointer, Move, SymbolByte, TraitDispatch,
-)
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction
 from r65.compiler.codegen.type_utils import get_type_size
 
 
@@ -30,48 +28,6 @@ def clear_far_ptr_flag_if_all_promoted(func: MIRFunction, promoted_param_indices
         if not remaining_far:
             func.has_far_ptr_stack_params = False
             func.far_ptr_param_indices.clear()
-
-
-def find_address_taken_functions(mir_program: MIRProgram) -> Set[str]:
-    """
-    Find all functions whose address is taken (used as function pointer).
-
-    These cannot have their calling convention changed because unknown
-    callers may call them via the original stack-based ABI: a pointer call
-    pushes stack arguments, and a `far fn()` pointer call expects RTL.
-
-    An address is taken by a `FunctionPointer` moved or passed as an
-    argument, or by a `fn` static in ROM.
-
-    Returns:
-        Set of function names whose address is taken
-    """
-    address_taken: Set[str] = set()
-    names = {func.name for func in mir_program.functions}
-    for rom_data in mir_program.rom_data_sections:
-        for byte in rom_data.data:
-            if isinstance(byte, SymbolByte) and byte.label in names:
-                address_taken.add(byte.label)
-
-    for func in mir_program.functions:
-        for block in func.blocks.values():
-            for instr in block.instructions:
-                # Check Move instructions that load function pointers
-                if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
-                    address_taken.add(instr.source.function_name)
-                # Check Call args (function pointer passed as argument)
-                if isinstance(instr, (Call, TraitDispatch)):
-                    for arg in instr.args:
-                        if isinstance(arg.value, FunctionPointer):
-                            address_taken.add(arg.value.function_name)
-
-    # Trait method implementations are called indirectly through dispatch tables,
-    # but they CAN have scratch-promoted parameters as long as all impls of the
-    # same trait method share the same scratch addresses. They are NOT marked
-    # address-taken; instead, find_trait_impl_groups() coordinates their scratch
-    # layout separately.
-
-    return address_taken
 
 
 def find_trait_impl_groups(mir_program: MIRProgram) -> Dict[Tuple[str, int], List[str]]:

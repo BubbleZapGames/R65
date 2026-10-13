@@ -19,10 +19,11 @@ from r65.compiler.mir.nodes import (
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.analysis.param_utils import (
-    find_address_taken_functions, find_composite_scratch,
+    find_composite_scratch,
     param_bytes, clear_far_ptr_flag_if_all_promoted,
 )
 from r65.compiler.analysis.far_ptr_strategy import _is_set_dbr_safe
+from r65.compiler.analysis.call_graph import build_call_graph
 
 
 def _is_eligible_for_any_promotion(func: MIRFunction, address_taken: Set[str]) -> bool:
@@ -63,7 +64,7 @@ def analyze_scratch_params(mir_program: MIRProgram, scratch_pool: ScratchRegiste
         return  # No scratch registers available
 
     # Step 1: Find functions whose address is taken (not promotable)
-    address_taken = find_address_taken_functions(mir_program)
+    address_taken = build_call_graph(mir_program).address_taken
 
     # Step 2: For each function, determine which stack params can be promoted
     # Build map: function_name -> {param_idx: scratch_addr}

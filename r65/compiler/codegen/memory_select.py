@@ -105,6 +105,11 @@ class MemoryOperationSelector(BaseSelector):
 
         src_loc = self.parent._get_operand_location(instr.source)
 
+        if dest_loc.is_hw() and not is_far_pointer_type(instr.type_info):
+            self.parent.move_selector._load_memory_to_hw_register(
+                dest_loc.hw_register, src_loc, self.parent._is_16bit(instr.type_info))
+            return
+
         # A far pointer is 3 bytes. It fits neither path below, and
         # _is_16bit() reports False for it, so without this branch it would
         # fall into the 8-bit case and load only the low byte, leaving the

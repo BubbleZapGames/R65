@@ -14,9 +14,9 @@ A stack parameter is promoted if:
 
 from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
+    CallBase,
     MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate,
-    Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, Call,
-    TraitDispatch, TypeConvert, ToBool, Rotate,
+    Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, TypeConvert, ToBool, Rotate,
     iter_operands, map_operands, fixed_clobbers,
 )
 from r65.compiler.hir.types import PointerTypeInfo
@@ -672,7 +672,7 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
             # LoadIndirect dest gets the result in A, not compatible with X/Y dest
             if isinstance(use.dest, VirtualRegister) and use.dest.id == vreg_id:
                 return False
-        elif isinstance(use, (Call, TraitDispatch)):
+        elif isinstance(use, CallBase):
             for arg in use.args:
                 if isinstance(arg.value, VirtualRegister) and arg.value.id == vreg_id:
                     return False

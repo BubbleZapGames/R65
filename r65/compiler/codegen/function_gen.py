@@ -7,7 +7,8 @@ Generates complete function bodies with headers, labels, and instructions.
 
 from typing import List, Set
 from r65.compiler.mir.nodes import (
-    MIRFunction, Return, Call, TraitDispatch, VirtualRegister,
+    CallBase,
+    MIRFunction, Return, VirtualRegister,
     MemoryLocation, Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest,
     Jump, CondBranch, TypeConvert, LoadIndirect, StoreIndirect, Push,
     MemoryFill, BlockCopy, InlineAsm, iter_operands,
@@ -1255,7 +1256,7 @@ class FunctionCodeGenerator:
         Calls, TraitDispatch, and asm! blocks conservatively clobber everything.
         """
         from r65.compiler.mir.nodes import (
-            Move, Call, TraitDispatch, Load, Store, StoreIndirect,
+            Move, Load, Store, StoreIndirect,
             HardwareRegister, VirtualRegister,
             InlineAsm, MemoryFill, BlockCopy,
         )
@@ -1290,7 +1291,7 @@ class FunctionCodeGenerator:
                     return modified
 
                 # Calls/TraitDispatch/InlineAsm clobber everything
-                if isinstance(instr, (Call, TraitDispatch)):
+                if isinstance(instr, CallBase):
                     return ALL_REGS
                 if isinstance(instr, InlineAsm):
                     return ALL_REGS
@@ -1303,9 +1304,8 @@ class FunctionCodeGenerator:
                 dest = getattr(instr, 'dest', None)
                 if isinstance(dest, HardwareRegister) and dest.name in ALL_REGS:
                     # Check if this is a dead volatile read to A (side-effect only).
-                    # Move A = [volatile_hw_addr] where A is never read after → use BIT.
-                    if (dest.name == 'A' and isinstance(instr, Move) and
-                            isinstance(instr.source, MemoryLocation) and
+                    # Load A = [volatile_hw_addr] where A is never read after → use BIT.
+                    if (dest.name == 'A' and isinstance(instr, Load) and
                             instr.source.is_volatile):
                         # Check if A is used after this instruction in the block
                         a_is_used = False
@@ -1582,8 +1582,8 @@ class FunctionCodeGenerator:
                             return
 
                 # Near calls inherit DBR — callee may access ROM/HW data
-                elif isinstance(instr, (Call, TraitDispatch)):
-                    if not getattr(instr, 'is_far', False):
+                elif isinstance(instr, CallBase):
+                    if not instr.is_far:
                         return
 
         # No bank-dependent accesses found — skip DBR setup
@@ -1629,7 +1629,7 @@ class FunctionCodeGenerator:
         for block in mir_func.blocks.values():
             for instr in block.instructions:
                 # Any function call means we need D=S (callee expects normal DBR)
-                if isinstance(instr, (Call, TraitDispatch)):
+                if isinstance(instr, CallBase):
                     needs_d_equals_s = True
                     break
 

@@ -8,7 +8,7 @@ issues, optimize code, and provide warnings/errors.
 
 from r65.compiler.analysis.call_graph import (
     CallGraph,
-    CallGraphAnalyzer,
+    build_call_graph,
     RecursionChecker,
     RecursionError
 )
@@ -16,7 +16,7 @@ from r65.compiler.analysis.stack_depth import StackDepthAnalyzer
 
 __all__ = [
     'CallGraph',
-    'CallGraphAnalyzer',
+    'build_call_graph',
     'RecursionChecker',
     'RecursionError',
     'StackDepthAnalyzer'

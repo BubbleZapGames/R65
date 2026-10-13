@@ -18,7 +18,7 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
 from r65.compiler.hir.types import BasicTypeInfo, PointerTypeInfo, TraitTypeInfo
-from r65.compiler.analysis.call_graph import CallGraphAnalyzer
+from r65.compiler.analysis.call_graph import build_call_graph
 from r65.compiler.analysis.trait_chain_coalesce import (
     analyze_trait_dispatch_chains,
     _chain_self_root,
@@ -145,7 +145,7 @@ def _build_program(caller_blocks, trait='T', method='m',
 
 
 def _run_analysis(program):
-    cg = CallGraphAnalyzer(program).analyze()
+    cg = build_call_graph(program)
     analyze_trait_dispatch_chains(program, cg)
 
 
@@ -968,7 +968,7 @@ class TestFunctionPreservesY:
     """v2(B): tests for _function_preserves_y predicate."""
 
     def _empty_call_graph(self, prog):
-        return CallGraphAnalyzer(prog).analyze()
+        return build_call_graph(prog)
 
     def test_simple_leaf_preserves_y(self):
         """A leaf function with no Y writes preserves Y."""

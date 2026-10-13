@@ -757,17 +757,23 @@ class Argument:
             return f"{self.value}:VAR({self.location})"
 
 
+@dataclass(kw_only=True)
+class CallBase(MIRInstruction):
+    """What every call carries, whether a `Call` or a `TraitDispatch`."""
+    args: List[Argument] = field(default_factory=list)
+    returns: List[VirtualRegister] = field(default_factory=list)
+    is_far: bool = False  # True for JSL/RTL, False for JSR/RTS
+    callee_return_type: Optional[Any] = None  # TypeInfo: callee's return type
+
+
 @dataclass
-class Call(MIRInstruction):
+class Call(CallBase):
     """
     Function call.
 
     returns = call function(args)
     """
     function: Union[str, VirtualRegister]  # Function name or function pointer
-    args: List[Argument] = field(default_factory=list)
-    returns: List[VirtualRegister] = field(default_factory=list)
-    is_far: bool = False  # True for JSL/RTL, False for JSR/RTS
     mode_attr: Optional[Any] = None  # ModeAttribute from callee (for caller-managed DBR)
     bank_attr: Optional[Any] = None  # BankAttribute from callee (for bank number)
     builtin_name: Optional[str] = None  # Set if this is a built-in function call
@@ -775,9 +781,6 @@ class Call(MIRInstruction):
     # Callee's inferred modes for cross-mode call handling
     callee_entry_m_mode: Optional[Any] = None  # ModeState: callee's expected entry mode
     callee_exit_m_mode: Optional[Any] = None   # ModeState: callee's exit mode (return type)
-
-    # Callee's return type (for B register return detection)
-    callee_return_type: Optional[Any] = None  # TypeInfo: callee's return type
 
     # Callee's preserved registers (for caller-save optimization)
     preserves_attr: Optional[Any] = None  # PreservesAttribute from callee
@@ -794,7 +797,7 @@ class Call(MIRInstruction):
 
 
 @dataclass
-class TraitDispatch(MIRInstruction):
+class TraitDispatch(CallBase):
     """
     Trait method dispatch via jump table.
 
@@ -805,11 +808,7 @@ class TraitDispatch(MIRInstruction):
     method_name: str = ""
     method_index: int = 0
     self_ptr: Union[VirtualRegister, None] = None  # Pointer to trait object
-    args: List[Argument] = field(default_factory=list)
-    returns: List[VirtualRegister] = field(default_factory=list)
-    is_far: bool = False
     self_is_far: bool = False  # True if self pointer is far (24-bit)
-    callee_return_type: Optional[Any] = None
     # Position of this dispatch within a same-self chain. Set by the
     # analysis pass `analyze_trait_dispatch_chains` (analysis/trait_chain_coalesce.py).
     # Default SOLO preserves the pre-pass behavior.
@@ -949,6 +948,12 @@ class OperandSpec(NamedTuple):
     role: OperandRole
     container: OperandContainer
     accepts_hr: bool  # True => the slot's type union includes HardwareRegister
+    # True => codegen legally takes an Immediate here (`LDA #imm`, `ADC #imm`,
+    # ...), so the inliner and the loop unroller may substitute a constant for
+    # the register. A pointer slot, a switch scrutinee, a branch condition or a
+    # return value is register/DP-typed at codegen, where a constant silently
+    # corrupts output.
+    accepts_imm: bool = False
 
 
 _R, _W = OperandRole.READ, OperandRole.WRITE
@@ -963,6 +968,7 @@ def _is_reg_operand(v, accepts_hr):
 
 def _read_vr(f): return OperandSpec(f, _R, _SCALAR, False)
 def _read_rr(f): return OperandSpec(f, _R, _SCALAR, True)
+def _read_ri(f): return OperandSpec(f, _R, _SCALAR, True, accepts_imm=True)
 def _write_vr(f): return OperandSpec(f, _W, _SCALAR, False)
 def _write_rr(f): return OperandSpec(f, _W, _SCALAR, True)
 
@@ -975,19 +981,19 @@ def _write_rr(f): return OperandSpec(f, _W, _SCALAR, True)
 # treats them as intentional, not forgotten.
 OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     Load:           (_write_rr('dest'), _read_vr('source')),
-    Store:          (_read_rr('source'),),
+    Store:          (_read_ri('source'),),
     IncDecMemory:   (),  # location is a MemoryLocation; X is implicit, as for Load/Store
     LoadIndirect:   (_write_vr('dest'), _read_vr('pointer')),
-    StoreIndirect:  (_read_rr('source'), _read_vr('pointer')),
-    Move:           (_write_rr('dest'), _read_rr('source')),
-    TypeConvert:    (_write_rr('dest'), _read_rr('source')),
-    BankByte:       (_write_rr('dest'), _read_rr('source')),
-    ToBool:         (_write_rr('dest'), _read_rr('source')),
-    Rotate:         (_write_rr('dest'), _read_rr('source')),
-    BinaryOp:       (_write_rr('dest'), _read_rr('left'), _read_rr('right')),
-    UnaryOp:        (_write_rr('dest'), _read_rr('operand')),
-    Compare:        (_read_rr('left'), _read_rr('right')),
-    BitTest:        (_read_rr('value'),),
+    StoreIndirect:  (_read_ri('source'), _read_vr('pointer')),
+    Move:           (_write_rr('dest'), _read_ri('source')),
+    TypeConvert:    (_write_rr('dest'), _read_ri('source')),
+    BankByte:       (_write_rr('dest'), _read_ri('source')),
+    ToBool:         (_write_rr('dest'), _read_ri('source')),
+    Rotate:         (_write_rr('dest'), _read_ri('source')),
+    BinaryOp:       (_write_rr('dest'), _read_ri('left'), _read_ri('right')),
+    UnaryOp:        (_write_rr('dest'), _read_ri('operand')),
+    Compare:        (_read_ri('left'), _read_ri('right')),
+    BitTest:        (_read_ri('value'),),
     CondBranch:     (_read_rr('condition'),),
     JumpTable:      (_read_rr('scrutinee'),),
     LookupTable:    (_write_vr('dest'), _read_rr('scrutinee')),
@@ -1060,29 +1066,6 @@ def map_operands(instr, fn):
         else:  # ARG_LIST
             for arg in getattr(instr, spec.field):
                 arg.value = fn(arg.value)
-
-
-# Operand slots (keyed by (instr_type, field)) where codegen legally accepts an
-# Immediate — it loads/uses the value via `LDA #imm` / `ADC #imm` / etc. An
-# Immediate must NOT be substituted into a pointer slot (LoadIndirect.pointer,
-# StoreIndirect.pointer), a switch scrutinee, a branch condition, or a return
-# value: those are register/DP-typed at codegen and a constant there silently
-# corrupts output. Caller VirtualRegister args are unconstrained (a vreg is
-# legal in every slot) and skip this whitelist. Used by the inliner's
-# parameter substitution and the loop unroller's counter substitution.
-IMMEDIATE_SAFE_SLOTS: Set[Tuple[type, str]] = {
-    (Move, 'source'),
-    (Store, 'source'),
-    (StoreIndirect, 'source'),
-    (BinaryOp, 'left'), (BinaryOp, 'right'),
-    (UnaryOp, 'operand'),
-    (Compare, 'left'), (Compare, 'right'),
-    (TypeConvert, 'source'),
-    (BankByte, 'source'),
-    (ToBool, 'source'),
-    (Rotate, 'source'),
-    (BitTest, 'value'),
-}
 
 
 # Block-id slots of the control-flow instructions: a scalar target or a list

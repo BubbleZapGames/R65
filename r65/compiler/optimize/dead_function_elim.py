@@ -8,9 +8,8 @@ functions are always kept.
 """
 
 from typing import Set, List
-from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, Call, TraitDispatch, Move, FunctionPointer, SymbolByte,
-)
+from r65.compiler.mir.nodes import MIRProgram, MIRFunction
+from r65.compiler.analysis.call_graph import build_call_graph
 
 
 class DeadFunctionEliminator:
@@ -57,25 +56,10 @@ class DeadFunctionEliminator:
         if not roots:
             return 0
 
-        # Mark all trait implementor methods as reachable (called via jump tables)
-        if hasattr(mir_program, 'trait_dispatch_info') and mir_program.trait_dispatch_info:
-            for trait_info in mir_program.trait_dispatch_info.values():
-                for impl_info in trait_info.get('implementors', []):
-                    for mangled_name in impl_info.get('mangled', []):
-                        roots.add(mangled_name)
-
-        # A function whose address is ROM data - a `fn` static - is reached
-        # through it, by code this pass cannot follow.
-        for rom_data in mir_program.rom_data_sections:
-            for byte in rom_data.data:
-                if isinstance(byte, SymbolByte) and byte.label in func_map:
-                    roots.add(byte.label)
-
-        # Build call graph
-        call_graph = self._build_call_graph(mir_program.functions)
-
-        # Find all reachable functions via transitive closure
-        reachable = self._find_reachable(roots, call_graph)
+        # Trait implementors are reached through dispatch tables, and a `fn`
+        # static in ROM through code this pass cannot follow.
+        graph = build_call_graph(mir_program)
+        reachable = graph.reachable_from(roots | graph.dispatch_targets | graph.rom_refs)
 
         # Filter out unreachable functions
         original_count = len(mir_program.functions)
@@ -124,84 +108,3 @@ class DeadFunctionEliminator:
                 entry_points.add(func.name)
 
         return entry_points
-
-    def _build_call_graph(self, functions: List[MIRFunction]) -> dict:
-        """
-        Build a call graph mapping function names to called functions.
-
-        Args:
-            functions: List of MIR functions
-
-        Returns:
-            Dict mapping function name to set of called function names
-        """
-        call_graph = {}
-
-        for func in functions:
-            called_functions = set()
-
-            # Scan all blocks for Call instructions and FunctionPointer references
-            for block in func.blocks.values():
-                for instr in block.instructions:
-                    if isinstance(instr, Call):
-                        # Direct calls have function name as string
-                        if isinstance(instr.function, str):
-                            called_functions.add(instr.function)
-                        # Indirect calls (function field is a VirtualRegister) are
-                        # resolved via the FunctionPointer references picked up below.
-                        # Args may also carry FunctionPointer literals (e.g. as a
-                        # callback being passed to another function); count those
-                        # too.
-                        for arg in getattr(instr, 'args', []):
-                            if isinstance(getattr(arg, 'value', None), FunctionPointer):
-                                called_functions.add(arg.value.function_name)
-                    elif isinstance(instr, TraitDispatch):
-                        # Trait dispatch calls all implementor methods via jump table.
-                        # Mark the dispatch wrapper and all implementors as called.
-                        dispatch_name = f"{instr.trait_name}__{instr.method_name}__dispatch"
-                        called_functions.add(dispatch_name)
-                        for arg in getattr(instr, 'args', []):
-                            if isinstance(getattr(arg, 'value', None), FunctionPointer):
-                                called_functions.add(arg.value.function_name)
-                    elif isinstance(instr, Move):
-                        # Move(dest, source=FunctionPointer(name)) — taking a fn
-                        # address into a vreg/static. The function may later be
-                        # invoked via indirect call; keep it alive.
-                        if isinstance(instr.source, FunctionPointer):
-                            called_functions.add(instr.source.function_name)
-
-            call_graph[func.name] = called_functions
-
-        return call_graph
-
-    def _find_reachable(self, roots: Set[str], call_graph: dict) -> Set[str]:
-        """
-        Find all functions reachable from the given roots.
-
-        Uses breadth-first search to find transitive closure.
-
-        Args:
-            roots: Set of entry point function names
-            call_graph: Dict mapping function name to called functions
-
-        Returns:
-            Set of all reachable function names
-        """
-        reachable = set()
-        worklist = list(roots)
-
-        while worklist:
-            func_name = worklist.pop()
-
-            if func_name in reachable:
-                continue
-
-            reachable.add(func_name)
-
-            # Add all called functions to worklist
-            if func_name in call_graph:
-                for called in call_graph[func_name]:
-                    if called not in reachable:
-                        worklist.append(called)
-
-        return reachable

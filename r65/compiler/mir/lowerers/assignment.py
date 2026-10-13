@@ -15,7 +15,7 @@ from r65.compiler.hir import (
 )
 from r65.compiler.hir.types import MultiReturnTypeInfo
 from r65.compiler.mir.nodes import (
-    VirtualRegister, HardwareRegister, Immediate, Move, Store,
+    VirtualRegister, HardwareRegister, Immediate, Load, Move, Store,
     StoreIndirect, BinaryOp, StatusFlagSet, Push, Pull,
 )
 from r65.compiler.errors import MIRLoweringError
@@ -156,7 +156,7 @@ class AssignmentLowerer:
                     # Direct load from memory to hardware register
                     hw_reg = HardwareRegister(target_reg)
                     mem_loc = self.builder.get_memory_location(symbol)
-                    self.emit(Move(dest=hw_reg, source=mem_loc, type_info=expr.expr_type))
+                    self.emit(Load(dest=hw_reg, source=mem_loc, type_info=expr.expr_type))
                     return hw_reg
 
         # Lower value

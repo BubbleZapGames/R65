@@ -174,8 +174,8 @@ class TestPlanes:
 
     def test_two_planes_tag_first(self):
         parent = statics(build(POOL + "fn main() {}"))["POOL"]
-        assert [(name, offset, stride, child.name)
-                for name, offset, stride, child in parent.soa_planes] == [
+        assert [(p.name, p.aos_offset, p.stride, p.child.name)
+                for p in parent.soa_planes] == [
             ("tag", 0, 1, "POOL__tag"),
             ("data", 1, 2, "POOL__data"),
         ]
@@ -274,23 +274,22 @@ class TestNestedInSoaStruct:
 
     def test_the_enum_contributes_two_planes(self):
         prog = build(self.SOURCE + "fn main() {}")
-        names = [name for name, _off, _stride, _child
-                 in statics(prog)['things'].soa_planes]
+        names = [p.name for p in statics(prog)['things'].soa_planes]
         assert names == ['body', 'shape__tag', 'shape__data']
 
     def test_plane_offsets_stay_ordered_and_disjoint(self):
         """`_soa_plane_for` picks a plane by which range contains the summed
         field offset, so the pair must not sit on top of the field after it."""
         prog = build(self.SOURCE + "fn main() {}")
-        offsets = [off for _n, off, _s, _c in statics(prog)['things'].soa_planes]
+        offsets = [p.aos_offset for p in statics(prog)['things'].soa_planes]
         assert offsets == sorted(offsets)
         assert len(set(offsets)) == len(offsets)
         assert offsets[1] + 1 == offsets[2]        # tag is one byte, payload next
 
     def test_tag_plane_strides_by_one(self):
         prog = build(self.SOURCE + "fn main() {}")
-        planes = {name: (stride, child)
-                  for name, _off, stride, child in statics(prog)['things'].soa_planes}
+        planes = {p.name: (p.stride, p.child)
+                  for p in statics(prog)['things'].soa_planes}
         assert planes['shape__tag'][0] == 1
 
     def test_a_standalone_static_as_well_is_rejected(self):
@@ -552,7 +551,7 @@ class TestSoaPayloadPlanes:
         """The overlays are reached by name only, so they are not in the parent's
         offset-indexed plane list — that would double-count them."""
         parent = statics(build(SOA_POOL + "fn main() {}"))["POOL"]
-        assert [(name, child.name) for name, _o, _s, child in parent.soa_planes] == [
+        assert [(p.name, p.child.name) for p in parent.soa_planes] == [
             ("tag", "POOL__tag"), ("data", "POOL__data")]
 
     def test_region_is_sized_by_the_largest_variant_sum_of_strides(self):
@@ -603,7 +602,7 @@ class TestSoaPayloadPlanes:
         decls = statics(build(SOA_KINDS + "#[soa]\nstruct Enemy { kind: Kind, x: u8 }\n"
                               "#[lowram]\nstatic mut E: [Enemy; 4];\nfn main() {}"))
         assert decls["E__kind__Fireball__phase"].soa_overlay == (decls["E__kind__data"], 4)
-        assert [n for n, *_ in decls["E"].soa_planes] == ["kind__tag", "kind__data", "x"]
+        assert [p.name for p in decls["E"].soa_planes] == ["kind__tag", "kind__data", "x"]
 
     def test_plain_enum_has_no_overlays(self):
         decls = statics(build(POOL + "fn main() {}"))

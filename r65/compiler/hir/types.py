@@ -186,6 +186,11 @@ def strip_newtype(t: TypeInfo) -> TypeInfo:
     return t
 
 
+def discriminant_type(max_value: int) -> BasicTypeInfo:
+    """Width of a discriminant that has to hold *max_value*."""
+    return BasicTypeInfo(name='u8' if max_value <= 255 else 'u16')
+
+
 @dataclass
 class EnumTypeInfo(TypeInfo):
     """Enum type reference."""

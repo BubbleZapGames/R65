@@ -34,7 +34,7 @@ from typing import Callable
 from r65.compiler.mir.nodes import (
     ChainRole, MIRFunction, HardwareRegister, OperandRole, iter_operands,
     Load, LoadIndirect, StoreIndirect,
-    Call, TraitDispatch, VirtualRegister,
+    Call, CallBase, TraitDispatch, VirtualRegister,
     Move, TypeConvert, BinaryOp, UnaryOp, InlineAsm, iter_memory_operands,
 )
 
@@ -76,21 +76,14 @@ def analyze_trait_dispatch_chains(mir_program, call_graph):
 
     Args:
         mir_program: MIRProgram to analyze (mutated in place).
-        call_graph: CallGraph from CallGraphAnalyzer.analyze() with
+        call_graph: CallGraph from build_call_graph() with
             trait_dispatch_info loaded.
     """
     func_map = {f.name: f for f in mir_program.functions}
     # Track recursion via SCCs in the call graph. Functions in any cycle
     # cannot be definitively proven DBR-independent without iteration to
     # fixpoint; we treat them conservatively as NOT independent.
-    from r65.compiler.analysis.call_graph import CallGraphAnalyzer
-    # Build a temporary analyzer just to reuse find_cycles on this graph.
-    cga = CallGraphAnalyzer(mir_program)
-    cga.graph = call_graph
-    cycles = cga.find_cycles()
-    cyclic_funcs: set = set()
-    for cycle in cycles:
-        cyclic_funcs.update(cycle)
+    cyclic_funcs = call_graph.recursive_functions()
 
     for func in mir_program.functions:
         _analyze_function_chains(func, call_graph, func_map, cyclic_funcs)
@@ -541,7 +534,7 @@ def _chain_lookup_def(vreg: VirtualRegister, func: MIRFunction):
                         multi.add(dest.id)
                     def_map[dest.id] = instr
                 # `returns` covers Call/TraitDispatch return vregs.
-                returns = getattr(instr, 'returns', None) or []
+                returns = instr.returns if isinstance(instr, CallBase) else ()
                 for r in returns:
                     if isinstance(r, VirtualRegister):
                         if r.id in def_map and def_map[r.id] is not instr:
@@ -835,7 +828,7 @@ def _instr_writes_y(instr, func):
         if _vreg_targets_y(dest):
             return True
 
-    returns = getattr(instr, 'returns', None) or []
+    returns = instr.returns if isinstance(instr, CallBase) else ()
     for r in returns:
         if isinstance(r, HardwareRegister) and r.name == 'Y':
             return True

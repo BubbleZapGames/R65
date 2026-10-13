@@ -17,6 +17,7 @@ consecutive slots and tracking the full range for interference checking.
 from typing import Dict, Set, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from r65.compiler.mir.nodes import (
+    CallBase,
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
@@ -394,7 +395,7 @@ class StackSlotAllocator:
 
         for block_id, block in self.func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
-                if isinstance(instr, (Call, TraitDispatch)):
+                if isinstance(instr, CallBase):
                     for vreg in local_set:
                         if vreg in spanning:
                             continue
@@ -436,7 +437,7 @@ class StackSlotAllocator:
 
         for block_id, block in self.func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
-                if not isinstance(instr, (Call, TraitDispatch)):
+                if not isinstance(instr, CallBase):
                     continue
 
                 # Sum sizes of locals live at this call

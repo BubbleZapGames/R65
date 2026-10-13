@@ -16,9 +16,10 @@ SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
 """
 
 from r65.compiler.mir.nodes import (
+    CallBase,
     FarPtrStrategy, MIRFunction,
     Load, Store, LoadIndirect, StoreIndirect,
-    Call, TraitDispatch, MemoryLocation, VirtualRegister,
+    MemoryLocation, VirtualRegister,
 )
 
 
@@ -104,7 +105,7 @@ def _count_accesses(func: MIRFunction):
 
     for block in func.blocks.values():
         for instr in block.instructions:
-            if isinstance(instr, (Call, TraitDispatch)):
+            if isinstance(instr, CallBase):
                 n_calls += 1
                 continue
             if isinstance(instr, Load):

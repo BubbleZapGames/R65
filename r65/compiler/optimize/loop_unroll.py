@@ -18,10 +18,11 @@ from copy import deepcopy
 from typing import Dict, List, Optional, Set
 
 from r65.compiler.mir.nodes import (
+    CallBase,
     MIRProgram, MIRFunction, BasicBlock, MIRInstruction, VirtualRegister,
     Immediate, Move, BinaryOp, Compare, CondBranch, Jump, Return,
-    ReturnFromInterrupt, Call, TraitDispatch, InlineAsm, map_block_targets,
-    IMMEDIATE_SAFE_SLOTS, OperandRole, iter_operands, map_operands,
+    ReturnFromInterrupt, InlineAsm, map_block_targets,
+    OperandRole, iter_operands, map_operands,
 )
 from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
 
@@ -92,7 +93,8 @@ class LoopUnroller:
 
         # The counter becomes a constant in each copy, so it may only be read
         # where codegen takes an Immediate.
-        if not _counter_read_slots(func, body_block_ids, counter_vreg) <= IMMEDIATE_SAFE_SLOTS:
+        if not all(spec.accepts_imm for spec in
+                   _counter_read_specs(func, body_block_ids, counter_vreg)):
             return False
 
         # --- Perform the unroll ---
@@ -424,7 +426,7 @@ def _body_is_safe(func: MIRFunction, body_block_ids: List[int],
             if isinstance(instr, InlineAsm):
                 return False
             # Reject calls (side effects, could be expensive)
-            if isinstance(instr, (Call, TraitDispatch)):
+            if isinstance(instr, CallBase):
                 return False
             # Reject CondBranch that exits the loop (break)
             if isinstance(instr, CondBranch):
@@ -484,15 +486,13 @@ def _all_vregs_defined(instr: MIRInstruction) -> List[VirtualRegister]:
             if isinstance(v, VirtualRegister)]
 
 
-def _counter_read_slots(func: MIRFunction, block_ids, counter_vreg: VirtualRegister):
-    """The `(instr_type, field)` slots the counter is read in across the body."""
-    slots = set()
-    for bid in block_ids:
-        for instr in func.blocks[bid].instructions:
-            for spec, v in iter_operands(instr, role=OperandRole.READ):
-                if isinstance(v, VirtualRegister) and v.id == counter_vreg.id:
-                    slots.add((type(instr), spec.field))
-    return slots
+def _counter_read_specs(func: MIRFunction, block_ids, counter_vreg: VirtualRegister):
+    """The operand slots the counter is read in across the body."""
+    return {spec
+            for bid in block_ids
+            for instr in func.blocks[bid].instructions
+            for spec, v in iter_operands(instr, role=OperandRole.READ)
+            if isinstance(v, VirtualRegister) and v.id == counter_vreg.id}
 
 
 def _replace_vreg_with_immediate(instr: MIRInstruction,
@@ -504,7 +504,7 @@ def _replace_vreg_with_immediate(instr: MIRInstruction,
     """
     for spec, v in list(iter_operands(instr, role=OperandRole.READ)):
         if (isinstance(v, VirtualRegister) and v.id == target_vreg.id
-                and (type(instr), spec.field) in IMMEDIATE_SAFE_SLOTS):
+                and spec.accepts_imm):
             setattr(instr, spec.field, replacement)
 
 

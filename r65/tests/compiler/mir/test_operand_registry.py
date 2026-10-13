@@ -25,8 +25,14 @@ def hr(name):
 
 
 def test_registry_covers_every_instruction_subclass():
-    """Every MIRInstruction subclass must be in OPERAND_SPECS (no silent drift)."""
-    subclasses = set(MIRInstruction.__subclasses__())
+    """Every concrete MIRInstruction must be in OPERAND_SPECS (no silent drift).
+
+    A shared base such as CallBase is never instantiated, so only the leaves count.
+    """
+    def leaves(cls):
+        subs = cls.__subclasses__()
+        return set().union(*map(leaves, subs)) if subs else {cls}
+    subclasses = leaves(MIRInstruction)
     keys = set(OPERAND_SPECS)
     missing = {c.__name__ for c in subclasses - keys}
     extra = {c.__name__ for c in keys - subclasses}

@@ -23,11 +23,12 @@ from r65.compiler.mir.nodes import (
     MemoryFill, BlockCopy, BankByte, BitTest, Rotate,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     SetMode, Push, Pull,
-    OPERAND_SPECS, OperandContainer, map_operands, map_block_targets, IMMEDIATE_SAFE_SLOTS, iter_memory_operands,
+    OPERAND_SPECS, OperandContainer, map_operands, map_block_targets, iter_memory_operands,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
 from r65.compiler.analysis.loop_analysis import compute_block_nesting
+from r65.compiler.analysis.call_graph import build_call_graph
 from r65.compiler.optimize.far_to_near import compute_auto_bank_num, effective_bank
 
 
@@ -155,7 +156,6 @@ class InlinabilityChecker:
         self.mir_program = mir_program
         self.implicit_inline = implicit_inline
         self.func_map: Dict[str, MIRFunction] = {f.name: f for f in mir_program.functions}
-        self.call_graph: Dict[str, Set[str]] = {}
         self.call_counts: Dict[str, int] = {}
         self.call_depths: Dict[str, int] = {}  # max loop nesting depth of any call site
         # Cycle-cost cache keyed by function name. should_inline() and the
@@ -167,19 +167,12 @@ class InlinabilityChecker:
         # Where #[bank(auto)] code will land — needed to decide whether a
         # far callee shares its caller's bank.
         self._auto_bank_num = compute_auto_bank_num(mir_program)
-        self._build_call_graph()
         self._compute_call_site_depths()
-        self._find_recursive_functions()
-
-    def _build_call_graph(self):
-        """Build a call graph mapping function names to called functions."""
-        for func in self.mir_program.functions:
-            called = set()
-            for block in func.blocks.values():
-                for instr in block.instructions:
-                    if isinstance(instr, Call) and isinstance(instr.function, str):
-                        called.add(instr.function)
-            self.call_graph[func.name] = called
+        # Only direct calls inline, so only a direct-call cycle can recurse
+        # the inliner.
+        graph = build_call_graph(mir_program)
+        self.call_graph: Dict[str, Set[str]] = graph.calls
+        self.recursive_functions: Set[str] = graph.recursive_functions(direct=True)
 
     def _compute_call_site_depths(self):
         """Count call sites and record the maximum loop nesting depth of each."""
@@ -196,32 +189,6 @@ class InlinabilityChecker:
                             self.call_counts[name] += 1
                             if depth > self.call_depths.get(name, 0):
                                 self.call_depths[name] = depth
-
-    def _find_recursive_functions(self):
-        """Find all functions involved in recursion (direct or mutual)."""
-        self.recursive_functions: Set[str] = set()
-
-        # Check for direct recursion
-        for func_name, called in self.call_graph.items():
-            if func_name in called:
-                self.recursive_functions.add(func_name)
-
-        # Check for mutual recursion using transitive closure
-        for start_func in self.call_graph:
-            visited = set()
-            stack = list(self.call_graph.get(start_func, set()))
-
-            while stack:
-                current = stack.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
-
-                if current == start_func:
-                    self.recursive_functions.add(start_func)
-                    break
-
-                stack.extend(self.call_graph.get(current, set()))
 
     def _estimate_cycle_cost(self, func: MIRFunction) -> int:
         """Estimate the 65816 cycle cost of a function body when inlined.
@@ -1463,21 +1430,17 @@ class FunctionInliner:
                         names.add(v.name)
         return names
 
-    def _param_vreg_use_slots(self, callee: MIRFunction, vreg_id: int) -> Set[Tuple[type, str]]:
-        """Return the `(instr_type, field)` READ slots in which the given callee
-        vreg is used. An Immediate may be substituted for the vreg only if every
-        slot is in `IMMEDIATE_SAFE_SLOTS`."""
+    def _param_accepts_immediate(self, callee: MIRFunction, vreg_id: int) -> bool:
+        """True if every read of the given callee vreg is a slot that takes an
+        Immediate, so a constant argument may be substituted for it."""
         from r65.compiler.mir.nodes import iter_operands, OperandRole
-        slots: Set[Tuple[type, str]] = set()
-        for block in callee.blocks.values():
-            for instr in block.instructions:
-                # No accepts_hr filter: the vreg-only slots (e.g. pointer,
-                # scrutinee) are exactly the ones an Immediate must NOT enter,
-                # so they must be visible to the whitelist check.
-                for spec, v in iter_operands(instr, role=OperandRole.READ):
-                    if isinstance(v, VirtualRegister) and v.id == vreg_id:
-                        slots.add((type(instr), spec.field))
-        return slots
+        # No accepts_hr filter: the vreg-only slots (e.g. pointer, scrutinee)
+        # are exactly the ones an Immediate must NOT enter.
+        return all(spec.accepts_imm
+                   for block in callee.blocks.values()
+                   for instr in block.instructions
+                   for spec, v in iter_operands(instr, role=OperandRole.READ)
+                   if isinstance(v, VirtualRegister) and v.id == vreg_id)
 
     def _compute_param_substitution(self, call: Call, callee: MIRFunction):
         """Decide which parameters can have their bridge Move eliminated by
@@ -1546,8 +1509,7 @@ class FunctionInliner:
 
             # Condition 2 (immediates only): all use slots must accept an immediate.
             if is_imm:
-                slots = self._param_vreg_use_slots(callee, cv.id)
-                if any(slot not in IMMEDIATE_SAFE_SLOTS for slot in slots):
+                if not self._param_accepts_immediate(callee, cv.id):
                     continue
 
             substitution_map[cv.id] = a

@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, Call, TraitDispatch, VirtualRegister,
 )
-from r65.compiler.analysis.call_graph import CallGraph, CallGraphAnalyzer
+from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 from r65.compiler.errors import CodegenError
 
 
@@ -121,10 +121,7 @@ class StackUsageAnalyzer:
         self.func_map: Dict[str, MIRFunction] = {
             f.name: f for f in mir_program.functions
         }
-        if call_graph is None:
-            analyzer = CallGraphAnalyzer(mir_program)
-            call_graph = analyzer.analyze()
-        self.cg = call_graph
+        self.cg = call_graph or build_call_graph(mir_program)
 
         # Memoized per-function stack use.
         self._memo: Dict[str, int] = {}
@@ -255,17 +252,17 @@ class StackUsageAnalyzer:
         for block in func.blocks.values():
             for instr in block.instructions:
                 if isinstance(instr, Call):
-                    ra = 3 if getattr(instr, 'is_far', False) else 2
+                    ra = 3 if instr.is_far else 2
                     if isinstance(instr.function, str):
                         yield (instr.function, ra)
                     else:
                         # Indirect: widen to address-taken set. Conservative
-                        # but matches what CallGraphAnalyzer records.
+                        # but matches what the call graph records.
                         self._has_indirect_calls = True
                         for target in self.cg.address_taken:
                             yield (target, ra)
                 elif isinstance(instr, TraitDispatch):
-                    ra = 3 if getattr(instr, 'is_far', False) else 2
+                    ra = 3 if instr.is_far else 2
                     impls = self.cg.resolve_trait_method(
                         instr.trait_name, instr.method_name
                     )

@@ -9,6 +9,7 @@ enabling optimizations like stack slot reuse and better register allocation.
 from typing import Set, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import (
+    CallBase,
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
     Load, Move, BinaryOp, Call, Return, TraitDispatch,
@@ -601,7 +602,7 @@ class InstructionLivenessAnalyzer:
                     vreg_defined = True
 
                 # Check if this is a Call/TraitDispatch and vreg is live after it
-                if isinstance(instr, (Call, TraitDispatch)) and vreg_defined:
+                if isinstance(instr, CallBase) and vreg_defined:
                     # Check if vreg is live after this call
                     if self.is_live_after(vreg, block_id, instr_idx):
                         calls.append(instr)
@@ -812,7 +813,7 @@ class ClobberRegionAnalyzer:
         """
         from r65.compiler.codegen.constants import get_return_registers
 
-        callee_return_type = getattr(instr, 'callee_return_type', None)
+        callee_return_type = instr.callee_return_type
         if callee_return_type is None:
             return False
 

@@ -2167,7 +2167,7 @@ class CallInstructionSelector(BaseSelector):
         from r65.compiler.codegen.constants import get_return_registers
 
         # Try to get callee's return type and mode from the Call instruction
-        callee_return_type = getattr(instr, 'callee_return_type', None)
+        callee_return_type = instr.callee_return_type
         callee_entry_mode = instr.callee_entry_m_mode if hasattr(instr, 'callee_entry_m_mode') else None
 
         if callee_return_type is not None:
@@ -2182,7 +2182,7 @@ class CallInstructionSelector(BaseSelector):
         source of truth when present.
         """
         from r65.compiler.hir.types import MultiReturnTypeInfo
-        callee_return_type = getattr(instr, 'callee_return_type', None)
+        callee_return_type = instr.callee_return_type
         if callee_return_type is not None:
             if isinstance(callee_return_type, MultiReturnTypeInfo):
                 return len(callee_return_type.element_types)
@@ -2191,10 +2191,10 @@ class CallInstructionSelector(BaseSelector):
 
     def _call_returns_in_a(self, instr) -> bool:
         """Check if a call returns a value in A (i.e., is not void)."""
-        callee_return_type = getattr(instr, 'callee_return_type', None)
+        callee_return_type = instr.callee_return_type
         if callee_return_type is None:
             # No return type info — conservatively assume it returns in A
-            return len(getattr(instr, 'returns', [])) > 0
+            return len(instr.returns) > 0
         from r65.compiler.hir.types import BasicTypeInfo
         if callee_return_type == BasicTypeInfo('void'):
             return False
@@ -2207,17 +2207,7 @@ class CallInstructionSelector(BaseSelector):
         a return value. When True, cleanup uses PLY instead of PLX.
         """
         return_regs = self._get_callee_return_registers(instr)
-        callee_return_type = getattr(instr, 'callee_return_type', None)
-        if callee_return_type is not None:
-            from r65.compiler.hir.types import MultiReturnTypeInfo
-            if isinstance(callee_return_type, MultiReturnTypeInfo):
-                num_returns = len(callee_return_type.element_types)
-            else:
-                num_returns = 1
-        else:
-            num_returns = len(getattr(instr, 'returns', []))
-        active_regs = return_regs[:num_returns]
-        return 'X' in active_regs
+        return 'X' in return_regs[:self._call_num_returns(instr)]
 
     def _emit_return_value_collection(self, instr: Call):
         """
@@ -2269,7 +2259,7 @@ class CallInstructionSelector(BaseSelector):
 
         Falls back to [1] * len(returns) when the type info isn't available.
         """
-        callee_return_type = getattr(instr, 'callee_return_type', None)
+        callee_return_type = instr.callee_return_type
         if callee_return_type is None:
             return [1] * len(instr.returns)
         from r65.compiler.hir.types import MultiReturnTypeInfo

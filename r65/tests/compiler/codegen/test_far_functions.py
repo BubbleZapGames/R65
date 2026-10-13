@@ -198,6 +198,27 @@ def test_far_function_databank_inline_skipped_when_no_rom_access():
     print("✓ databank=inline skip optimization test passed")
 
 
+def test_far_function_databank_inline_kept_for_register_read_of_hw(capsys):
+    """`A = HWREG` reads absolute through DBR, so DBR setup stays."""
+    from r65.compiler.main import compile_source
+    compile_source("""
+        #[hw(0x4212)]
+        static mut HVBJOY: u8;
+        #[zeropage]
+        static mut OUT: u8;
+
+        #[bank(1)]
+        #[mode(databank=inline)]
+        far fn poll() { A = HVBJOY; OUT = A; }
+
+        #[bank(0)]
+        #[entry]
+        fn main() -> ! { poll(); loop {} }
+    """, filename='<test>')
+    poll = capsys.readouterr().out.split('poll:')[1].split('RTL')[0]
+    assert 'PLB' in poll
+
+
 def test_far_function_databank_inline_kept_with_near_call():
     """Test that databank=inline keeps DBR setup when function makes near calls."""
 

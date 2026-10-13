@@ -113,6 +113,20 @@ class TestOffsetOf:
         assert isinstance(const_decl.value, HIRIntegerLiteral)
         assert const_decl.value.value == 2
 
+    @pytest.mark.parametrize("last_variant, width", [(3, 1), (300, 2)])
+    def test_enum_sized_by_its_discriminant(self, last_variant, width):
+        """size_of and offset_of see an enum's width, 1 byte or 2."""
+        source = f"""
+        enum Kind {{ Lo = 0, Hi = {last_variant} }}
+        struct Rec {{ kind: Kind, tail: u8 }}
+        const SZ_KIND: u8 = size_of(Kind);
+        const SZ_REC: u8 = size_of(Rec);
+        const OFF_TAIL: u8 = offset_of(Rec, tail);
+        """
+        consts = {d.name: d.value.value for d in build_hir(source).declarations
+                  if isinstance(d, HIRConstDecl)}
+        assert consts == {'SZ_KIND': width, 'SZ_REC': width + 1, 'OFF_TAIL': width}
+
     def test_error_wrong_arg_count(self):
         """offset_of with wrong number of args should error."""
         source = """

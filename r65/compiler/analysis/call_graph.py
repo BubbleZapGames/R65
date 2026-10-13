@@ -1,14 +1,18 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-Call graph analysis for detecting recursion and function call patterns.
+The program's call graph, built once from MIR for every pass that asks who
+calls whom.
 
-Builds a directed graph of function calls and detects cycles (recursion)
-to check for unsafe use of zero-page or register parameters.
+It also detects recursion, to reject zero-page or register parameters on a
+function that can re-enter itself.
 """
 
-from typing import Dict, List, Set, Optional, Tuple
+from typing import Dict, Iterable, List, Set, Tuple
 from dataclasses import dataclass, field
-from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch, Move
+from r65.compiler.mir.nodes import (
+    CallBase,
+    MIRProgram, Call, TraitDispatch, Move, FunctionPointer, SymbolByte,
+)
 from r65.compiler.errors import get_diagnostics
 
 
@@ -19,157 +23,78 @@ class RecursionError(Exception):
 
 @dataclass
 class CallGraph:
-    """
-    Directed graph of function calls.
+    """Who calls whom, and whose address is taken.
 
-    Nodes are function names, edges represent calls.
+    `calls` holds the direct calls. `edges` adds, for each TraitDispatch, an
+    edge to every implementor it may reach. `refs` holds the functions each
+    function takes the address of, through a `FunctionPointer` moved or passed
+    as an argument; `rom_refs` those named by a `fn` static in ROM.
+    `address_taken` is every function reachable by a pointer: all of these.
     """
-    # Adjacency list: function_name -> set of called functions
+    calls: Dict[str, Set[str]] = field(default_factory=dict)
     edges: Dict[str, Set[str]] = field(default_factory=dict)
-
-    # Functions that have their address taken (potential indirect calls)
+    refs: Dict[str, Set[str]] = field(default_factory=dict)
+    rom_refs: Set[str] = field(default_factory=set)
     address_taken: Set[str] = field(default_factory=set)
-
-    # Functions that make indirect calls (via function pointers)
-    indirect_callers: Set[str] = field(default_factory=set)
-
-    # Trait method -> set of implementor mangled function names.
-    # Keyed by (trait_name, method_name); valued by the set of implementor
-    # mangled function names that may be invoked by a TraitDispatch on
-    # that trait method. Populated from MIRProgram.trait_dispatch_info.
+    # (trait_name, method_name) -> the implementors a dispatch may invoke.
     trait_impls: Dict[Tuple[str, str], Set[str]] = field(default_factory=dict)
 
-    def add_edge(self, caller: str, callee: str):
-        """Add a call edge from caller to callee."""
-        if caller not in self.edges:
-            self.edges[caller] = set()
-        self.edges[caller].add(callee)
-
-    def add_address_taken(self, func_name: str):
-        """Mark that a function's address is taken."""
-        self.address_taken.add(func_name)
-
     def get_callees(self, func_name: str) -> Set[str]:
-        """Get all functions called by the given function."""
+        """Every function `func_name` calls, directly or by trait dispatch."""
         return self.edges.get(func_name, set())
 
-    def get_all_functions(self) -> Set[str]:
-        """Get all functions in the graph."""
-        functions = set(self.edges.keys())
-        for callees in self.edges.values():
-            functions.update(callees)
-        return functions
+    def callers_of(self, func_name: str, direct: bool = False) -> Set[str]:
+        """The functions that call `func_name`; only direct calls if `direct`."""
+        graph = self.calls if direct else self.edges
+        return {caller for caller, callees in graph.items() if func_name in callees}
+
+    def transitive_callers(self, func_name: str) -> Set[str]:
+        """Every function from which a chain of calls reaches `func_name`."""
+        return self._closure(func_name, self.callers_of)
+
+    def transitive_callees(self, func_name: str) -> Set[str]:
+        """Every function a chain of calls from `func_name` reaches."""
+        return self._closure(func_name, self.get_callees)
+
+    @staticmethod
+    def _closure(start: str, step) -> Set[str]:
+        found: Set[str] = set()
+        frontier = [start]
+        while frontier:
+            for name in step(frontier.pop()):
+                if name not in found:
+                    found.add(name)
+                    frontier.append(name)
+        return found
+
+    def reachable_from(self, roots: Iterable[str]) -> Set[str]:
+        """Every function `roots` can reach by a call or a taken address."""
+        reachable: Set[str] = set()
+        worklist = list(roots)
+        while worklist:
+            name = worklist.pop()
+            if name in reachable:
+                continue
+            reachable.add(name)
+            worklist.extend(self.edges.get(name, ()))
+            worklist.extend(self.refs.get(name, ()))
+        return reachable
+
+    @property
+    def dispatch_targets(self) -> Set[str]:
+        """Every trait implementor, which a dispatch table reaches with no `Call`."""
+        return set().union(*self.trait_impls.values())
 
     def resolve_trait_method(self, trait_name: str, method_name: str) -> Set[str]:
-        """Return the set of implementor mangled function names for a trait
-        method, or an empty set if the trait/method is unknown.
-
-        Used by passes that need to reason conservatively about all functions
-        that a TraitDispatch may invoke at runtime.
-        """
+        """The implementors a dispatch on `trait_name::method_name` may invoke."""
         return self.trait_impls.get((trait_name, method_name), set())
 
-
-class CallGraphAnalyzer:
-    """
-    Analyzes function calls to build a call graph.
-    """
-
-    def __init__(self, mir_program: MIRProgram,
-                 trait_dispatch_info: Optional[dict] = None):
+    def find_cycles(self, direct: bool = False) -> List[List[str]]:
+        """Each recursion cycle (strongly connected component), by Tarjan's
+        algorithm. A one-function cycle is direct recursion. Trait dispatch
+        counts as a call unless `direct`.
         """
-        Initialize analyzer.
-
-        Args:
-            mir_program: MIR program to analyze
-            trait_dispatch_info: Trait dispatch info dict (typically
-                ``mir_program.trait_dispatch_info``) used to resolve
-                ``TraitDispatch`` instructions to their concrete impl set. If
-                None, falls back to ``mir_program.trait_dispatch_info``.
-        """
-        self.program = mir_program
-        self.graph = CallGraph()
-        if trait_dispatch_info is None:
-            trait_dispatch_info = getattr(mir_program, 'trait_dispatch_info', None)
-        self.trait_dispatch_info = trait_dispatch_info
-
-    def analyze(self) -> CallGraph:
-        """
-        Build call graph from MIR program.
-
-        Returns:
-            CallGraph with all function call relationships
-        """
-        # Build function name to function mapping
-        func_map = {func.name: func for func in self.program.functions}
-
-        # Populate trait_impls map from trait_dispatch_info before scanning
-        # function bodies — _analyze_function needs it to add caller->impl edges.
-        self._populate_trait_impls()
-
-        # Analyze each function
-        for func in self.program.functions:
-            self._analyze_function(func)
-
-        return self.graph
-
-    def _populate_trait_impls(self):
-        """Build CallGraph.trait_impls from MIRProgram.trait_dispatch_info."""
-        info = self.trait_dispatch_info
-        if not info:
-            return
-        for trait_name, trait_info in info.items():
-            method_names = trait_info.get('methods', [])
-            implementors = trait_info.get('implementors', [])
-            for method_idx, method_name in enumerate(method_names):
-                impls: Set[str] = set()
-                for impl in implementors:
-                    mangled = impl.get('mangled', [])
-                    if method_idx < len(mangled):
-                        impls.add(mangled[method_idx])
-                if impls:
-                    self.graph.trait_impls[(trait_name, method_name)] = impls
-
-    def _analyze_function(self, func: MIRFunction):
-        """Analyze a single function to find calls and address-taken functions."""
-        from r65.compiler.mir.nodes import FunctionPointer
-        # Scan all blocks for Call instructions and function address references
-        for block in func.blocks.values():
-            for instr in block.instructions:
-                if isinstance(instr, Call):
-                    # Only track direct calls (function name is a string)
-                    # Indirect calls (function pointers) are handled separately
-                    if isinstance(instr.function, str):
-                        self.graph.add_edge(func.name, instr.function)
-                    else:
-                        # Indirect call via function pointer - track caller for warnings
-                        # The caller might be calling any function whose address is taken
-                        self.graph.indirect_callers.add(func.name)
-                elif isinstance(instr, TraitDispatch):
-                    # Trait dispatch is an indirect call — track as indirect caller
-                    self.graph.indirect_callers.add(func.name)
-                    # Also resolve to impl set: add a caller->impl edge for
-                    # every implementor of this trait method, so downstream
-                    # passes can reason about reachable code.
-                    impls = self.graph.resolve_trait_method(
-                        instr.trait_name, instr.method_name
-                    )
-                    for impl_name in impls:
-                        self.graph.add_edge(func.name, impl_name)
-                # Detect function address references (FN_PTR = some_func)
-                if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
-                    self.graph.add_address_taken(instr.source.function_name)
-
-    def find_cycles(self) -> List[List[str]]:
-        """
-        Find all cycles (strongly connected components) in the call graph.
-
-        Uses Tarjan's algorithm for finding SCCs.
-
-        Returns:
-            List of cycles, where each cycle is a list of function names.
-            Single-node cycles indicate direct recursion.
-        """
+        graph = self.calls if direct else self.edges
         index_counter = [0]
         stack = []
         lowlinks = {}
@@ -178,24 +103,19 @@ class CallGraphAnalyzer:
         cycles = []
 
         def strongconnect(node):
-            # Set the depth index for this node to the smallest unused index
             index[node] = index_counter[0]
             lowlinks[node] = index_counter[0]
             index_counter[0] += 1
             stack.append(node)
             on_stack.add(node)
 
-            # Consider successors of node
-            for successor in self.graph.get_callees(node):
+            for successor in graph.get(node, ()):
                 if successor not in index:
-                    # Successor has not yet been visited; recurse on it
                     strongconnect(successor)
                     lowlinks[node] = min(lowlinks[node], lowlinks[successor])
                 elif successor in on_stack:
-                    # Successor is in stack and hence in the current SCC
                     lowlinks[node] = min(lowlinks[node], index[successor])
 
-            # If node is a root node, pop the stack and create an SCC
             if lowlinks[node] == index[node]:
                 component = []
                 while True:
@@ -204,20 +124,56 @@ class CallGraphAnalyzer:
                     component.append(successor)
                     if successor == node:
                         break
-
-                # Only add if it's actually a cycle (size > 1 or self-loop)
-                if len(component) > 1:
-                    cycles.append(component)
-                elif node in self.graph.get_callees(node):
-                    # Self-loop (direct recursion)
+                if len(component) > 1 or node in graph.get(node, ()):
                     cycles.append(component)
 
-        # Run algorithm on all nodes
-        for node in self.graph.get_all_functions():
+        nodes = set(graph).union(*graph.values())
+        for node in nodes:
             if node not in index:
                 strongconnect(node)
-
         return cycles
+
+    def recursive_functions(self, direct: bool = False) -> Set[str]:
+        """Every function on a recursion cycle."""
+        return {name for cycle in self.find_cycles(direct) for name in cycle}
+
+
+def build_call_graph(program: MIRProgram) -> CallGraph:
+    """Build the call graph of every function in `program`."""
+    graph = CallGraph()
+    for trait_name, trait_info in (program.trait_dispatch_info or {}).items():
+        implementors = trait_info.get('implementors', [])
+        for method_idx, method_name in enumerate(trait_info.get('methods', [])):
+            impls = {impl['mangled'][method_idx] for impl in implementors
+                     if method_idx < len(impl.get('mangled', []))}
+            if impls:
+                graph.trait_impls[(trait_name, method_name)] = impls
+
+    for func in program.functions:
+        calls = graph.calls.setdefault(func.name, set())
+        edges = graph.edges.setdefault(func.name, set())
+        refs = graph.refs.setdefault(func.name, set())
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, Call) and isinstance(instr.function, str):
+                    calls.add(instr.function)
+                    edges.add(instr.function)
+                elif isinstance(instr, TraitDispatch):
+                    edges |= graph.resolve_trait_method(instr.trait_name, instr.method_name)
+                if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
+                    refs.add(instr.source.function_name)
+                elif isinstance(instr, CallBase):
+                    refs.update(arg.value.function_name for arg in instr.args
+                                if isinstance(arg.value, FunctionPointer))
+        graph.address_taken |= refs
+
+    names = set(graph.calls)
+    for rom_data in program.rom_data_sections:
+        for byte in rom_data.data:
+            if isinstance(byte, SymbolByte) and byte.label in names:
+                graph.rom_refs.add(byte.label)
+    graph.address_taken |= graph.rom_refs
+    return graph
 
 
 class RecursionChecker:
@@ -242,15 +198,8 @@ class RecursionChecker:
         Raises:
             RecursionError: If unsafe recursion is detected
         """
-        # Build call graph (resolves TraitDispatch to impl set)
-        analyzer = CallGraphAnalyzer(
-            self.program,
-            trait_dispatch_info=getattr(self.program, 'trait_dispatch_info', None),
-        )
-        graph = analyzer.analyze()
-
-        # Find cycles
-        cycles = analyzer.find_cycles()
+        graph = build_call_graph(self.program)
+        cycles = graph.find_cycles()
 
         # Mark recursive functions on MIRFunction nodes
         for cycle in cycles:

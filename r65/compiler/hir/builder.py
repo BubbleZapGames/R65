@@ -1594,7 +1594,7 @@ class HIRBuilder:
                         source_loc=decl.initializer.source_loc,
                     )
                 children[field_decl.name] = child
-                planes.append((field_decl.name, aos_offset, stride, child))
+                planes.append(hir.SoaPlane(field_decl.name, aos_offset, child))
                 planes_added.append(child)
                 if running is not None:
                     running += count * stride
@@ -2154,11 +2154,6 @@ class HIRBuilder:
             yield variant, current
             current += 1
 
-    @staticmethod
-    def _discriminant_type(max_value: int) -> BasicTypeInfo:
-        """Width of a discriminant that has to hold *max_value*."""
-        return BasicTypeInfo(name='u8' if max_value <= 255 else 'u16')
-
     def _build_enum(self, enum: ast.EnumDecl) -> hir.HIREnumDecl:
         """Build HIR enum declaration from AST."""
         # Build variants with resolved values
@@ -2181,7 +2176,7 @@ class HIRBuilder:
 
             max_value = max(max_value, value)
 
-        underlying_type = self._discriminant_type(max_value)
+        underlying_type = discriminant_type(max_value)
 
         # Get enum symbol
         enum_symbol = self.symbol_table.lookup(enum.name)
@@ -2484,7 +2479,7 @@ class HIRBuilder:
         # this from the built enum anyway; deriving it the one way keeps the two
         # from ever disagreeing in between.
         ast_enum = self.symbol_table.lookup(enum_name).definition
-        tag_elem = self._discriminant_type(len(ast_enum.variants) - 1)
+        tag_elem = discriminant_type(len(ast_enum.variants) - 1)
 
         for suffix, element_type in (
             ('tag', tag_elem),

@@ -11,6 +11,7 @@ This replaces scratch_params.py for FixedStack mode.
 
 from typing import Dict, Set, List, Tuple
 from r65.compiler.mir.nodes import (
+    CallBase,
     MIRProgram, MIRFunction, Call, ArgumentMechanism,
     Move, VirtualRegister, HardwareRegister, TraitDispatch,
     Load, Store, MemoryLocation,
@@ -19,9 +20,10 @@ from r65.compiler.codegen.register_alloc import ScratchRegisterPool
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.param_utils import (
-    find_address_taken_functions, find_composite_scratch, find_trait_impl_groups,
+    find_composite_scratch, find_trait_impl_groups,
     param_bytes, clear_far_ptr_flag_if_all_promoted,
 )
+from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 from r65.compiler.hir.types import PointerTypeInfo
 
 
@@ -39,11 +41,13 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         mir_program: MIR program to analyze (mutated in place)
         scratch_pool: Pool of available scratch registers
     """
+    cg = build_call_graph(mir_program)
+
     # Step 0: Reject recursive functions — DP scratch params are non-reentrant
-    _reject_recursive_functions(mir_program)
+    _reject_recursive_functions(mir_program, cg)
 
     # Step 1: Find functions whose address is taken
-    address_taken = find_address_taken_functions(mir_program)
+    address_taken = cg.address_taken
 
     # Step 1b: Coordinate trait method scratch params.
     # All impls of the same trait method share the same scratch addresses.
@@ -90,39 +94,12 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         for name in impl_names:
             all_promotions[name] = promos
 
-    # Build the call graph so we can constrain scratch param promotion: a
+    # The call graph constrains scratch param promotion: a
     # callee's scratch params must not collide with any caller's scratch params
     # on the same call chain (the callee's prologue would overwrite the
     # caller's param). We process functions in topological order with callers
     # first; when promoting G we exclude scratches used by any function that
     # transitively calls G.
-    from r65.compiler.analysis.call_graph import CallGraphAnalyzer
-    cg = CallGraphAnalyzer(
-        mir_program,
-        trait_dispatch_info=getattr(mir_program, 'trait_dispatch_info', None),
-    ).analyze()
-
-    def _transitive_callers(target: str) -> Set[str]:
-        """Functions that can transitively reach `target` via the call graph."""
-        callers: Set[str] = set()
-        # Reverse-DFS from target.
-        stack = [target]
-        seen = {target}
-        # Build reverse adjacency on demand.
-        for caller, callees in cg.edges.items():
-            if target in callees:
-                callers.add(caller)
-        # Iterative expansion: walk back through callers of callers.
-        frontier = list(callers)
-        seen |= callers
-        while frontier:
-            cur = frontier.pop()
-            for caller, callees in cg.edges.items():
-                if cur in callees and caller not in seen:
-                    seen.add(caller)
-                    callers.add(caller)
-                    frontier.append(caller)
-        return callers
 
     # Per-function record of chosen scratch bytes.
     func_scratch_bytes: Dict[str, Set[int]] = {}
@@ -167,18 +144,8 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         # function (transitive callees) — either direction would let a callee
         # prologue overwrite a still-live caller param.
         reserved = set()
-        for related in _transitive_callers(func.name):
+        for related in cg.transitive_callers(func.name) | cg.transitive_callees(func.name):
             reserved |= func_scratch_bytes.get(related, set())
-        # Approximate callee reservation: walk callees we've already promoted.
-        stack_to_visit = list(cg.get_callees(func.name))
-        seen_callees: Set[str] = set()
-        while stack_to_visit:
-            cur = stack_to_visit.pop()
-            if cur in seen_callees:
-                continue
-            seen_callees.add(cur)
-            reserved |= func_scratch_bytes.get(cur, set())
-            stack_to_visit.extend(cg.get_callees(cur))
 
         promotions = _promote_function_params(
             func, scratch_pool,
@@ -279,7 +246,7 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         print(f"FixedStack parameter promotion: {total} parameter(s) promoted ({', '.join(parts)})")
 
 
-def _reject_recursive_functions(mir_program: MIRProgram):
+def _reject_recursive_functions(mir_program: MIRProgram, cg: CallGraph):
     """Detect recursive functions and raise an error.
 
     FixedStack ABI promotes parameters to DP scratch registers which are
@@ -289,14 +256,7 @@ def _reject_recursive_functions(mir_program: MIRProgram):
     Detects both direct recursion (A calls A) and mutual recursion
     (A calls B, B calls A).
     """
-    from r65.compiler.analysis.call_graph import CallGraphAnalyzer
-
-    analyzer = CallGraphAnalyzer(
-        mir_program,
-        trait_dispatch_info=getattr(mir_program, 'trait_dispatch_info', None),
-    )
-    analyzer.analyze()
-    cycles = analyzer.find_cycles()
+    cycles = cg.find_cycles()
 
     if not cycles:
         return
@@ -581,7 +541,7 @@ def _far_self_needs_save(func: MIRFunction) -> bool:
 
     for block in func.blocks.values():
         for instr in block.instructions:
-            if isinstance(instr, (Call, TraitDispatch)):
+            if isinstance(instr, CallBase):
                 return True
             if isinstance(instr, Load):
                 src = getattr(instr, 'source', None)

@@ -7,7 +7,7 @@ and desugaring, but before full type checking.
 """
 
 from dataclasses import dataclass, field, fields as dataclass_fields
-from typing import Optional, List, Union, Any
+from typing import Optional, List, NamedTuple, Union, Any
 from r65.compiler.hir.errors import *
 
 
@@ -180,6 +180,21 @@ class HIRFunctionDecl(HIRDeclaration):
     exit_m_mode: Optional[Any] = None   # Will be ModeState (M8 or M16)
 
 
+class SoaPlane(NamedTuple):
+    """One plane of an `#[soa]` static: a field's array, and where it came from.
+
+    `aos_offset` is the field's offset in the packed layout, the key MIR
+    inverts to find the owning plane of a folded field chain.
+    """
+    name: str
+    aos_offset: int
+    child: 'HIRStaticDecl'
+
+    @property
+    def stride(self) -> int:
+        return self.child.soa_stride
+
+
 @dataclass
 class HIRStaticDecl(HIRDeclaration):
     """Static variable declaration."""
@@ -198,10 +213,8 @@ class HIRStaticDecl(HIRDeclaration):
     # True for the per-field arrays SoA expansion synthesizes. They have no
     # source location the user would recognise, so lint rules skip them.
     is_synthetic: bool = False
-    # Parent only: [(field_name, aos_offset, stride, child_decl)] in declaration
-    # order. `aos_offset` is the field's offset in the packed layout, which is
-    # the key MIR inverts to find the owning plane of a folded field chain.
-    soa_planes: Optional[list] = None
+    # Parent only: its planes, in declaration order.
+    soa_planes: Optional[List[SoaPlane]] = None
     # Child only: bytes per element in this plane. Normally the field's size,
     # rounded up when that costs at most one byte (3 -> 4, 7 -> 8) so the index
     # scales by a shift instead of a shift-and-add.

@@ -7,7 +7,7 @@ Removes unreachable code and dead assignments within functions.
 
 from typing import Set
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, MIRInstruction, VirtualRegister, MemoryLocation,
+    MIRProgram, MIRFunction, MIRInstruction, VirtualRegister,
     Move, Load, BinaryOp, UnaryOp, TypeConvert, ToBool, LoadIndirect, Rotate,
     OperandRole, iter_operands,
 )
@@ -28,9 +28,7 @@ def _reads_volatile(instr: MIRInstruction) -> bool:
     """True for a read of a #[hw] location. The read is the side effect —
     $2137 latches the H/V counters, $4211 acknowledges the timer IRQ — so
     it stays even when nothing uses the value."""
-    source = getattr(instr, 'source', None)
-    return (type(instr) in (Load, Move) and isinstance(source, MemoryLocation)
-            and source.is_volatile)
+    return type(instr) is Load and instr.source.is_volatile
 
 
 def _get_read_vreg_ids(instr: MIRInstruction) -> Set[int]:

@@ -14,7 +14,7 @@ Warning codes:
 
 from typing import Dict, List, Optional, Set, Tuple
 from r65.compiler.mir.nodes import MIRProgram, MIRFunction
-from r65.compiler.analysis.call_graph import CallGraphAnalyzer, CallGraph
+from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 
 
 # Bytes the 65816 hardware pushes on interrupt entry (native mode):
@@ -62,15 +62,10 @@ class StackDepthAnalyzer:
         """
         self.func_map = {f.name: f for f in self.program.functions}
 
-        # Build call graph (resolves TraitDispatch to impl set)
-        cga = CallGraphAnalyzer(
-            self.program,
-            trait_dispatch_info=getattr(self.program, 'trait_dispatch_info', None),
-        )
-        self.graph = cga.analyze()
+        self.graph = build_call_graph(self.program)
 
         # Detect and warn about recursive cycles (W004)
-        cycles = cga.find_cycles()
+        cycles = self.graph.find_cycles()
         cycle_funcs: Set[str] = set()
         for cycle in cycles:
             cycle_funcs.update(cycle)

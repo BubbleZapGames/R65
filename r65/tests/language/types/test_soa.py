@@ -150,8 +150,8 @@ class TestSoaLayout:
             #[lowram] static mut POOL: [Enemy; 4];
         """)
         parent = next(d for d in program.declarations if d.name == 'POOL')
-        assert [name for name, _, _, _ in parent.soa_planes] == ['kind', 'hp']
-        assert [offset for _, offset, _, _ in parent.soa_planes] == [0, 1]
+        assert [p.name for p in parent.soa_planes] == ['kind', 'hp']
+        assert [p.aos_offset for p in parent.soa_planes] == [0, 1]
 
     def test_explicit_addresses_are_consecutive(self):
         planes = self._planes("""
