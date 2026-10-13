@@ -400,6 +400,9 @@ class InstructionLivenessAnalyzer:
         # Cache for calls each vreg is live across
         self._live_across_calls_cache: Dict[int, List[Call]] = {}
 
+        # Lazily built: vreg -> blocks that define it
+        self._def_blocks: Optional[Dict[VirtualRegister, Set[int]]] = None
+
         # Build instruction position index
         self._instruction_positions: Dict[id, Tuple[int, int]] = {}
         self._build_instruction_index()
@@ -579,12 +582,13 @@ class InstructionLivenessAnalyzer:
 
         # Also check blocks where vreg is defined (it may be live within the
         # block even if not in live_in/live_out)
-        for block_id, block in self.func.blocks.items():
-            for instr in block.instructions:
-                defs = self.block_analyzer._get_defs(instr)
-                if vreg in defs:
-                    vreg_blocks = vreg_blocks | {block_id}
-                    break
+        if self._def_blocks is None:
+            self._def_blocks = {}
+            for block_id, block in self.func.blocks.items():
+                for instr in block.instructions:
+                    for var in self.block_analyzer._get_defs(instr):
+                        self._def_blocks.setdefault(var, set()).add(block_id)
+        vreg_blocks = vreg_blocks | self._def_blocks.get(vreg, set())
 
         for block_id in vreg_blocks:
             block = self.func.blocks.get(block_id)
