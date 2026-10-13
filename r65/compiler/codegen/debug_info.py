@@ -89,6 +89,7 @@ class DebugInfoCollector:
         self.files: Dict[str, DbgFile] = {}
         self.segments: List[DbgSegment] = []
         self.spans: List[DbgSpan] = []
+        self._span_index: Dict[tuple, DbgSpan] = {}
         self.lines: List[DbgLine] = []
         self.symbols: List[DbgSymbol] = []
         self.scopes: List[DbgScope] = []
@@ -164,6 +165,7 @@ class DebugInfoCollector:
         span = DbgSpan(self._next_span_id, seg_id, start, size)
         self._next_span_id += 1
         self.spans.append(span)
+        self._span_index.setdefault((seg_id, start, size), span)
         return span
 
     def add_line(self, file_id: int, line: int, span_ids: List[int],
@@ -259,8 +261,8 @@ class DebugInfoCollector:
         Returns:
             Existing or new DbgSpan
         """
-        for span in self.spans:
-            if span.seg_id == seg_id and span.start == start and span.size == size:
-                return span
+        span = self._span_index.get((seg_id, start, size))
+        if span is not None:
+            return span
         return self.add_span(seg_id, start, size)
 
