@@ -180,15 +180,6 @@ class TestF32Multiply:
     def test_multi_byte_operands(self, cpu):
         assert read_u8(cpu, 0x20) == 1, "300 * 7 == 2100"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F32::mul_assign is wrong whenever an operand is negative. "
-               "-1 * 1 yields mantissa/exponent A0 82 where -1 is C0 81, and "
-               "-12 * -11 lands on the right exponent with a mantissa 0x10 out. "
-               "Positive operands are exact. Pre-existing: verified identical "
-               "before and after the RDMPY read change, so the byte-at-a-time "
-               "result read was not hiding it.",
-    )
     def test_sign_combinations(self, cpu):
         assert read_u8(cpu, 0x21) == 1, "-13 * 9 == -117"
         assert read_u8(cpu, 0x22) == 1, "-12 * -11 == 132"

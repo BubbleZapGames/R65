@@ -515,6 +515,11 @@ class CompareSelector(BaseSelector):
         """
         value_loc = self.parent._get_operand_location(instr.value)
 
+        # The test is of bit 7 or 6 of the low byte. In m16, BIT and AND set
+        # N and V from bits 15 and 14 instead, so a u16 value (or a u8 one
+        # read while A is 16-bit) would branch on the wrong bit.
+        self.parent._ensure_m8_mode()
+
         # BIT instruction requires a memory operand. If value is on the stack
         # or in a hardware register (A — coalesced from a vreg), spill to a
         # temp DP scratch so we can emit a real BIT (which sets N, V, and Z).
