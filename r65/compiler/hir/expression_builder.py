@@ -141,6 +141,22 @@ class ExpressionBuilder:
                 and getattr(symbol, 'enum_payload_alias', None) is None
                 and index_ast.name not in assigned_names)
 
+    def _pin_index(self, index_ast):
+        """An identifier index as a factory bound to the symbol it names here.
+
+        A payload binding rebuilds its index at every use, resolved in that
+        use's scope, so by name a `let i` in the arm (or after a `let ... else`)
+        would make the binding view another element. The symbol resolved at the
+        match is the one that was matched.
+        """
+        if not isinstance(index_ast, ast.Identifier) or index_ast.name == 'self':
+            return index_ast
+        symbol = self.symbol_table.lookup(index_ast.name)
+        if symbol is None or getattr(symbol, 'enum_payload_alias', None) is not None:
+            return index_ast
+        name = index_ast.name
+        return lambda loc: hir.HIRIdentifier(name=name, symbol=symbol, source_loc=loc)
+
     def _snapshot_index(self, index_ast, loc):
         """`let __pool_idxN = <index>;` and an identifier naming it.
 
@@ -1148,6 +1164,7 @@ class ExpressionBuilder:
             if binds and not self._index_is_stable(index_ast,
                                                    self._assigned_names(expr.arms)):
                 snapshot, index_ast = self._snapshot_index(index_ast, loc)
+            index_ast = self._pin_index(index_ast)
             scrutinee = self._enum_plane_access(enum_name, 'tag', index_ast, loc)
         else:
             enum_name = index_ast = matched_index = None

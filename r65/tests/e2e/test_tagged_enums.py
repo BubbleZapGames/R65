@@ -107,6 +107,32 @@ class TestMatch:
         ''', ExpectedState(memory={0x7E0016: [0x7E]}))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_binding_keeps_its_element_when_the_index_is_shadowed(self, e2e):
+        """A `let i` after the match must not move the binding: it views the
+        element that was matched, in a match arm and after a `let ... else`."""
+        result = e2e.run(SHAPES + '''
+            #[zeropage(0x40)]
+            static mut OUT: [u8; 2];
+
+            fn read(i: u16) {
+                match POOL[i] {
+                    Shape::C(c) => { let i: u16 = 3; OUT[0] = c.r; }
+                    _ => {}
+                };
+                let Shape::C(c) = POOL[i] else { return; };
+                let i: u16 = 3;
+                OUT[1] = c.r;
+            }
+
+            #[entry]
+            fn main() {
+                POOL[1] = Shape::C(Circle { r: 0x11 });
+                POOL[3] = Shape::C(Circle { r: 0x33 });
+                read(1);
+            }
+        ''', ExpectedState(memory={0x7E0040: [0x11, 0x11]}))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_second_payload_field(self, e2e):
         result = e2e.run(SHAPES + '''
             #[zeropage(0x40)]
