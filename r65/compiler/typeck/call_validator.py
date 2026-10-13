@@ -546,14 +546,10 @@ class CallValidator:
                 source_loc=expr.source_loc
             )
 
-        # Type check arguments against trait method params
-        for i, (arg, param) in enumerate(zip(expr.args, trait_method.params)):
-            arg_type = self.check_expression(arg)
-            if not TypeUtils.types_compatible(arg_type, param.param_type):
-                raise TypeCheckError(
-                    f"argument {i+1} to '{method_name}' has wrong type: expected {param.param_type}, got {arg_type}",
-                    source_loc=arg.source_loc if hasattr(arg, 'source_loc') else expr.source_loc
-                )
+        # The same checks as any call: directional assignability (a newtype
+        # takes its payload in, never the reverse), the parameter as context
+        # for literals, and widening into a register-bound parameter.
+        self._validate_arguments(expr.args, trait_method.params, method_name, expr.source_loc)
 
         # Build self argument (the trait pointer itself)
         field_access = expr.func
