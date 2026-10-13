@@ -82,11 +82,11 @@ class Xy16RegionChecker:
     def check(self) -> None:
         if self.func.body is None:
             return
-        self._check_block(self.func.body, is_function_body=True)
+        self._check_block(self.func.body)
 
     # ------------------------------------------------------------------
 
-    def _check_block(self, block: HIRBlock, *, is_function_body: bool) -> None:
+    def _check_block(self, block: HIRBlock) -> None:
         # The function body and each branch or loop body is its own scope:
         # region state from the parent does not carry in (the parent already
         # rejected entering control flow inside a region), and a region opened
@@ -170,17 +170,17 @@ class Xy16RegionChecker:
             # Walk branches as independent straight-line scopes so nested
             # `STATUS.XY16 = false` writes are caught.
             if stmt.then_block is not None:
-                self._check_block(stmt.then_block, is_function_body=False)
+                self._check_block(stmt.then_block)
             if stmt.else_block is not None:
                 if isinstance(stmt.else_block, HIRIfStmt):
                     self._check_stmt(stmt.else_block)
                 else:
-                    self._check_block(stmt.else_block, is_function_body=False)
+                    self._check_block(stmt.else_block)
         elif isinstance(stmt, HIRWhileStmt):
             if stmt.condition is not None and in_x8:
                 self._check_expr(stmt.condition)
             if stmt.body is not None:
-                self._check_block(stmt.body, is_function_body=False)
+                self._check_block(stmt.body)
         elif isinstance(stmt, HIRExpression) and in_x8:
             # for-loop increment expressions land here per HIR builder.
             self._check_expr(stmt)

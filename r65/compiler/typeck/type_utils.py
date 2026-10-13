@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 from r65.compiler.hir import (
     TypeInfo, BasicTypeInfo, ArrayTypeInfo, PointerTypeInfo,
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
-    NeverTypeInfo, RegisterTypeInfo
+    NeverTypeInfo
 )
 from r65.compiler.hir.types import TraitTypeInfo, NewtypeTypeInfo, strip_newtype, INTEGER_TYPE_NAMES
 
@@ -207,9 +207,6 @@ class TypeUtils:
         elif isinstance(t1, NeverTypeInfo):
             return True
 
-        elif isinstance(t1, RegisterTypeInfo):
-            return t1.register_name == t2.register_name
-
         return False
 
     @staticmethod
@@ -219,121 +216,10 @@ class TypeUtils:
                 t.name in INTEGER_TYPE_NAMES)
 
     @staticmethod
-    def types_compatible(t1: TypeInfo, t2: TypeInfo) -> bool:
-        """Symmetric compatibility: a value of either type may flow into the other.
-
-        For sites with no destination: comparison operands and the arms of an
-        `if` or `loop` expression. A newtype pairs only with itself here, since
-        the transparent-in direction is a property of a write. A site that
-        stores into a place uses `assignable`.
-        """
-        if isinstance(t1, NewtypeTypeInfo) or isinstance(t2, NewtypeTypeInfo):
-            return TypeUtils.types_equal(t1, t2)
-        return TypeUtils.assignable(t1, t2) or TypeUtils.assignable(t2, t1)
-
-    @staticmethod
     def drops_bank_byte(src: TypeInfo, dst: TypeInfo) -> bool:
         """True if storing `src` into `dst` would narrow a far pointer to near."""
         return (isinstance(src, PointerTypeInfo) and isinstance(dst, PointerTypeInfo)
                 and src.is_far and not dst.is_far)
-
-    @staticmethod
-    def assignable(src: TypeInfo, dst: TypeInfo) -> bool:
-        """Check if a value of type `src` may be stored into a place of type `dst`.
-
-        The one directional rule behind every write: let, assignment, argument,
-        `self`, return and array element. It accepts:
-
-        - exact matches;
-        - any integer into any integer (narrowing truncates, as in `let`);
-        - an enum into any integer and any integer into an enum;
-        - a payload into its newtype, never a newtype back out:
-
-            let t: TileId = 5;   // ok    - a u8 flows into the newtype
-            let n: u8 = t;       // error - a TileId does not flow back out
-
-        - a pointer whose pointee matches, `*[T; N]` and `*T` coercing either
-          way; near widens to far, but far never narrows to near, which would
-          drop the bank byte (`as *T` says so explicitly);
-        - `*Struct` into `*dyn Trait` when the struct implements the trait, and
-          `*dyn Sub` into `*dyn Super` (a no-op upcast: same object, same
-          TypeId), both at the same far/near width.
-        """
-        if isinstance(dst, NewtypeTypeInfo) or isinstance(src, NewtypeTypeInfo):
-            if TypeUtils.types_equal(src, dst):
-                return True
-            if isinstance(dst, NewtypeTypeInfo) and not isinstance(src, NewtypeTypeInfo):
-                return TypeUtils.assignable(src, dst.inner)
-            return False
-
-        if TypeUtils.types_equal(src, dst):
-            return True
-
-        if isinstance(src, PointerTypeInfo) and isinstance(dst, PointerTypeInfo):
-            if TypeUtils.drops_bank_byte(src, dst):
-                return False
-            if TypeUtils._pointee_types_compatible(src.pointee_type, dst.pointee_type):
-                return True
-            if src.is_far == dst.is_far and isinstance(dst.pointee_type, TraitTypeInfo):
-                if isinstance(src.pointee_type, StructTypeInfo):
-                    return TypeUtils._struct_implements_trait(
-                        src.pointee_type.name, dst.pointee_type.name)
-                if isinstance(src.pointee_type, TraitTypeInfo):
-                    return TypeUtils._trait_extends(
-                        src.pointee_type.name, dst.pointee_type.name)
-            return False
-
-        if TypeUtils.is_integer_type(src) and TypeUtils.is_integer_type(dst):
-            return True
-
-        # An enum is an integer, so it pairs with any integer type.
-        if isinstance(src, EnumTypeInfo) and TypeUtils.is_integer_type(dst):
-            return True
-        if isinstance(dst, EnumTypeInfo) and TypeUtils.is_integer_type(src):
-            return True
-
-        return False
-
-    @staticmethod
-    def _struct_implements_trait(struct_name: str, trait_name: str) -> bool:
-        """Check if a struct implements a trait by looking for dispatch symbols.
-
-        This uses a naming convention check: the HIR builder registers
-        'TraitName.method_name.StructName' dispatch symbols for each trait impl.
-        We only need to check if any such symbol exists.
-        """
-        # We can't easily access the symbol table from a static method,
-        # so we use a class variable that gets set by the type checker.
-        if TypeUtils._symbol_table is not None:
-            # Check if the trait dispatch symbol exists for any method
-            trait_symbol = TypeUtils._symbol_table.lookup(trait_name)
-            if trait_symbol and hasattr(trait_symbol.definition, 'methods'):
-                trait_def = trait_symbol.definition
-                if trait_def.methods:
-                    first_method = trait_def.methods[0].name
-                    dispatch_key = f"{trait_name}.{first_method}.{struct_name}"
-                    return TypeUtils._symbol_table.lookup(dispatch_key) is not None
-        return False
-
-    @staticmethod
-    def _trait_extends(sub_name: str, super_name: str, _seen=None) -> bool:
-        """True if `sub_name` (transitively) lists `super_name` as a supertrait."""
-        if TypeUtils._symbol_table is None:
-            return False
-        if _seen is None:
-            _seen = set()
-        if sub_name in _seen:
-            return False
-        _seen.add(sub_name)
-        sym = TypeUtils._symbol_table.lookup(sub_name)
-        defn = sym.definition if sym else None
-        supers = getattr(defn, 'supertraits', None) or []
-        if super_name in supers:
-            return True
-        return any(TypeUtils._trait_extends(s, super_name, _seen) for s in supers)
-
-    # Class variable to hold symbol table reference for trait impl checking
-    _symbol_table = None
 
     @staticmethod
     def is_boolean_type(t: TypeInfo) -> bool:
@@ -418,3 +304,113 @@ class TypeUtils:
             return TypeUtils.can_cast(from_payload, to_payload)
 
         return False
+
+
+class TypeRelations:
+    """Assignability and compatibility between types.
+
+    These relations depend on the program being checked: whether a struct
+    implements a trait, and which traits extend which, come from its symbol
+    table. TypeChecker owns one instance and hands it to the validators.
+    """
+
+    def __init__(self, symbol_table):
+        self.symbol_table = symbol_table
+
+    def types_compatible(self, t1: TypeInfo, t2: TypeInfo) -> bool:
+        """Symmetric compatibility: a value of either type may flow into the other.
+
+        For sites with no destination: comparison operands and the arms of an
+        `if` or `loop` expression. A newtype pairs only with itself here, since
+        the transparent-in direction is a property of a write. A site that
+        stores into a place uses `assignable`.
+        """
+        if isinstance(t1, NewtypeTypeInfo) or isinstance(t2, NewtypeTypeInfo):
+            return TypeUtils.types_equal(t1, t2)
+        return self.assignable(t1, t2) or self.assignable(t2, t1)
+
+    def assignable(self, src: TypeInfo, dst: TypeInfo) -> bool:
+        """Check if a value of type `src` may be stored into a place of type `dst`.
+
+        The one directional rule behind every write: let, assignment, argument,
+        `self`, return and array element. It accepts:
+
+        - exact matches;
+        - any integer into any integer (narrowing truncates, as in `let`);
+        - an enum into any integer and any integer into an enum;
+        - a payload into its newtype, never a newtype back out:
+
+            let t: TileId = 5;   // ok    - a u8 flows into the newtype
+            let n: u8 = t;       // error - a TileId does not flow back out
+
+        - a pointer whose pointee matches, `*[T; N]` and `*T` coercing either
+          way; near widens to far, but far never narrows to near, which would
+          drop the bank byte (`as *T` says so explicitly);
+        - `*Struct` into `*dyn Trait` when the struct implements the trait, and
+          `*dyn Sub` into `*dyn Super` (a no-op upcast: same object, same
+          TypeId), both at the same far/near width.
+        """
+        if isinstance(dst, NewtypeTypeInfo) or isinstance(src, NewtypeTypeInfo):
+            if TypeUtils.types_equal(src, dst):
+                return True
+            if isinstance(dst, NewtypeTypeInfo) and not isinstance(src, NewtypeTypeInfo):
+                return self.assignable(src, dst.inner)
+            return False
+
+        if TypeUtils.types_equal(src, dst):
+            return True
+
+        if isinstance(src, PointerTypeInfo) and isinstance(dst, PointerTypeInfo):
+            if TypeUtils.drops_bank_byte(src, dst):
+                return False
+            if TypeUtils._pointee_types_compatible(src.pointee_type, dst.pointee_type):
+                return True
+            if src.is_far == dst.is_far and isinstance(dst.pointee_type, TraitTypeInfo):
+                if isinstance(src.pointee_type, StructTypeInfo):
+                    return self._struct_implements_trait(
+                        src.pointee_type.name, dst.pointee_type.name)
+                if isinstance(src.pointee_type, TraitTypeInfo):
+                    return self._trait_extends(
+                        src.pointee_type.name, dst.pointee_type.name)
+            return False
+
+        if TypeUtils.is_integer_type(src) and TypeUtils.is_integer_type(dst):
+            return True
+
+        # An enum is an integer, so it pairs with any integer type.
+        if isinstance(src, EnumTypeInfo) and TypeUtils.is_integer_type(dst):
+            return True
+        if isinstance(dst, EnumTypeInfo) and TypeUtils.is_integer_type(src):
+            return True
+
+        return False
+
+    def _struct_implements_trait(self, struct_name: str, trait_name: str) -> bool:
+        """Check if a struct implements a trait by looking for dispatch symbols.
+
+        This uses a naming convention check: the HIR builder registers
+        'TraitName.method_name.StructName' dispatch symbols for each trait impl.
+        We only need to check if any such symbol exists.
+        """
+        trait_symbol = self.symbol_table.lookup(trait_name)
+        if trait_symbol and hasattr(trait_symbol.definition, 'methods'):
+            trait_def = trait_symbol.definition
+            if trait_def.methods:
+                first_method = trait_def.methods[0].name
+                dispatch_key = f"{trait_name}.{first_method}.{struct_name}"
+                return self.symbol_table.lookup(dispatch_key) is not None
+        return False
+
+    def _trait_extends(self, sub_name: str, super_name: str, _seen=None) -> bool:
+        """True if `sub_name` (transitively) lists `super_name` as a supertrait."""
+        if _seen is None:
+            _seen = set()
+        if sub_name in _seen:
+            return False
+        _seen.add(sub_name)
+        sym = self.symbol_table.lookup(sub_name)
+        defn = sym.definition if sym else None
+        supers = getattr(defn, 'supertraits', None) or []
+        if super_name in supers:
+            return True
+        return any(self._trait_extends(s, super_name, _seen) for s in supers)

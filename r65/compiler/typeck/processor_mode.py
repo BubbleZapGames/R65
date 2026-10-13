@@ -53,11 +53,6 @@ class ProcessorMode:
         """Create the default mode: m8 (8-bit A), x16 (16-bit X/Y)."""
         return ProcessorMode(ModeState.M8, XModeState.X16)
 
-
-    def is_fully_known(self) -> bool:
-        """Always True: M is m8 or m16 and X is always x16."""
-        return True
-
     def get_a_type(self) -> TypeInfo:
         """Get type of A register in this mode."""
         if self.m_mode == ModeState.M8:
@@ -131,12 +126,6 @@ class ProcessorMode:
         # Ignore X bit - always x16 in R65
 
         return ProcessorMode(new_m, XModeState.X16)
-
-    def is_compatible(self, other: 'ProcessorMode') -> bool:
-        """
-        Compatible iff the M bits match (X is always x16).
-        """
-        return self.m_mode == other.m_mode
 
     def join(self, other: 'ProcessorMode') -> Optional['ProcessorMode']:
         """

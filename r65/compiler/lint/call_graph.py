@@ -2,7 +2,8 @@
 HIR-level call graph for the linter.
 
 Runs before MIR construction, so we cannot reuse
-``r65.compiler.analysis.call_graph`` (which operates on MIR). This module
+``r65.compiler.analysis.call_graph`` (which operates on MIR); the two share
+only ``trait_dispatch.trait_impls_table``. This module
 provides a lightweight directed call graph over :class:`HIRFunctionDecl`,
 built by walking each function body and collecting ``HIRFunctionCall`` and
 ``HIRFunctionAddress`` nodes.
@@ -34,6 +35,7 @@ from r65.compiler.hir.nodes import (
     HIRMatchExpression,
 )
 from r65.compiler.hir.symbol_table import SymbolKind
+from r65.compiler.trait_dispatch import trait_impls_table
 
 
 @dataclass
@@ -195,14 +197,7 @@ class CallGraph:
 def build_call_graph(program: HIRProgram) -> CallGraph:
     """Build a :class:`CallGraph` by walking every function body in ``program``."""
     graph = CallGraph()
-
-    for trait_name, trait_info in (program.trait_dispatch_info or {}).items():
-        implementors = trait_info.get("implementors", [])
-        for method_idx, method_name in enumerate(trait_info.get("methods", [])):
-            graph.trait_impls[(trait_name, method_name)] = {
-                impl["mangled"][method_idx] for impl in implementors
-                if method_idx < len(impl.get("mangled", []))
-            }
+    graph.trait_impls = trait_impls_table(program.trait_dispatch_info)
 
     for func in program.all_functions():
         graph.nodes[func.name] = func

@@ -27,12 +27,9 @@ from r65.compiler.hir.types import (
     INTEGER_TYPE_NAMES,
     FunctionTypeInfo, PointerTypeInfo, NewtypeTypeInfo, strip_newtype
 )
-from r65.compiler.hir.nodes import walk_hir
 from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeState
-from r65.compiler.typeck.mode_tracker import ModeTracker
-from r65.compiler.typeck.cfg_builder import CFGBuilder
 from r65.compiler.typeck.type_utils import (
-    TypeUtils, soa_static_of, value_fits_type, widen_implicitly)
+    TypeRelations, TypeUtils, soa_static_of, value_fits_type, widen_implicitly)
 from r65.compiler.typeck.operator_validator import OperatorValidator
 from r65.compiler.typeck.preservation_checker import PreservationChecker
 from r65.compiler.typeck.register_capabilities import (
@@ -47,6 +44,7 @@ from r65.compiler.typeck.match_validator import MatchValidator
 from r65.compiler.typeck.struct_validator import StructValidator
 from r65.compiler.typeck.call_validator import CallValidator
 from r65.compiler.typeck.pointer_validator import PointerValidator
+from r65.compiler.typeck.far_pointer_params import FarPromotion, promote_far_pointer_params
 from r65.compiler.hir.ast_const_eval import ConstEvaluator
 
 
@@ -54,19 +52,24 @@ class TypeChecker:
     """
     Main type checker orchestrator.
 
-    Runs one program-wide pre-pass (`_promote_far_pointer_params`), then walks
-    each function once: checks types bottom-up (operator restrictions inline,
-    via `check_binary_op`), then XY16 regions, then `#[preserves]`.
+    Runs one program-wide pre-pass, `promote_far_pointer_params` (the one
+    step that changes declarations; what it changed is kept in
+    `far_pointer_promotions`), then walks each function once: checks types
+    bottom-up (operator restrictions inline, via `check_binary_op`), then
+    XY16 regions, then `#[preserves]`.
     """
 
     def __init__(self, program: HIRProgram):
         self.program = program
         self.symbol_table = program.symbol_table
+        self.relations = TypeRelations(self.symbol_table)
+
+        # Parameters `check()` retyped from `*T` to `far *T`
+        self.far_pointer_promotions: list[FarPromotion] = []
 
         # Current context during type checking
         self.current_function: Optional[HIRFunctionDecl] = None
         self.current_mode: ProcessorMode = ProcessorMode.default()
-        self.mode_tracker: Optional[ModeTracker] = None
 
         # Collect warnings during type checking
         self.warnings: list[TypeCheckWarning] = []
@@ -84,19 +87,12 @@ class TypeChecker:
         # Maps local variables bound to registers (e.g., let x @ X = 10)
         self._register_aliases: dict[int, str] = {}
 
-        # One-shot permission for `ARR[i]` on a #[soa] array: set by
-        # check_field_access around its base (and by CallValidator around a
-        # method receiver), consumed by check_array_index.
-        self._soa_element_ok: bool = False
-
-        # Set symbol table on TypeUtils for trait impl checking
-        TypeUtils._symbol_table = self.symbol_table
-
     @property
     def match_validator(self) -> MatchValidator:
         """Lazy initialization of match validator."""
         if self._match_validator is None:
-            self._match_validator = MatchValidator(self.check_expression, self.check_statement)
+            self._match_validator = MatchValidator(
+                self.symbol_table, self.check_expression, self.check_statement)
         return self._match_validator
 
     @property
@@ -104,8 +100,7 @@ class TypeChecker:
         """Lazy initialization of struct validator."""
         if self._struct_validator is None:
             self._struct_validator = StructValidator(
-                self.symbol_table, self.const_evaluator,
-                self.check_expression, self._check_type_match
+                self.symbol_table, self.check_expression, self._check_type_match
             )
         return self._struct_validator
 
@@ -114,13 +109,11 @@ class TypeChecker:
         """Lazy initialization of call validator."""
         if self._call_validator is None:
             self._call_validator = CallValidator(
-                self.symbol_table, self._lookup_function_decl,
-                self.check_expression, lambda: self.current_mode,
+                self.symbol_table, self.relations, self._lookup_function_decl,
+                self.check_expression, self.check_element_base,
+                lambda: self.current_mode,
                 lambda: self.current_function
             )
-            # Back-reference for the one-shot flags the two share
-            # (`_soa_element_ok`, set here and read in check_array_index).
-            self._call_validator.type_checker = self
         return self._call_validator
 
     @property
@@ -175,20 +168,6 @@ class TypeChecker:
             f"Function '{func_name}' not found",
             source_loc=source_loc
         )
-
-    def _get_mode_at(self, stmt_or_expr) -> ProcessorMode:
-        """
-        Get processor mode at a statement or expression.
-
-        Args:
-            stmt_or_expr: Statement or expression node
-
-        Returns:
-            ProcessorMode (from mode tracker if available, else current mode)
-        """
-        if self.mode_tracker:
-            return self.mode_tracker.get_mode_at_statement(stmt_or_expr)
-        return self.current_mode
 
     def _get_register_type_from_parameter(self, register_name: str) -> Optional[TypeInfo]:
         """
@@ -456,7 +435,7 @@ class TypeChecker:
         # takes it even without `use_compatible`: transparent in, opaque out.
         if (use_compatible or isinstance(expected_type, NewtypeTypeInfo)
                 or isinstance(actual_type, NewtypeTypeInfo)):
-            types_match = TypeUtils.assignable(actual_type, expected_type)
+            types_match = self.relations.assignable(actual_type, expected_type)
         else:
             types_match = TypeUtils.types_equal(expected_type, actual_type)
 
@@ -610,7 +589,7 @@ class TypeChecker:
         still flows implicitly into an array of a newtype, and a newtype does
         not flow back out into an array of its payload.
         """
-        if TypeUtils.assignable(elem_type, expected):
+        if self.relations.assignable(elem_type, expected):
             return
         raise TypeCheckError(
             f"Array element {index} has type {elem_type}, expected {expected}",
@@ -688,75 +667,13 @@ class TypeChecker:
                         "const declaration", decl.source_loc
                     )
 
-        # Pre-pass: promote near pointer params to far when called with WRAM args
-        self._promote_far_pointer_params()
+        # Retype near pointer params that a caller passes a far address. This
+        # changes declarations, so it runs before any function body is checked.
+        self.far_pointer_promotions = promote_far_pointer_params(self.program)
 
         # Type check every function body, impl methods included
         for func in self.program.all_functions():
             self.check_function(func)
-
-    def _promote_far_pointer_params(self):
-        """Pre-pass: promote near pointer params to far when called with WRAM address args.
-
-        Walks all function bodies to find calls where a far pointer (e.g. &RAM_BUFFER)
-        is passed to a near pointer parameter. Mutates the parameter type to far *T so
-        the MIR builder activates the D=S codegen path (indirect long addressing).
-
-        Must run before function body type checking so all callers see the promoted type.
-        """
-        from r65.compiler.typeck.pointer_validator import PointerValidator
-
-        func_map = {f.name: f for f in self.program.all_functions()}
-
-        # Scan all function bodies for calls that pass far pointers to near params
-        for func in func_map.values():
-            if func.body is None:
-                continue
-            for expr in walk_hir(func.body):
-                if not isinstance(expr, HIRFunctionCall):
-                    continue
-                # Only handle direct calls to known functions
-                if not isinstance(expr.func, HIRIdentifier):
-                    continue
-                if not expr.func.symbol or expr.func.symbol.kind != SymbolKind.FUNCTION:
-                    continue
-                callee_name = expr.func.symbol.name
-                callee = func_map.get(callee_name)
-                if callee is None:
-                    continue
-
-                # Check each argument
-                for i, arg in enumerate(expr.args):
-                    if i >= len(callee.parameters):
-                        break
-                    param = callee.parameters[i]
-                    # Only promote near pointer params
-                    if not isinstance(param.param_type, PointerTypeInfo):
-                        continue
-                    if param.param_type.is_far:
-                        continue
-                    # Check if the argument is &something that needs a far pointer
-                    # Unwrap explicit casts (e.g. &map as *u8) to find the HIRAddressOf
-                    inner_arg = arg
-                    has_cast = False
-                    while isinstance(inner_arg, HIRTypeCast):
-                        has_cast = True
-                        inner_arg = inner_arg.expr
-                    if isinstance(inner_arg, HIRAddressOf):
-                        if PointerValidator._needs_far_pointer(inner_arg.operand):
-                            # Promote parameter from *T to far *T
-                            param.param_type = PointerTypeInfo(
-                                is_far=True,
-                                pointee_type=param.param_type.pointee_type
-                            )
-                            # Update symbol too
-                            if param.symbol:
-                                param.symbol.var_type = param.param_type
-                            # If the arg was wrapped in a near pointer cast,
-                            # remove the cast so the address-of produces a far pointer
-                            # directly (preserving the bank byte)
-                            if has_cast:
-                                expr.args[i] = inner_arg
 
     def check_function(self, func: HIRFunctionDecl):
         """Type check a single function."""
@@ -805,38 +722,21 @@ class TypeChecker:
         if func.body is None:
             return  # External function
 
-        # Phase 1: Build CFG
-        cfg_builder = CFGBuilder()
-        cfg = cfg_builder.build(func.body)
-
-        # Phase 2: Mode analysis
-        if entry_mode.is_fully_known():
-            self.mode_tracker = ModeTracker(cfg, entry_mode)
-            try:
-                self.mode_tracker.analyze()
-            except TypeCheckError as e:
-                # Re-raise with function context
-                raise TypeCheckError(
-                    f"In function '{func.name}':\n{e.message}",
-                    source_loc=e.source_loc or func.source_loc
-                )
-
-        # Phase 3: Type check function body
+        # The mode is fixed for the whole body (asm! SEP/REP is not tracked).
         self.check_block(func.body)
 
-        # Phase 3b: Validate XY16 (x8) regions — reject unsafe patterns inside
+        # Validate XY16 (x8) regions — reject unsafe patterns inside
         # `STATUS.XY16 = false` / `= true` pairs (calls, control flow, indexing,
         # missing restore). See typeck/xy16_region.py for the rules.
         from r65.compiler.typeck.xy16_region import check_xy16_regions
         check_xy16_regions(func)
 
-        # Phase 4: Check register preservation
+        # Check register preservation
         if func.preserves_attr:
             preservation_checker = PreservationChecker(func)
             preservation_checker.check()
 
         self.current_function = None
-        self.mode_tracker = None
 
     def check_block(self, block):
         """Type check a block of statements."""
@@ -899,6 +799,17 @@ class TypeChecker:
                 and expr.func.field_name == 'clone'
                 and len(expr.args) == 0)
 
+    def _check_copy_value(self, expr, context_type=None, *, clone_ok: bool = True) -> TypeInfo:
+        """Type check a let initializer or an assignment's value.
+
+        This is the one position where `.clone()` sugar is legal (when
+        `clone_ok`): the call itself is checked with that permission, and
+        nothing nested inside it inherits it.
+        """
+        if clone_ok and self._is_direct_clone(expr):
+            return self.call_validator.check_function_call(expr, clone_sugar_ok=True)
+        return self.check_expression(expr, context_type)
+
     def _is_legal_aggregate_initializer(self, expr) -> bool:
         """Initializers that may legally produce an aggregate local.
 
@@ -942,7 +853,7 @@ class TypeChecker:
 
             if want is None or isinstance(actual, NeverTypeInfo):
                 continue
-            if TypeUtils.assignable(actual, want):
+            if self.relations.assignable(actual, want):
                 stmt.values[i] = widen_implicitly(val, actual, want)
                 continue
 
@@ -990,8 +901,7 @@ class TypeChecker:
 
     def check_let_statement(self, stmt: HIRLetStmt):
         """Type check let binding."""
-        # Get mode at this statement
-        mode = self._get_mode_at(stmt)
+        mode = self.current_mode
 
         # Determine variable type
         # Track if we inferred type from initializer (skip re-checking in that case)
@@ -1034,11 +944,7 @@ class TypeChecker:
             stmt.var_type = var_type  # Fill in inferred type
         elif stmt.initializer:
             # No explicit type — infer from initializer expression
-            self.call_validator._clone_sugar_allowed = self._is_direct_clone(stmt.initializer)
-            try:
-                init_type = self.check_expression(stmt.initializer)
-            finally:
-                self.call_validator._clone_sugar_allowed = False
+            init_type = self._check_copy_value(stmt.initializer)
             if isinstance(init_type, MultiReturnTypeInfo):
                 init_type = init_type.element_types[0]
             var_type = init_type
@@ -1063,11 +969,7 @@ class TypeChecker:
 
         # Check initializer type matches (skip if already checked during type inference)
         if stmt.initializer and not inferred_from_initializer:
-            self.call_validator._clone_sugar_allowed = self._is_direct_clone(stmt.initializer)
-            try:
-                init_type = self.check_expression(stmt.initializer, var_type)
-            finally:
-                self.call_validator._clone_sugar_allowed = False
+            init_type = self._check_copy_value(stmt.initializer, var_type)
             # Handle tuple-to-scalar: let x: u8 = tuple_func() drops extra return values
             if isinstance(init_type, MultiReturnTypeInfo) and not isinstance(var_type, MultiReturnTypeInfo):
                 first_elem_type = init_type.element_types[0]
@@ -1236,8 +1138,7 @@ class TypeChecker:
 
             if reg_type is None:
                 # Fall back to inferring from mode
-                mode = self._get_mode_at(expr)
-                reg_type = mode.get_register_type(expr.name)
+                reg_type = self.current_mode.get_register_type(expr.name)
 
             if reg_type is None:
                 raise TypeCheckError(
@@ -1487,6 +1388,29 @@ class TypeChecker:
 
         return left_nt or right_nt
 
+    @staticmethod
+    def _widen_operands(expr: HIRBinaryOp, left_type: TypeInfo,
+                        right_type: TypeInfo, promoted_type: TypeInfo) -> None:
+        """Bring both operands of `expr` to `promoted_type`.
+
+        A narrower operand is wrapped in an implicit cast; an integer literal is
+        just retyped, since it widens at compile time.
+        """
+        for side, side_type in (('left', left_type), ('right', right_type)):
+            if TypeUtils.types_equal(side_type, promoted_type):
+                continue
+            operand = getattr(expr, side)
+            if isinstance(operand, HIRIntegerLiteral):
+                operand.expr_type = promoted_type
+                continue
+            cast_node = HIRTypeCast(
+                expr=operand,
+                target_type=promoted_type,
+                source_loc=operand.source_loc
+            )
+            cast_node.expr_type = promoted_type
+            setattr(expr, side, cast_node)
+
     def _check_binary_op_typed(self, expr: HIRBinaryOp, left_type: TypeInfo,
                                right_type: TypeInfo,
                                context_type: Optional[TypeInfo] = None) -> TypeInfo:
@@ -1553,7 +1477,7 @@ class TypeChecker:
             # `let base: u16 = n << 2;` (n is u8) computes the shift in m8
             # and truncates for n >= 64 — the user wrote a u16 destination
             # exactly to avoid that. Mirrors the runtime widening that array
-            # indexing already does in _compute_index_offset.
+            # indexing already does in compute_scaled_index (mir/lowerers/multiply.py).
             if (context_type is not None
                     and isinstance(context_type, BasicTypeInfo)
                     and isinstance(left_type, BasicTypeInfo)
@@ -1597,34 +1521,7 @@ class TypeChecker:
                         source_loc=expr.source_loc,
                         hint=f"cast one operand to match: (value as {left_type})"
                     )
-                # Insert implicit casts to widen the smaller operand
-                # Skip cast for integer literals - they can be widened at compile time
-                if not TypeUtils.types_equal(left_type, promoted_type):
-                    if not isinstance(expr.left, HIRIntegerLiteral):
-                        # Left operand needs runtime widening
-                        cast_node = HIRTypeCast(
-                            expr=expr.left,
-                            target_type=promoted_type,
-                            source_loc=expr.left.source_loc
-                        )
-                        cast_node.expr_type = promoted_type
-                        expr.left = cast_node
-                    else:
-                        # Just update the literal's type - no runtime conversion needed
-                        expr.left.expr_type = promoted_type
-                if not TypeUtils.types_equal(right_type, promoted_type):
-                    if not isinstance(expr.right, HIRIntegerLiteral):
-                        # Right operand needs runtime widening
-                        cast_node = HIRTypeCast(
-                            expr=expr.right,
-                            target_type=promoted_type,
-                            source_loc=expr.right.source_loc
-                        )
-                        cast_node.expr_type = promoted_type
-                        expr.right = cast_node
-                    else:
-                        # Just update the literal's type - no runtime conversion needed
-                        expr.right.expr_type = promoted_type
+                self._widen_operands(expr, left_type, right_type, promoted_type)
                 # Use the promoted type as the result
                 expr.expr_type = promoted_type
                 return promoted_type
@@ -1652,7 +1549,7 @@ class TypeChecker:
 
         elif expr.op in ['==', '!=', '<', '<=', '>', '>=']:
             # Comparison: operands must be compatible, result is bool
-            if not TypeUtils.types_compatible(left_type, right_type):
+            if not self.relations.types_compatible(left_type, right_type):
                 raise TypeCheckError(
                     f"cannot compare {left_type} with {right_type}",
                     source_loc=expr.source_loc,
@@ -1660,32 +1557,10 @@ class TypeChecker:
                 )
 
             # Promote mismatched integer types (e.g., u16 >= u8 -> u16 >= u16)
-            # Same logic as arithmetic promotion, ensures correct codegen
             if not TypeUtils.types_equal(left_type, right_type):
                 promoted_type = self._get_promoted_type(left_type, right_type)
                 if promoted_type is not None:
-                    if not TypeUtils.types_equal(left_type, promoted_type):
-                        if not isinstance(expr.left, HIRIntegerLiteral):
-                            cast_node = HIRTypeCast(
-                                expr=expr.left,
-                                target_type=promoted_type,
-                                source_loc=expr.left.source_loc
-                            )
-                            cast_node.expr_type = promoted_type
-                            expr.left = cast_node
-                        else:
-                            expr.left.expr_type = promoted_type
-                    if not TypeUtils.types_equal(right_type, promoted_type):
-                        if not isinstance(expr.right, HIRIntegerLiteral):
-                            cast_node = HIRTypeCast(
-                                expr=expr.right,
-                                target_type=promoted_type,
-                                source_loc=expr.right.source_loc
-                            )
-                            cast_node.expr_type = promoted_type
-                            expr.right = cast_node
-                        else:
-                            expr.right.expr_type = promoted_type
+                    self._widen_operands(expr, left_type, right_type, promoted_type)
 
             # Check for invalid index register comparison (X vs Y)
             # There's no direct CPX Y or CPY X instruction
@@ -1868,7 +1743,7 @@ class TypeChecker:
         # Checking against the payload gives the literal its range check.
         source_type = self.check_expression(expr.expr, payload)
 
-        if not TypeUtils.assignable(source_type, target_type):
+        if not self.relations.assignable(source_type, target_type):
             raise TypeCheckError(
                 f"cannot make a '{target_type}' from '{source_type}'",
                 source_loc=expr.source_loc,
@@ -1924,16 +1799,25 @@ class TypeChecker:
             hint=f"valid indices are 0 to {size - 1}"
         )
 
-    def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
-        """Type check array indexing."""
-        # Consume the one-shot permission before checking anything below, so it
-        # cannot leak into the index expression: in `ARR[OTHER[k]].hp` only the
-        # outer index is a field-access base, not the inner one.
-        element_ok = self._soa_element_ok
-        self._soa_element_ok = False
+    def check_element_base(self, expr: HIRExpression) -> TypeInfo:
+        """Type check the base of a field access or the receiver of a method.
 
+        That base is the one position where a whole #[soa] element `ARR[i]` is
+        legal (`ARR[i].field`, `ARR[i].m()`); everywhere else
+        check_array_index rejects it. Only `expr` itself gets the permission,
+        so in `ARR[OTHER[k]].hp` the inner index is still checked normally.
+        """
+        if isinstance(expr, HIRArrayIndex):
+            return self.check_array_index(expr, soa_element_ok=True)
+        return self.check_expression(expr)
+
+    def check_array_index(self, expr: HIRArrayIndex, *, soa_element_ok: bool = False) -> TypeInfo:
+        """Type check array indexing.
+
+        `soa_element_ok` is set only by check_element_base.
+        """
         soa_decl = soa_static_of(expr.array)
-        if soa_decl is not None and not element_ok:
+        if soa_decl is not None and not soa_element_ok:
             # A tagged enum is planed the same way and lands here too, but it
             # has no fields to steer the author towards — what it has is a tag
             # and a payload, reachable by `match` and by a cast to an integer.
@@ -1991,15 +1875,7 @@ class TypeChecker:
 
     def check_field_access(self, expr: HIRFieldAccess) -> TypeInfo:
         """Type check field access."""
-        # `ARR[i].field` is the only legal use of an #[soa] element, and this is
-        # the one place that shape is visible — check_array_index cannot see its
-        # own parent. Grant permission for the base alone; check_array_index
-        # consumes it immediately so it reaches nothing else.
-        self._soa_element_ok = True
-        try:
-            base_type = self.check_expression(expr.base)
-        finally:
-            self._soa_element_ok = False
+        base_type = self.check_element_base(expr.base)
 
         # Auto-dereference pointers for field access (like C's `->`)
         # This allows `self.field` to work when self is *StructName
@@ -2024,17 +1900,8 @@ class TypeChecker:
                 hint="field access requires a struct type"
             )
 
-        # Look up struct definition from symbol table (not cached in StructTypeInfo)
-        # This ensures we get the HIR definition, not the AST definition that may
-        # have been cached during early type resolution in Pass 1.
-        struct_symbol = self.program.symbol_table.lookup(base_type.name)
-        if struct_symbol is None:
-            raise TypeCheckError(
-                f"struct '{base_type.name}' definition not found",
-                source_loc=expr.source_loc,
-                hint="ensure the struct is defined before use"
-            )
-        struct_def = struct_symbol.definition
+        # HIR building points every StructTypeInfo at its HIR declaration.
+        struct_def = base_type.definition
         if struct_def is None:
             raise TypeCheckError(
                 f"struct '{base_type.name}' definition not found",
@@ -2066,14 +1933,15 @@ class TypeChecker:
 
     def _check_status_flag_assignment(self, expr: HIRAssignment) -> TypeInfo:
         """Type check STATUS flag assignment (e.g., STATUS.Carry = true)."""
-        from r65.compiler.hir.status_flags import get_status_flag
+        from r65.compiler.hir.status_flags import STATUS_FLAGS, get_status_flag
 
         target = expr.target
         flag = get_status_flag(target.flag_name)
 
         # Check if the flag is writable
         if not flag.is_writable:
-            writable_flags = "Carry, Irq, Decimal, Index, Accumulator"
+            writable_flags = ", ".join(
+                name for name, f in STATUS_FLAGS.items() if f.is_writable)
             raise TypeCheckError(
                 f"Cannot write to STATUS.{target.flag_name}\n"
                 f"  This flag is set by CPU operations, not directly writable\n"
@@ -2183,14 +2051,10 @@ class TypeChecker:
         # context to avoid spurious overflow errors for constants like `A = 0x1234`.
         target_register = self._get_target_register(expr.target)
         value_context = None if target_register else target_type
-        # `dst = src.clone()` is the sanctioned aggregate-copy assignment; permit the
-        # clone sugar while checking the value so it records its clone_info.
-        self.call_validator._clone_sugar_allowed = (
-            TypeUtils.is_aggregate_type(target_type) and self._is_direct_clone(expr.value))
-        try:
-            value_type = self.check_expression(expr.value, value_context)
-        finally:
-            self.call_validator._clone_sugar_allowed = False
+        # `dst = src.clone()` is the sanctioned aggregate-copy assignment.
+        value_type = self._check_copy_value(
+            expr.value, value_context,
+            clone_ok=TypeUtils.is_aggregate_type(target_type))
 
         # Validate register-specific operator restrictions
         # If target is a register (or register-aliased) and value is a binary op using that register,
@@ -2356,7 +2220,7 @@ class TypeChecker:
         else_type = self.check_expression(expr.else_block, context_type or then_type)
 
         # Both branches must have the same type
-        if not TypeUtils.types_compatible(then_type, else_type):
+        if not self.relations.types_compatible(then_type, else_type):
             raise TypeCheckError(
                 f"if expression branches have different types: "
                 f"then branch is {then_type}, else branch is {else_type}",
@@ -2390,7 +2254,7 @@ class TypeChecker:
         # All break types must be compatible
         result_type = break_types[0]
         for i, bt in enumerate(break_types[1:], 1):
-            if not TypeUtils.types_compatible(result_type, bt):
+            if not self.relations.types_compatible(result_type, bt):
                 raise TypeCheckError(
                     f"loop expression break values have different types: "
                     f"{result_type} vs {bt}",

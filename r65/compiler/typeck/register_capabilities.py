@@ -177,11 +177,11 @@ def get_transfer_error_hint(src_reg: str, dest_reg: str) -> str:
     Returns:
         Hint string explaining the issue and suggesting alternatives
     """
-    # Find which registers can be used as intermediates
-    if src_reg in ('D', 'S') or dest_reg in ('D', 'S'):
-        return f"no direct T{src_reg}{dest_reg} instruction; transfer through A first"
+    # Y <-> S has an X route as well as the A route, so name both.
     if src_reg == 'Y' and dest_reg == 'S':
         return "no TYS instruction; use TYA then TCS, or transfer through X"
     if src_reg == 'S' and dest_reg == 'Y':
         return "no TSY instruction; use TSC then TAY, or transfer through X"
+    if src_reg in ('D', 'S') or dest_reg in ('D', 'S'):
+        return f"no direct T{src_reg}{dest_reg} instruction; transfer through A first"
     return f"no direct transfer instruction from {src_reg} to {dest_reg}"

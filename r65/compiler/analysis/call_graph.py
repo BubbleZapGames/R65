@@ -13,7 +13,8 @@ from r65.compiler.mir.nodes import (
     CallBase,
     MIRProgram, Call, TraitDispatch, Move, FunctionPointer, SymbolByte,
 )
-from r65.compiler.errors import get_diagnostics
+from r65.compiler.errors import DiagnosticCollector
+from r65.compiler.trait_dispatch import trait_impls_table
 
 
 class RecursionError(Exception):
@@ -141,13 +142,7 @@ class CallGraph:
 def build_call_graph(program: MIRProgram) -> CallGraph:
     """Build the call graph of every function in `program`."""
     graph = CallGraph()
-    for trait_name, trait_info in (program.trait_dispatch_info or {}).items():
-        implementors = trait_info.get('implementors', [])
-        for method_idx, method_name in enumerate(trait_info.get('methods', [])):
-            impls = {impl['mangled'][method_idx] for impl in implementors
-                     if method_idx < len(impl.get('mangled', []))}
-            if impls:
-                graph.trait_impls[(trait_name, method_name)] = impls
+    graph.trait_impls = trait_impls_table(program.trait_dispatch_info)
 
     for func in program.functions:
         calls = graph.calls.setdefault(func.name, set())
@@ -179,17 +174,15 @@ def build_call_graph(program: MIRProgram) -> CallGraph:
 class RecursionChecker:
     """
     Checks for unsafe recursion with zero-page or register parameters.
+
+    Errors raise; warnings (address-taken functions) collect in
+    `self.diagnostics` for the caller to report.
     """
 
     def __init__(self, mir_program: MIRProgram):
-        """
-        Initialize recursion checker.
-
-        Args:
-            mir_program: MIR program to check
-        """
         self.program = mir_program
         self.func_map = {func.name: func for func in mir_program.functions}
+        self.diagnostics = DiagnosticCollector()
 
     def check(self):
         """
@@ -297,7 +290,7 @@ class RecursionChecker:
         Args:
             graph: Call graph
         """
-        diagnostics = get_diagnostics()
+        diagnostics = self.diagnostics
 
         for func_name in graph.address_taken:
             if func_name not in self.func_map:

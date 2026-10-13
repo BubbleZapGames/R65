@@ -21,14 +21,17 @@ from r65.compiler.typeck.type_utils import TypeUtils
 class MatchValidator:
     """Validates match expressions."""
 
-    def __init__(self, check_expression_fn: Callable, check_statement_fn: Callable = None):
+    def __init__(self, symbol_table, check_expression_fn: Callable,
+                 check_statement_fn: Callable = None):
         """
         Initialize with expression checker callback.
 
         Args:
+            symbol_table: Symbol table, for enum definitions by name
             check_expression_fn: Function to type check expressions (from TypeChecker)
             check_statement_fn: Function to type check statements (from TypeChecker)
         """
+        self.symbol_table = symbol_table
         self.check_expression = check_expression_fn
         self.check_statement = check_statement_fn
 
@@ -198,7 +201,7 @@ class MatchValidator:
     def _check_enum_variants_covered(self, expr, enum_name, covered, definition=None):
         """Every variant of *enum_name* must appear among *covered*."""
         if definition is None:
-            symbol = TypeUtils._symbol_table.lookup(enum_name)
+            symbol = self.symbol_table.lookup(enum_name)
             definition = symbol.definition if symbol else None
         if definition is None:
             return

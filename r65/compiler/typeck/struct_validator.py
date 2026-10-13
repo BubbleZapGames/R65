@@ -6,7 +6,7 @@ Handles validation of struct literal expressions including field type checking.
 """
 
 from typing import Callable
-from r65.compiler.hir import HIRStructLiteralExpr, HIRStructDecl, SymbolKind, StructTypeInfo
+from r65.compiler.hir import HIRStructLiteralExpr, SymbolKind, StructTypeInfo
 from r65.compiler.hir.types import TypeInfo
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils, widen_implicitly
@@ -15,7 +15,7 @@ from r65.compiler.typeck.type_utils import TypeUtils, widen_implicitly
 class StructValidator:
     """Validates struct literal expressions."""
 
-    def __init__(self, symbol_table, const_evaluator,
+    def __init__(self, symbol_table,
                  check_expression_fn: Callable,
                  check_type_match_fn: Callable):
         """
@@ -23,12 +23,10 @@ class StructValidator:
 
         Args:
             symbol_table: Symbol table for looking up struct definitions
-            const_evaluator: Const evaluator for type resolution
             check_expression_fn: Function to type check expressions
             check_type_match_fn: Function to check type matches
         """
         self.symbol_table = symbol_table
-        self.const_evaluator = const_evaluator
         self.check_expression = check_expression_fn
         self.check_type_match = check_type_match_fn
 
@@ -59,20 +57,15 @@ class StructValidator:
                 hint="ensure the struct is defined before use"
             )
 
+        # HIR building has replaced every struct symbol's AST definition with
+        # its HIRStructDecl by the time type checking runs.
         # Build expected fields map from struct definition
         # Skip synthetic __type_id field — it's auto-initialized by the compiler
         expected_fields = {}
-        if isinstance(struct_def, HIRStructDecl):
-            for field in struct_def.fields:
-                if field.name == '__type_id':
-                    continue
-                expected_fields[field.name] = field.field_type
-        else:
-            # AST struct definition - resolve types
-            from r65.compiler.hir.types import TypeResolver
-            type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
-            for field in struct_def.fields:
-                expected_fields[field.name] = type_resolver.resolve_type(field.field_type)
+        for field in struct_def.fields:
+            if field.name == '__type_id':
+                continue
+            expected_fields[field.name] = field.field_type
 
         # Check each field initializer
         provided_fields = set()
@@ -123,9 +116,6 @@ class StructValidator:
                 )
 
         # Create struct type
-        struct_type = StructTypeInfo(
-            name=expr.struct_name,
-            definition=struct_def if isinstance(struct_def, HIRStructDecl) else None
-        )
+        struct_type = StructTypeInfo(name=expr.struct_name, definition=struct_def)
         expr.expr_type = struct_type
         return struct_type

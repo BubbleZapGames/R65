@@ -214,7 +214,7 @@ def _apply_lint_table(config: LintConfig, table: dict, path: Path) -> None:
             )
         # Allowlist: the given set replaces the default. Unknown L-codes are an error.
         requested = set(enable)
-        _warn_unknown_builtin_codes(requested, path, "enable")
+        _reject_unknown_builtin_codes(requested, path, "enable")
         config.enabled_codes = requested
 
     if disable is not None:
@@ -288,7 +288,7 @@ def _instantiate_rule(spec: dict, index: int, path: Path) -> LintRule:
         ) from e
 
 
-def _warn_unknown_builtin_codes(codes: Set[str], path: Path, field_name: str) -> None:
+def _reject_unknown_builtin_codes(codes: Set[str], path: Path, field_name: str) -> None:
     """Raise if any built-in code (L-prefix) listed in the config doesn't exist."""
     from r65.compiler.lint.rules import BUILTIN_RULES
 

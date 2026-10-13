@@ -795,3 +795,16 @@ class TestComparisonTypePromotion:
         # 8 * 4 = 32, fits in u8, should stay as u8
         compile_and_type_check(source)
 
+
+
+def test_y_to_s_transfer_hint_names_x_route():
+    """S = Y has no TYS; the hint offers the X route as well as A."""
+    with pytest.raises(TypeCheckError) as exc_info:
+        compile_and_type_check("fn test() { S = Y; }")
+    assert "no TYS instruction" in exc_info.value.hint
+
+
+def test_read_only_status_flag_lists_writable_flags_by_name():
+    with pytest.raises(TypeCheckError) as exc_info:
+        compile_and_type_check("fn test() { STATUS.Zero = true; }")
+    assert "Writable flags: Carry, Irq, Decimal, XY16, A16" in exc_info.value.message

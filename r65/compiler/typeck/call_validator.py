@@ -20,29 +20,36 @@ from r65.compiler.hir.types import (
     NewtypeTypeInfo, EnumTypeInfo,
 )
 from r65.compiler.typeck.errors import TypeCheckError
-from r65.compiler.typeck.type_utils import TypeUtils, widen_implicitly
+from r65.compiler.typeck.type_utils import TypeRelations, TypeUtils, widen_implicitly
 from r65.compiler.typeck.processor_mode import ProcessorMode
 
 
 class CallValidator:
     """Validates function and method calls."""
 
-    def __init__(self, symbol_table, lookup_function_decl_fn: Callable,
-                 check_expression_fn: Callable, get_current_mode_fn: Callable,
+    def __init__(self, symbol_table, relations: TypeRelations,
+                 lookup_function_decl_fn: Callable,
+                 check_expression_fn: Callable, check_element_base_fn: Callable,
+                 get_current_mode_fn: Callable,
                  get_current_function_fn: Callable):
         """
         Initialize with dependencies.
 
         Args:
             symbol_table: Symbol table for lookups
+            relations: Assignability rules (the TypeChecker's TypeRelations)
             lookup_function_decl_fn: Function to look up function declarations
             check_expression_fn: Function to type check expressions
+            check_element_base_fn: Function to type check a method receiver
+                (TypeChecker.check_element_base: a whole #[soa] element is legal)
             get_current_mode_fn: Function to get current processor mode
             get_current_function_fn: Function to get current function being checked
         """
         self.symbol_table = symbol_table
+        self.relations = relations
         self.lookup_function_decl = lookup_function_decl_fn
         self.check_expression = check_expression_fn
+        self.check_element_base = check_element_base_fn
         self.get_current_mode = get_current_mode_fn
         self.get_current_function = get_current_function_fn
 
@@ -77,7 +84,7 @@ class CallValidator:
             # Directional: an argument is assigned into the parameter, so a
             # newtype parameter accepts its payload but not the reverse, and a
             # far pointer does not narrow into a near parameter.
-            if not TypeUtils.assignable(arg_type, param_type):
+            if not self.relations.assignable(arg_type, param_type):
                 if TypeUtils.drops_bank_byte(arg_type, param_type):
                     hint = f"use an explicit cast: (value as {param_type}) to drop the bank byte"
                 elif param_name:
@@ -94,12 +101,14 @@ class CallValidator:
             if not is_indirect and isinstance(param.binding, RegisterBinding):
                 args[i] = widen_implicitly(arg, arg_type, param_type)
 
-    def check_function_call(self, expr: HIRFunctionCall) -> TypeInfo:
+    def check_function_call(self, expr: HIRFunctionCall, *, clone_sugar_ok: bool = False) -> TypeInfo:
         """
         Type check function call.
 
         Handles direct, indirect (function pointer), built-in and method-sugar
-        (`recv.m()`) calls.
+        (`recv.m()`) calls. `clone_sugar_ok` permits `a.clone()`; only
+        TypeChecker._check_copy_value sets it, for a let initializer or the
+        value assigned to an aggregate place.
         """
         # Special-case format! string-segment dispatch (emitted by the
         # built-in format! macro for {s} specifiers). Rewrite to either
@@ -117,7 +126,7 @@ class CallValidator:
             # (user-bodied) clone_from this returns None and falls through to normal
             # static method resolution below.
             if expr.func.field_name in ('clone', 'clone_from'):
-                clone_result = self._try_clone_call(expr)
+                clone_result = self._try_clone_call(expr, clone_sugar_ok)
                 if clone_result is not None:
                     return clone_result
             method_result = self._try_method_call(expr)
@@ -144,9 +153,6 @@ class CallValidator:
 
             # Type check each argument
             self._validate_arguments(expr.args, func_decl.parameters, func_symbol.name, expr.source_loc)
-
-            # Check mode compatibility
-            self._check_call_mode_compatibility(func_symbol.name, func_decl, expr.source_loc)
 
             # Check bank compatibility (near functions can't call near functions in different banks)
             self._check_call_bank_compatibility(func_symbol.name, func_decl, expr.source_loc)
@@ -216,7 +222,7 @@ class CallValidator:
             )
         return field_access.base.index
 
-    def _try_clone_call(self, expr: HIRFunctionCall) -> Optional[TypeInfo]:
+    def _try_clone_call(self, expr: HIRFunctionCall, clone_sugar_ok: bool) -> Optional[TypeInfo]:
         """Resolve a Clone lang-item call: `a.clone()` or `dst.clone_from(&src)`.
 
         Returns the result type if handled, or None to defer to normal method
@@ -228,17 +234,13 @@ class CallValidator:
         method_name = field_access.field_name
 
         # `POOL[i].clone()` is never legal (an #[soa] struct cannot impl
-        # Clone). The one-shot permission only lets the receiver type-check, so
-        # the "does not implement Clone" error below is reported instead of
-        # check_array_index's whole-element error.
-        previous_ok = getattr(self.type_checker, '_soa_element_ok', False)
-        self.type_checker._soa_element_ok = True
+        # Clone). Checking the receiver as an element base only lets it
+        # type-check, so the "does not implement Clone" error below is reported
+        # instead of check_array_index's whole-element error.
         try:
-            receiver_type = self.check_expression(field_access.base)
+            receiver_type = self.check_element_base(field_access.base)
         except TypeCheckError:
             return None
-        finally:
-            self.type_checker._soa_element_ok = previous_ok
 
         # Identify the aggregate type being cloned.
         receiver_is_pointer = isinstance(receiver_type, PointerTypeInfo)
@@ -284,7 +286,7 @@ class CallValidator:
         # method_name == 'clone' (0-arg sugar)
         if len(expr.args) != 0:
             raise TypeCheckError("clone takes no arguments", source_loc=expr.source_loc)
-        if not getattr(self, '_clone_sugar_allowed', False):
+        if not clone_sugar_ok:
             raise TypeCheckError(
                 "`.clone()` is only allowed as the direct initializer of a let or "
                 "assignment to an aggregate place",
@@ -311,18 +313,12 @@ class CallValidator:
         field_access = expr.func
         method_name = field_access.field_name
 
-        # Get the type of the receiver (e.g., PLAYER has type Player)
-        # `POOL[i].m()` — the receiver is an #[soa] element, which is legal
-        # exactly here. check_array_index refuses one otherwise, so grant the
-        # same one-shot permission check_field_access does for its own base.
-        previous_ok = getattr(self.type_checker, '_soa_element_ok', False)
-        self.type_checker._soa_element_ok = True
+        # Get the type of the receiver (e.g., PLAYER has type Player). In
+        # `POOL[i].m()` the receiver is an #[soa] element, legal exactly here.
         try:
-            receiver_type = self.check_expression(field_access.base)
+            receiver_type = self.check_element_base(field_access.base)
         except TypeCheckError:
             return None
-        finally:
-            self.type_checker._soa_element_ok = previous_ok
 
         # Determine struct name from receiver type
         struct_name = None
@@ -345,11 +341,7 @@ class CallValidator:
             # A fieldless enum is a value and rides in A. A tagged one has no
             # contiguous element, so its receiver is the element index instead —
             # the `self_is_index` path below, shared with #[soa].
-            definition = getattr(receiver_type, 'definition', None)
-            symbol = getattr(receiver_type, 'symbol', None)
-            if symbol is not None and getattr(symbol, 'definition', None) is not None:
-                definition = symbol.definition
-            receiver_by_value = not getattr(definition, 'is_tagged', False)
+            receiver_by_value = not receiver_type.definition.is_tagged
         elif isinstance(receiver_type, PointerTypeInfo):
             if isinstance(receiver_type.pointee_type, StructTypeInfo):
                 struct_name = receiver_type.pointee_type.name
@@ -448,7 +440,7 @@ class CallValidator:
 
         # Type check self argument
         self_param = func_decl.parameters[0]
-        if not TypeUtils.assignable(self_arg.expr_type, self_param.param_type):
+        if not self.relations.assignable(self_arg.expr_type, self_param.param_type):
             raise TypeCheckError(
                 f"self argument has wrong type: expected {self_param.param_type}, found {self_arg.expr_type}",
                 source_loc=expr.source_loc
@@ -457,9 +449,6 @@ class CallValidator:
 
         # Type check remaining arguments
         self._validate_arguments(expr.args, func_decl.parameters[1:], method_name, expr.source_loc)
-
-        # Check mode compatibility
-        self._check_call_mode_compatibility(mangled_name, func_decl, expr.source_loc)
 
         # Check bank compatibility
         self._check_call_bank_compatibility(mangled_name, func_decl, expr.source_loc)
@@ -891,14 +880,6 @@ class CallValidator:
 
         expr.expr_type = func_type
         return func_type
-
-    def _check_call_mode_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
-        """No-op: every caller/callee mode pairing is legal.
-
-        Mode switches around a call are generated after typeck: the MIR Call
-        carries the callee's entry/exit mode (mir/lowerers/call.py).
-        """
-        pass
 
     def _check_call_bank_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
         """
