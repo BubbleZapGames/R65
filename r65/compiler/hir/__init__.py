@@ -197,7 +197,6 @@ __all__ = [
     'StructTypeInfo',
     'EnumTypeInfo',
     'NeverTypeInfo',
-    'RegisterTypeInfo',
     'TypeResolver',
 
     # Attributes

@@ -138,10 +138,10 @@ def assert_a_survives(source: str, expect_b=None):
         assert b == expect_b, f"B holds {b!r}, expected {expect_b!r}\n  {instrs}"
 
 
-MUL8 = 'far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 { return 0; }'
-TAKES_X = ('far fn takes_x(a @ A: u8, b @ X: u16) -> u16 '
+MUL8 = '#[inline(never)] far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 { return 0; }'
+TAKES_X = ('#[inline(never)] far fn takes_x(a @ A: u8, b @ X: u16) -> u16 '
            '{ return (a as u16) + b; }')
-TAKES_Y = ('far fn takes_y(a @ A: u8, b @ Y: u16) -> u16 '
+TAKES_Y = ('#[inline(never)] far fn takes_y(a @ A: u8, b @ Y: u16) -> u16 '
            '{ return (a as u16) + b; }')
 
 
@@ -187,7 +187,7 @@ class TestScratchParamArgument:
     rather than emitting the bracket it had already decided on."""
 
     SCRATCH = "#[zeropage(0x00, register)]\nstatic mut SCRATCH0: u8;"
-    CALLEE = 'far fn f(a @ A: u8, b: u8) -> u16 { return b as u16; }'
+    CALLEE = '#[inline(never)] far fn f(a @ A: u8, b: u8) -> u16 { return b as u16; }'
 
     def test_compiles_at_all(self):
         assert instrs_for(caller_body(self.CALLEE, "f(v, k)", self.SCRATCH))
@@ -210,7 +210,7 @@ class TestAlreadyCorrect:
             f"v must be reloaded immediately before the call: {instrs}")
 
     def test_no_other_register_argument(self):
-        callee = 'far fn one(a @ A: u8) -> u16 { return a as u16; }'
+        callee = '#[inline(never)] far fn one(a @ A: u8) -> u16 { return a as u16; }'
         source = caller_body(callee, "one(v)")
         assert_a_survives(source)
         assert not any(s.startswith(('TAY', 'TAX', 'PHA', 'XBA'))
@@ -220,7 +220,7 @@ class TestAlreadyCorrect:
 class TestNoFreeIndexRegister:
     """Both X and Y are argument targets, so neither can hold the saved value."""
 
-    CALLEE = ('far fn xy(a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
+    CALLEE = ('#[inline(never)] far fn xy(a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
               '{ return p + q; }')
 
     def test_falls_back_to_the_stack(self):
@@ -247,7 +247,7 @@ class TestSixteenBitAccumulator:
     """A u16 `@ A` argument. TAY/TYA move index-width bits under x16, so the
     whole value survives, but the restore still has to run in m16."""
 
-    CALLEE = 'far fn wide(a @ A: u16, p @ X: u16) -> u16 { return a + p; }'
+    CALLEE = '#[inline(never)] far fn wide(a @ A: u16, p @ X: u16) -> u16 { return a + p; }'
 
     def test_a_survives(self):
         assert_a_survives(caller_body(self.CALLEE, "wide(v, p)",

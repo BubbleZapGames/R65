@@ -602,7 +602,7 @@ class ExpressionBuilder:
                             pass
 
                     # cfg(flag) is const-only: it always folds to a bool literal
-                    if func_name == "cfg":
+                    if builtin.kind is BuiltinKind.CFG:
                         return hir.HIRBooleanLiteral(value=self.const_evaluator.eval(expr), source_loc=src_loc)
 
                     # Const math builtins - try to fold if all args are const
@@ -629,18 +629,11 @@ class ExpressionBuilder:
                     if folded is not None:
                         return folded
 
-            # Build func expression
-            # For built-ins, create a dummy symbol to avoid "undefined identifier" errors
             if builtin_name:
-                # Create a dummy symbol for built-in function
-                builtin_symbol = Symbol(
-                    name=expr.func.name,
-                    kind=SymbolKind.FUNCTION,
-                    definition=None,
-                    scope_id=0,  # Global scope
-                    var_type=None
-                )
-                func = hir.HIRIdentifier(name=expr.func.name, symbol=builtin_symbol, source_loc=src_loc)
+                func = hir.HIRIdentifier(
+                    name=builtin_name,
+                    symbol=self.symbol_table.lookup_builtin(builtin_name),
+                    source_loc=src_loc)
             else:
                 func = self.build_expression(expr.func)
 

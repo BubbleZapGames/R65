@@ -59,8 +59,10 @@ class HIRBuilder:
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
         # Include paths for searching (resolved to absolute paths)
         self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
-        self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
-        self.auto_bank_mode = False  # True when in #[bank(auto)] mode; declarations start in explicit bank 0
+        # Bank context of the declaration being processed; set per item by
+        # _items_in_bank_context.
+        self.current_bank = 0
+        self.auto_bank_mode = False
         self.expression_builder = ExpressionBuilder(
             self.symbol_table, self.const_evaluator, self.type_resolver,
             self.cfg_evaluator, self.source_dir, self.include_paths
@@ -157,22 +159,9 @@ class HIRBuilder:
         self._dyn_used_traits = self._collect_dyn_traits(ast_program)
 
         # Pass 1: Declare all top-level symbols (filtered by cfg)
-        # Also track bank directives to maintain ordering
-        self.current_bank = 0  # Reset to default bank
-        self.auto_bank_mode = False  # Declarations start in explicit bank 0 until a #[bank] directive
-        for decl in ast_program.items:
+        for decl in self._items_in_bank_context(ast_program):
             if isinstance(decl, ast.StackDirective):
                 stack_attr = self._stack_attribute(decl)
-            elif isinstance(decl, ast.BankDirective):
-                # Update current bank context
-                if decl.is_auto:
-                    # #[bank(auto)] - automatic placement mode
-                    self.auto_bank_mode = True
-                    self.current_bank = 0  # Will be determined at link time
-                else:
-                    # #[bank(n)] - explicit bank number
-                    self.auto_bank_mode = False
-                    self.current_bank = decl.bank_number
             elif isinstance(decl, ast.SnesRomDirective):
                 snesrom_config = decl
             else:
@@ -193,20 +182,9 @@ class HIRBuilder:
 
         # Pass 2: Build HIR nodes with resolved references (filtered by cfg)
         hir_decls = []
-        self.current_bank = 0  # Reset for second pass
-        self.auto_bank_mode = False  # Declarations start in explicit bank 0 until a #[bank] directive
-        for decl in ast_program.items:
+        for decl in self._items_in_bank_context(ast_program):
             if isinstance(decl, ast.StackDirective):
                 continue  # Skip stack directives, already processed
-            if isinstance(decl, ast.BankDirective):
-                # Update current bank context for following declarations
-                if decl.is_auto:
-                    self.auto_bank_mode = True
-                    self.current_bank = 0
-                else:
-                    self.auto_bank_mode = False
-                    self.current_bank = decl.bank_number
-                continue
             if isinstance(decl, ast.SnesRomDirective):
                 continue  # Skip snesrom directives, already processed
             if isinstance(decl, ast.IncludeAsmStmt):
@@ -237,6 +215,7 @@ class HIRBuilder:
         # is in hand.
         self._pad_enum_payloads()
         self._expand_soa_statics(hir_decls)
+        self._point_type_definitions_at_hir(hir_decls)
 
 
         # Build trait dispatch info for codegen
@@ -249,6 +228,55 @@ class HIRBuilder:
             snesrom_config=snesrom_config,
             trait_dispatch_info=trait_dispatch_info
         )
+
+    def _point_type_definitions_at_hir(self, hir_decls) -> None:
+        """Re-point every StructTypeInfo/EnumTypeInfo.definition at its HIR decl.
+
+        A type resolved in pass 1 captured the AST declaration, since that is
+        what the symbol held then; pass 2 re-points the symbols but not the
+        TypeInfos. Walks the HIR declarations and the symbol table (only HIR
+        objects, never into AST nodes) so later passes see one kind.
+        """
+        hir_mod = ('r65.compiler.hir.nodes', 'r65.compiler.hir.types',
+                   'r65.compiler.hir.symbol_table')
+        global_symbols = self.symbol_table.scopes[0].symbols
+        seen: Set[int] = set()
+        stack: list = [hir_decls, list(self.symbol_table.scopes.values())]
+        while stack:
+            obj = stack.pop()
+            if id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            if isinstance(obj, (list, tuple)):
+                stack.extend(obj)
+                continue
+            if isinstance(obj, dict):
+                stack.extend(obj.values())
+                continue
+            if not dataclasses.is_dataclass(obj) or type(obj).__module__ not in hir_mod:
+                continue
+            if isinstance(obj, (StructTypeInfo, EnumTypeInfo)):
+                symbol = obj.symbol or global_symbols.get(obj.name)
+                decl = getattr(symbol, 'definition', None)
+                if isinstance(decl, (hir.HIRStructDecl, hir.HIREnumDecl)):
+                    obj.definition = decl
+            for f in dataclasses.fields(obj):
+                stack.append(getattr(obj, f.name))
+
+    def _items_in_bank_context(self, program: ast.Program):
+        """Yield the program's items other than `#[bank]` directives, with
+        `current_bank` / `auto_bank_mode` set to the directive context each
+        item is declared in. Declarations start in explicit bank 0; under
+        `#[bank(auto)]` the bank is chosen at link time. Passes 1 and 2 both
+        walk the items through this, so they see the same bank context."""
+        self.current_bank = 0
+        self.auto_bank_mode = False
+        for decl in program.items:
+            if isinstance(decl, ast.BankDirective):
+                self.auto_bank_mode = decl.is_auto
+                self.current_bank = 0 if decl.is_auto else decl.bank_number
+                continue
+            yield decl
 
     def _collect_dyn_traits(self, program: ast.Program) -> Set[str]:
         """Pre-pass: find all trait names used in *dyn Trait positions.
@@ -832,14 +860,8 @@ class HIRBuilder:
         func_symbol = self.symbol_table.lookup(func.name)
         self._check_databank_far(func.name, mode_attr, func.is_far, func.source_loc)
 
-        # Auto-detect trivial getters/setters and mark for inlining
-        # Only if not already marked and not a far/interrupt/entry function
-        if (inline_attr is None and
-            not func.is_far and
-            interrupt_attr is None and
-            not is_entry and
-            self._is_trivial_getter_or_setter(hir_body)):
-            inline_attr = InlineAttribute(name='inline')
+        inline_attr = self._auto_inline_hint(
+            inline_attr, interrupt_attr, is_entry, hir_body)
 
         # Eagerly validate const fn body at definition time
         if func.is_const:
@@ -865,6 +887,20 @@ class HIRBuilder:
             exit_m_mode=exit_m_mode,
             source_loc=func.source_loc  # Propagate source location from AST
         )
+
+    def _auto_inline_hint(self, inline_attr, interrupt_attr, is_entry: bool,
+                          body: hir.HIRBlock):
+        """The inline attribute a function or method gets: its own, or else an
+        `#[inline]` hint when it is a trivial getter/setter that is neither an
+        interrupt handler nor the entry point. Far functions qualify: the
+        inliner decides per call site whether the caller's bank makes the body
+        safe to splice in (`InlinabilityChecker._bank_compatible`)."""
+        if (inline_attr is None and
+                interrupt_attr is None and
+                not is_entry and
+                self._is_trivial_getter_or_setter(body)):
+            return InlineAttribute(name='inline')
+        return inline_attr
 
     def _is_simple_expression(self, expr: hir.HIRExpression, depth: int = 0) -> bool:
         """
@@ -2202,8 +2238,7 @@ class HIRBuilder:
                      "type lists have no name to match on; wrap it in a struct",
             )
 
-        # The built-in names `TypeResolver.resolve_type` splits on, plus u24.
-        if ast_type.name in ('u8', 'i8', 'u16', 'i16', 'u24', 'bool', 'void'):
+        if ast_type.name in BUILTIN_TYPE_NAMES:
             raise HIRError(
                 f"{where} is '{ast_type.name}', not a struct",
                 source_loc=enum.source_loc,
@@ -2727,7 +2762,9 @@ class HIRBuilder:
     def _validate_self_register_conflict(self, impl, method, params, self_binding):
         """Reject a parameter that binds the register a by-value `self` occupies.
 
-        A by-value `self` rides in A (newtype/enum) or X (planed index). In A,
+        *self_binding* is None when there is no register receiver (a pointer
+        `self`, or an associated function with no `self`), and params[0] is
+        then not a receiver. A by-value `self` rides in A (newtype/enum) or X (planed index). In A,
         neither A nor B is available to a parameter: B is the accumulator's high
         byte, not a register of its own. Sharing either
         with `self` is an entanglement the author did not ask for, and codegen
@@ -2739,16 +2776,13 @@ class HIRBuilder:
         """
         if not isinstance(self_binding, hir.RegisterBinding):
             return
-        # An associated function has no receiver: the register is not spoken
-        # for, and params[0] is an ordinary parameter rather than `self`. A
-        # binding is still built for it above, so without this the slice below
-        # both skips a real first parameter and blames a later one on a `self`
-        # that does not exist.
-        if not getattr(method, 'has_self', True):
-            return
         reg = self_binding.register_name
-        receiver = ("an #[soa] method receives 'self' as an element index"
-                    if reg == 'X' else "a newtype method receives 'self' by value")
+        if reg == 'X':
+            receiver = "an #[soa] method receives 'self' as an element index"
+        elif self._is_enum(impl.struct_name):
+            receiver = "an enum method receives 'self' by value"
+        else:
+            receiver = "a newtype method receives 'self' by value"
         # A and B are one physical register; `self` in A claims both.
         blocked = {reg, 'B'} if reg == 'A' else {reg}
         # Name the registers that are actually still free, not a fixed pair.
@@ -3317,7 +3351,8 @@ class HIRBuilder:
 
         # A by-value self occupies A (or X), so a parameter binding that
         # register would silently share it.
-        self._validate_self_register_conflict(impl, method, hir_params, self_binding)
+        self._validate_self_register_conflict(
+            impl, method, hir_params, self_binding if has_self else None)
         self._validate_no_duplicate_register_bindings(hir_params, mangled_name)
 
         # Process body. `_soa_rewrite_base` reads `soa_self_pool` to turn
@@ -3355,15 +3390,8 @@ class HIRBuilder:
         # Get method symbol
         method_symbol = self.symbol_table.lookup(mangled_name)
 
-        # Auto-detect trivial getters/setters and mark for inlining
-        # Only if not already marked and not an interrupt/entry method.
-        # Far methods qualify too: the inliner decides per call site whether
-        # the caller's bank makes the body safe to splice in.
-        if (inline_attr is None and
-            interrupt_attr is None and
-            not is_entry and
-            self._is_trivial_getter_or_setter(hir_body)):
-            inline_attr = InlineAttribute(name='inline')
+        inline_attr = self._auto_inline_hint(
+            inline_attr, interrupt_attr, is_entry, hir_body)
 
         # Eagerly validate const fn body at definition time
         if method.is_const:
@@ -3659,16 +3687,6 @@ class HIRBuilder:
             source_loc=loop.source_loc
         )
 
-    def _build_loop_expression(self, loop: ast.LoopExpression) -> hir.HIRLoopExpression:
-        """Build HIR loop expression from AST."""
-        body = self._build_block(loop.body)
-
-        return hir.HIRLoopExpression(
-            body=body,
-            label=loop.label,
-            source_loc=loop.source_loc
-        )
-
     def _build_for(self, for_stmt: ast.ForStmt) -> hir.HIRBlock:
         """Desugar for loop to while loop.
 
@@ -3681,6 +3699,11 @@ class HIRBuilder:
                 i = i + 1;
             }
         }
+
+        `..=` with const bounds is the same with `<=` (the counter type holds
+        `end + 1`); with a runtime bound it tests after the body, so an `end`
+        at the counter type's maximum still exits:
+        `let mut i = start; if i <= end { loop { body; if i == end { break; } i = i + 1; } }`
 
         Loop variables are given register hints based on nesting depth:
         - Depth 1 (outermost): X register
@@ -3715,6 +3738,8 @@ class HIRBuilder:
         # Determine loop variable type from range bounds
         # Try to const-evaluate both bounds to pick appropriate type
         loop_var_type = self._infer_for_loop_type(for_stmt.start, for_stmt.end, src_loc, for_stmt.inclusive)
+        bounds_const = (self._try_const_eval(for_stmt.start) is not None
+                        and self._try_const_eval(for_stmt.end) is not None)
 
         # A counter that indexes an array is a u16 whatever its range: an
         # index is 16 bits on this CPU, so a u8 counter would be widened at
@@ -3786,29 +3811,62 @@ class HIRBuilder:
                 source_loc=src_loc
             )
 
-        # The increment ends the body, so a `continue` - which jumps to the
-        # loop's condition - would skip it and never advance the counter.
-        # Each one that targets this loop increments first.
+        if for_stmt.inclusive and not bounds_const:
+            # A runtime `..=` end may be the counter type's maximum, where
+            # `i <= end` never fails. Test after the body instead, so the
+            # counter never steps past `end`:
+            #   if i <= end { loop { body; if i == end { break; } i = i + 1; } }
+            def advance():
+                exit_check = hir.HIRIfStmt(
+                    condition=hir.HIRBinaryOp(
+                        op='==',
+                        left=hir.HIRIdentifier(name=for_stmt.variable,
+                                               symbol=loop_var_symbol, source_loc=src_loc),
+                        right=self._fold_for_bound(for_stmt.end),
+                        source_loc=src_loc),
+                    then_block=hir.HIRBlock(
+                        statements=[hir.HIRBreakStmt(label=for_stmt.label, source_loc=src_loc)],
+                        source_loc=src_loc),
+                    source_loc=src_loc)
+                return hir.HIRBlock(statements=[exit_check, increment_stmt()],
+                                    source_loc=src_loc)
+        else:
+            advance = increment_stmt
+
+        # The advance ends the body, so a `continue` - which jumps to the
+        # loop's head - would skip it and never advance the counter. Each one
+        # that targets this loop advances first.
         body_statements = [
-            self._increment_before_continue(stmt, for_stmt.label, increment_stmt, False)
+            self._increment_before_continue(stmt, for_stmt.label, advance, False)
             for stmt in body_statements
         ]
-        body_statements.append(increment_stmt())
+        body_statements.append(advance())
 
-        # Create while body block
         while_body = hir.HIRBlock(
             statements=body_statements,
             source_loc=for_stmt.body.source_loc
         )
 
-        # Create while statement
-        while_stmt = hir.HIRWhileStmt(
-            condition=condition,
-            body=while_body,
-            is_infinite=False,
-            label=for_stmt.label,
-            source_loc=src_loc
-        )
+        if advance is increment_stmt:
+            loop_stmt = hir.HIRWhileStmt(
+                condition=condition,
+                body=while_body,
+                is_infinite=False,
+                label=for_stmt.label,
+                source_loc=src_loc
+            )
+        else:
+            loop_stmt = hir.HIRIfStmt(
+                condition=condition,
+                then_block=hir.HIRBlock(statements=[hir.HIRWhileStmt(
+                    condition=hir.HIRBooleanLiteral(value=True),
+                    body=while_body,
+                    is_infinite=True,
+                    label=for_stmt.label,
+                    source_loc=src_loc
+                )], source_loc=src_loc),
+                source_loc=src_loc
+            )
 
         # Exit the for-loop scope
         self.symbol_table.exit_scope()
@@ -3818,7 +3876,7 @@ class HIRBuilder:
 
         # Return block containing let and while
         return hir.HIRBlock(
-            statements=[let_stmt, while_stmt],
+            statements=[let_stmt, loop_stmt],
             source_loc=src_loc
         )
 

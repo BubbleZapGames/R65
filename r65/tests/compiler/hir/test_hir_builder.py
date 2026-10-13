@@ -1047,8 +1047,9 @@ fn complex(val @ A: u8) -> u8 {
         func = hir.declarations[0]
         assert func.inline_attr is None
 
-    def test_far_function_not_auto_inlined(self):
-        """Far functions should not be auto-inlined even if trivial."""
+    def test_far_function_auto_inlined(self):
+        """A trivial far function gets the hint too; the inliner checks the
+        caller's bank per call site."""
         source = """
 far fn get_value() -> u8 {
     return 15;
@@ -1056,7 +1057,7 @@ far fn get_value() -> u8 {
 """
         hir = build_hir(source)
         func = hir.declarations[0]
-        assert func.inline_attr is None
+        assert func.inline_attr is not None
 
     def test_setter_auto_inlined(self):
         """Simple setter should be auto-inlined."""

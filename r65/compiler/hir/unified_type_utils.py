@@ -38,7 +38,7 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
         HIRError: If type cannot be resolved or is unsupported
     """
     if type_obj is None:
-        return 1
+        raise HIRError("Cannot determine size of an unresolved type", source_loc=None)
 
     # HIR TypeInfo — use the size_bytes property directly
     if isinstance(type_obj, TypeInfo):
@@ -78,8 +78,10 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     if hasattr(type_obj, 'fields'):
         return _get_ast_struct_size(type_obj, symbol_table)
 
-    # Default to 1 byte if unknown
-    return 1
+    raise HIRError(
+        f"Cannot determine size of {type(type_obj).__name__}",
+        source_loc=getattr(type_obj, 'source_loc', None),
+    )
 
 
 def _named_type_size(type_obj, symbol_table) -> int:
@@ -151,8 +153,3 @@ def _get_ast_struct_size(struct_obj: Any, symbol_table=None) -> int:
     sizes = [get_unified_type_size(f.field_type, symbol_table) for f in struct_obj.fields]
     _, total = layout_fields(sizes, getattr(struct_obj, 'is_union', False))
     return total
-
-
-def get_basic_type_size(type_name: str) -> int:
-    """Get size of a basic type by name."""
-    return _TYPE_SIZES.get(type_name, 1)

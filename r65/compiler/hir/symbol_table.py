@@ -11,6 +11,7 @@ from enum import Enum
 
 from r65.compiler.hir.errors import *
 from r65.compiler.registers import REGISTERS
+from r65.compiler.builtins.registry import BuiltinRegistry
 
 
 class SymbolKind(Enum):
@@ -26,7 +27,7 @@ class SymbolKind(Enum):
     TYPE_ALIAS = "type_alias"
     ENUM_VARIANT = "enum_variant"
     REGISTER = "register"  # Hardware registers (A, X, Y, etc.)
-    BUILTIN_FUNC = "builtin_func"  # Built-in functions (SEP, REP, etc.)
+    BUILTIN_FUNC = "builtin_func"  # BuiltinRegistry functions and __fmt_str
     METHOD = "method"  # Method in impl block (desugars to function)
     IMPL_CONST = "impl_const"  # Associated constant in impl block
     TRAIT = "trait"  # Trait declaration
@@ -104,18 +105,11 @@ class SymbolTable:
                 is_mutable=reg.writable,
             )
 
-        # Add built-in functions
-        builtin_funcs = [
-            'SEP',   # Set processor status bits
-            'REP',   # Reset processor status bits
-            'mul',   # Multiply (general)
-            'div',   # Divide (general)
-            'mod',   # Modulo
-            'shl',   # Shift left (variable)
-            'shr',   # Shift right (variable)
-        ]
-
-        for func_name in builtin_funcs:
+        # Built-in functions: every BuiltinRegistry entry, plus `__fmt_str`,
+        # the internal format! segment call the type checker rewrites. A call
+        # to one resolves to this symbol, and a top-level declaration of the
+        # same name is a redefinition.
+        for func_name in (*BuiltinRegistry.BUILTINS, '__fmt_str'):
             global_scope.symbols[func_name] = Symbol(
                 name=func_name,
                 kind=SymbolKind.BUILTIN_FUNC,
@@ -163,6 +157,13 @@ class SymbolTable:
                 return scope.symbols[name]
             scope_id = scope.parent_id
         return None
+
+    def lookup_builtin(self, name: str) -> Symbol:
+        """The global symbol of built-in function *name* (a local of the same
+        name does not shadow it at a call)."""
+        symbol = self.scopes[0].symbols[name]
+        assert symbol.kind == SymbolKind.BUILTIN_FUNC, name
+        return symbol
 
     def lookup_current_scope(self, name: str) -> Optional[Symbol]:
         """Look up symbol only in the current scope (no parent search)."""

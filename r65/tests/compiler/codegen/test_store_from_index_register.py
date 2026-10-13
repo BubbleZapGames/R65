@@ -103,8 +103,8 @@ class TestTwoByteDestinationUnaffected:
 static mut W: u16;
 #[zeropage(0x14)]
 static mut V: u16;
-far fn storex(p @ X: u16) { W = p; }
-far fn storey(p @ Y: u16) { V = p; }
+#[inline(never)] far fn storex(p @ X: u16) { W = p; }
+#[inline(never)] far fn storey(p @ Y: u16) { V = p; }
 #[entry]
 fn main() { storex(0x1234); storey(0x5678); }
 """

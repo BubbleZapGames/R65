@@ -209,6 +209,7 @@ class TestMirrorBounds:
     def test_bank_past_mirror_is_rejected(self):
         extra = """
 #[bank(128)]
+#[inline(never)]
 far fn way_out_there() {
     COUNTER++;
 }

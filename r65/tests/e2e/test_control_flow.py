@@ -543,6 +543,45 @@ class TestInclusiveForLoops:
         assert result.success, f"Failures: {result.failures}"
 
 
+    def test_for_loop_from_runtime_u8_bounds(self, e2e):
+        """A counter promoted to X that starts from a u8 static is widened in
+        A and transferred: X has no store form."""
+        result = e2e.run('''
+            #[lowram(0x0300)] static mut LO8: u8;
+            #[lowram(0x0301)] static mut HI8: u8;
+            #[lowram(0x0302)] static mut SUM: u16;
+            #[inline(never)]
+            fn run() { for i in LO8..HI8 { SUM = SUM + i; } }
+            #[entry]
+            fn main() -> ! { LO8 = 3; HI8 = 7; SUM = 0; run(); loop {} }
+        ''', ExpectedState(memory={0x7E0302: [18, 0]}))
+        assert result.success, f"Failures: {result.failures} {result.error}"
+
+    def test_inclusive_for_loop_to_runtime_type_max_terminates(self, e2e):
+        """A runtime `..=` end at the counter type's maximum (255 for a u8
+        bound, 65535 for a u16 one) still exits, `continue` included."""
+        result = e2e.run('''
+            #[zeropage(0x10)] static mut N8: u16;
+            #[zeropage(0x12)] static mut N16: u8;
+            #[zeropage(0x13)] static mut HI8: u8;
+            #[zeropage(0x14)] static mut LO16: u16;
+            #[zeropage(0x16)] static mut HI16: u16;
+
+            #[entry]
+            fn main() {
+                N8 = 0; N16 = 0;
+                HI8 = 255; LO16 = 65530; HI16 = 65535;
+                for i in 0..=HI8 { N8 = N8 + 1; }
+                for j in LO16..=HI16 {
+                    if j == 65531 { continue; }
+                    N16 = N16 + 1;
+                }
+            }
+        ''', ExpectedState(memory={0x7E0010: [0x00, 0x01], 0x7E0012: 5}),
+            max_instructions=100000)
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestLoopExpression:
     """Test loop expression with break values."""
 

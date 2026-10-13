@@ -10,7 +10,7 @@ from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
 from r65.compiler.errors import compiler_assert
 from r65.compiler.hir.unified_type_utils import get_unified_type_size, layout_fields
-from r65.compiler.hir.types import ArrayTypeInfo, INTEGER_TYPE_NAMES
+from r65.compiler.hir.types import ArrayTypeInfo, BUILTIN_TYPE_NAMES, INTEGER_TYPE_NAMES
 from r65.compiler.builtins.registry import BuiltinRegistry, BuiltinKind
 from r65.compiler.frontend.ast import CfgIdentifier
 import math as _math
@@ -146,7 +146,7 @@ class ConstEvaluator:
 
         elif isinstance(expr, ast.Identifier):
             # Check for built-in type names (used in size_of contexts)
-            if expr.name in ['u8', 'u16', 'i8', 'i16', 'bool']:
+            if expr.name in BUILTIN_TYPE_NAMES:
                 raise HIRError(f"Type name '{expr.name}' cannot be used as a value in const expression", source_loc=expr.source_loc)
             
             # Look up const variable
@@ -481,8 +481,8 @@ class ConstEvaluator:
 
         builtin = BuiltinRegistry.get_builtin(func_name)
 
-        # Only allow type info and const math built-ins in const expressions
-        if builtin.kind not in (BuiltinKind.TYPE_INFO, BuiltinKind.CONST_MATH):
+        # Only type info, cfg and const math built-ins are const-evaluable
+        if builtin.kind not in (BuiltinKind.TYPE_INFO, BuiltinKind.CFG, BuiltinKind.CONST_MATH):
             raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions", source_loc=expr.source_loc)
 
         # Handle const math builtins

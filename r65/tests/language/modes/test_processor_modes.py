@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for processor mode annotations.
 
-The #[mode] attribute now only supports the databank parameter.
+The #[mode] attribute takes only the databank parameter.
 CPU mode (m8/m16, x8/x16) is automatically inferred from parameter types:
 - Default: m8 (8-bit A), x16 (16-bit X/Y)
 - u16 @ A parameter -> m16 entry mode
@@ -15,13 +15,10 @@ from r65.tests.language.common import parse_function, get_attr, get_attr_arg_by_
 
 
 class TestModeAttributeParsing:
-    """Tests for #[mode(...)] attribute parsing.
-
-    Parsing still accepts the old syntax (for better error messages at HIR stage).
-    """
+    """Tests for #[mode(...)] attribute parsing (validation happens in HIR)."""
 
     def test_mode_parses_m8(self):
-        """Test m8 mode annotation parses (but will fail at HIR)."""
+        """Any positional argument parses; HIR rejects it."""
         func = parse_function("#[mode(m8)] fn test() { }")
         attr = get_attr(func, "mode")
         assert attr is not None
@@ -34,46 +31,17 @@ class TestModeAttributeParsing:
 
 
 class TestModeAttributeRejection:
-    """Tests that old m8/m16/x8/x16/transition syntax is rejected at HIR level."""
+    """#[mode] takes only databank=; anything else is a generic error."""
 
-    def test_mode_m8_rejected(self):
-        """Test m8 mode is rejected at HIR level."""
+    def test_mode_positional_rejected(self):
         with pytest.raises(HIRError) as exc_info:
             build_hir("#[mode(m8)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
-        assert "m8" in str(exc_info.value)
-
-    def test_mode_m16_rejected(self):
-        """Test m16 mode is rejected at HIR level."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("#[mode(m16)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
-        assert "m16" in str(exc_info.value)
-
-    def test_mode_x8_rejected(self):
-        """Test x8 mode is rejected at HIR level."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("#[mode(x8)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
-
-    def test_mode_x16_rejected(self):
-        """Test x16 mode is rejected at HIR level."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("#[mode(x16)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
-
-    def test_mode_combined_rejected(self):
-        """Test combined m8, x16 is rejected at HIR level."""
-        with pytest.raises(HIRError) as exc_info:
-            build_hir("#[mode(m8, x16)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
+        assert "Invalid mode value: m8" in str(exc_info.value)
 
     def test_transition_rejected(self):
-        """Test transition= parameter is rejected at HIR level."""
         with pytest.raises(HIRError) as exc_info:
             build_hir("#[mode(transition=inline)] fn test() { }")
-        assert "no longer supported" in str(exc_info.value)
-        assert "transition" in str(exc_info.value)
+        assert "Unknown argument to #[mode]: transition" in str(exc_info.value)
 
 
 class TestModeDatabank:

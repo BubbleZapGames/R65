@@ -323,8 +323,6 @@ def _cast_const_int(value: int, target_type) -> int:
     if isinstance(target, BasicTypeInfo):
         if target.name == 'bool':
             return 1 if value else 0
-        if target.name == 'u24':
-            return value & 0xFFFFFF
         return wrap_int(value, target.name)
     if isinstance(target, (PointerTypeInfo, FunctionTypeInfo)):
         return value & (0xFFFFFF if target.is_far else 0xFFFF)

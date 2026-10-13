@@ -82,12 +82,13 @@ class TestEnumSelf:
 
     def test_parameter_may_not_bind_a(self):
         """`self` occupies A, so a parameter cannot also claim it."""
-        with pytest.raises(HIRError, match="binds A, which holds 'self'"):
+        with pytest.raises(HIRError, match="binds A, which holds 'self'") as exc:
             build_and_check(
                 "enum Dir { North }\n"
                 "impl Dir { fn f(self, x @ A: u8) -> u8 { return x; } }\n"
                 "fn main() {}"
             )
+        assert "an enum method receives 'self' by value" in exc.value.hint
 
     def test_parameter_may_not_bind_b(self):
         """B is A's high byte, so it is spoken for too."""

@@ -19,11 +19,14 @@ from r65.compiler.hir.errors import *
 _TYPE_SIZES = {
     'u8': 1, 'i8': 1, 'bool': 1,
     'u16': 2, 'i16': 2,
-    'u24': 3,
 }
 
 # The integer types a program can name.
 INTEGER_TYPE_NAMES = frozenset({'u8', 'i8', 'u16', 'i16'})
+
+# Every built-in type name: these resolve to a BasicTypeInfo, any other name
+# to a user-defined type.
+BUILTIN_TYPE_NAMES = INTEGER_TYPE_NAMES | {'bool', 'void'}
 
 
 # =============================================================================
@@ -47,7 +50,11 @@ class BasicTypeInfo(TypeInfo):
 
     @property
     def size_bytes(self) -> int:
-        return _TYPE_SIZES.get(self.name, 1)
+        size = _TYPE_SIZES.get(self.name)
+        if size is None:
+            # `void` has no size; asking for one is a compiler bug.
+            raise TypeError(f"type '{self.name}' has no size")
+        return size
 
     def __str__(self):
         return self.name
@@ -265,23 +272,6 @@ class MultiReturnTypeInfo(TypeInfo):
         return ", ".join(str(t) for t in self.element_types)
 
 
-@dataclass
-class RegisterTypeInfo(TypeInfo):
-    """Type of a hardware register (mode-dependent)."""
-    register_name: str
-    # Actual type depends on processor mode (resolved in type checker)
-
-    @property
-    def size_bytes(self) -> int:
-        # Register size depends on processor mode — 2 for X/Y, 1 or 2 for A
-        if self.register_name in ('X', 'Y'):
-            return 2
-        return 1  # Default to u8 for A in m8 mode
-
-    def __str__(self):
-        return f"Register<{self.register_name}>"
-
-
 # =============================================================================
 # Type Resolver
 # =============================================================================
@@ -296,9 +286,7 @@ class TypeResolver:
     def resolve_type(self, ast_type: ast.Type) -> TypeInfo:
         """Convert AST type to HIR TypeInfo."""
         if isinstance(ast_type, ast.BasicType):
-            # Check if this is a built-in type or a user-defined type
-            built_in_types = {'u8', 'i8', 'u16', 'i16', 'bool', 'void'}
-            if ast_type.name in built_in_types:
+            if ast_type.name in BUILTIN_TYPE_NAMES:
                 return BasicTypeInfo(name=ast_type.name)
             else:
                 # User-defined type (struct, enum, or type alias)

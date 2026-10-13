@@ -204,11 +204,6 @@ _UNSUPPORTED_RUST_ATTRS = {
 }
 
 
-# Defined in `frontend` so the parser can use it too: `#[derive]` on a type is
-# caught there rather than as a parse failure.
-_derive_trait_names = derive_trait_names
-
-
 # =============================================================================
 # Attribute Processor
 # =============================================================================
@@ -253,7 +248,7 @@ class AttributeProcessor:
                 raise HIRError(
                     "#[derive(...)] is not supported in R65",
                     source_loc=attr.source_loc,
-                    hint=derive_hint(_derive_trait_names(attr)),
+                    hint=derive_hint(derive_trait_names(attr)),
                 )
             else:
                 hint = _UNSUPPORTED_RUST_ATTRS.get(attr.name)
@@ -279,28 +274,7 @@ class AttributeProcessor:
         for arg in attr.args:
             if arg.name is None:  # Positional argument
                 value_str = self._get_arg_identifier(arg.value)
-
-                # Reject old m8/m16/x8/x16 positional arguments
-                if value_str in ('m8', 'm16', 'x8', 'x16'):
-                    raise HIRError(
-                        f"#[mode({value_str})] is no longer supported.\n"
-                        f"  CPU mode is now automatically inferred from parameter types:\n"
-                        f"  - u16 @ A parameter -> m16 entry mode\n"
-                        f"  - otherwise -> m8 entry mode (default)\n"
-                        f"  - X/Y registers are always u16 (x16 mode)\n"
-                        f"  Use #[mode(databank=...)] for data bank management only.",
-                        source_loc=attr.source_loc
-                    )
-                else:
-                    raise HIRError(f"Invalid mode value: {value_str}", source_loc=attr.source_loc)
-            elif arg.name == 'transition':
-                raise HIRError(
-                    f"#[mode(transition=...)] is no longer supported.\n"
-                    f"  Mode transitions are now handled automatically:\n"
-                    f"  - Compiler inserts REP/SEP around 16-bit A operations\n"
-                    f"  - Call sites switch to callee's entry mode as needed",
-                    source_loc=attr.source_loc
-                )
+                raise HIRError(f"Invalid mode value: {value_str}", source_loc=attr.source_loc)
             elif arg.name == 'databank':
                 value_str = self._get_arg_identifier(arg.value)
 

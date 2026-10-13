@@ -39,16 +39,16 @@ def _func_asm(source: str, name: str) -> str:
     return asm.split(f"\n{name}:", 1)[1].split("RTL", 1)[0].split("RTS", 1)[0]
 
 
-# Called twice so the inliner leaves them standing as real functions.
+# Real functions, not inlined, so their own bodies can be inspected.
 SOURCE = """
 #[zeropage(0x10)] static mut R: u8;
 #[zeropage(0x12)] static mut W: u16;
 
-far fn nocast(v @ A: u16) -> u16 { return v + 1; }
-far fn narrowed(v @ A: u16) -> u8 { return (v + 1) as u8; }
-far fn shifted(v @ A: u16) -> u8 { return ((v + 1) >> 8) as u8; }
-far fn widened(v @ A: u8) -> u16 { return v as u16; }
-far fn signed(v @ A: i8) -> i16 { return v as i16; }
+#[inline(never)] far fn nocast(v @ A: u16) -> u16 { return v + 1; }
+#[inline(never)] far fn narrowed(v @ A: u16) -> u8 { return (v + 1) as u8; }
+#[inline(never)] far fn shifted(v @ A: u16) -> u8 { return ((v + 1) >> 8) as u8; }
+#[inline(never)] far fn widened(v @ A: u8) -> u16 { return v as u16; }
+#[inline(never)] far fn signed(v @ A: i8) -> i16 { return v as i16; }
 
 #[entry] fn main() {
     W = nocast(1); R = narrowed(2); R = shifted(3); W = widened(4);
