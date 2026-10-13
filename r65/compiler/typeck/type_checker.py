@@ -1994,6 +1994,26 @@ class TypeChecker:
         expr.expr_type = source_type.inner
         return source_type.inner
 
+
+    def _check_const_index(self, expr: HIRArrayIndex, size: int):
+        """Reject a constant index outside `0..size`. A dynamic one is not checked."""
+        index_ast = expr.original_ast.index if expr.original_ast else None
+        if index_ast is None or not self.const_evaluator.is_constant(index_ast):
+            return
+        try:
+            index_value = self.const_evaluator.eval(index_ast)
+        except HIRError:
+            return
+        if 0 <= index_value < size:
+            return
+        what = ("(negative index)" if index_value < 0
+                else f"for array of size {size}")
+        raise TypeCheckError(
+            f"array index {index_value} is out of bounds {what}",
+            source_loc=expr.index.source_loc,
+            hint=f"valid indices are 0 to {size - 1}"
+        )
+
     def check_array_index(self, expr: HIRArrayIndex) -> TypeInfo:
         """Type check array indexing."""
         # Consume the one-shot permission before checking anything below, so it
@@ -2037,27 +2057,7 @@ class TypeChecker:
             pointee = base_type.pointee_type
             # If pointer to array, result is element type
             if isinstance(pointee, ArrayTypeInfo):
-                # Constant index bounds checking for pointer-to-array
-                if expr.original_ast and self.const_evaluator.is_constant(expr.original_ast.index):
-                    try:
-                        index_value = self.const_evaluator.eval(expr.original_ast.index)
-                        array_size = pointee.size
-
-                        if index_value < 0:
-                            raise TypeCheckError(
-                                f"array index {index_value} is out of bounds (negative index)",
-                                source_loc=expr.index.source_loc,
-                                hint=f"valid indices are 0 to {array_size - 1}"
-                            )
-                        elif index_value >= array_size:
-                            raise TypeCheckError(
-                                f"array index {index_value} is out of bounds for array of size {array_size}",
-                                source_loc=expr.index.source_loc,
-                                hint=f"valid indices are 0 to {array_size - 1}"
-                            )
-                    except HIRError:
-                        # If const evaluation fails, skip bounds checking
-                        pass
+                self._check_const_index(expr, pointee.size)
                 expr.expr_type = pointee.element_type
                 return expr.expr_type
             else:
@@ -2067,27 +2067,7 @@ class TypeChecker:
 
         # Array indexing: array[idx]
         if isinstance(base_type, ArrayTypeInfo):
-            # Constant index bounds checking
-            if expr.original_ast and self.const_evaluator.is_constant(expr.original_ast.index):
-                try:
-                    index_value = self.const_evaluator.eval(expr.original_ast.index)
-                    array_size = base_type.size
-
-                    if index_value < 0:
-                        raise TypeCheckError(
-                            f"array index {index_value} is out of bounds (negative index)",
-                            source_loc=expr.index.source_loc,
-                            hint=f"valid indices are 0 to {array_size - 1}"
-                        )
-                    elif index_value >= array_size:
-                        raise TypeCheckError(
-                            f"array index {index_value} is out of bounds for array of size {array_size}",
-                            source_loc=expr.index.source_loc,
-                            hint=f"valid indices are 0 to {array_size - 1}"
-                        )
-                except Exception:
-                    # If const evaluation fails, skip bounds checking
-                    pass
+            self._check_const_index(expr, base_type.size)
 
             # Result is element type
             expr.expr_type = base_type.element_type

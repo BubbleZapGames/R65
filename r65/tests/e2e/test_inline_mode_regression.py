@@ -70,8 +70,8 @@ class TestInlineModePreservation:
         is in source.
         """
         source = '''
-            #[lowram(0x300)]
-            static mut MAP: [u8; 4096];
+            #[ram]
+            static mut MAP: [u8; 8192];
             #[lowram(0x1400)]
             static mut player_y: u8;
             #[lowram(0x1401)]
@@ -109,8 +109,8 @@ class TestInlineModePreservation:
             test_map(player_x + 7, player_y + 15);
         """
         source = '''
-            #[lowram(0x300)]
-            static mut MAP: [u8; 4096];
+            #[ram]
+            static mut MAP: [u8; 8192];
             #[lowram(0x1400)]
             static mut player_y: u8;
             #[lowram(0x1401)]
