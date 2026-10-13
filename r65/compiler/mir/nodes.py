@@ -502,24 +502,18 @@ class Compare(MIRInstruction):
 @dataclass
 class BitTest(MIRInstruction):
     """
-    Bit test operation using BIT instruction.
+    Bit test: sets N from the value's top bit and V from the one below it.
 
-    Tests specific bits in memory without modifying accumulator.
-    Sets flags: N = bit 7, V = bit 6, Z = (A & value) == 0
-
-    Used for optimizing:
-    - Boolean flag tests
-    - Bit 7 tests (sign bit)
-    - Bit 6 tests (overflow bit)
-    - Hardware register polling
+    `test_bit` is 7 or 6 (tested in m8, so the low byte of a wider value), or
+    15 or 14 (tested in m16). A V bit is only tested on a MemoryLocation —
+    BIT on memory is the one instruction that loads V from a value. Used for
+    sign tests and hardware register polling (`BIT $4212`).
     """
     value: Union[VirtualRegister, HardwareRegister, MemoryLocation]  # Value to test
-    test_bit: int  # Bit number to test (6 or 7, or -1 for Z flag test)
+    test_bit: int  # 7, 6, 15 or 14
     type_info: Any  # TypeInfo
 
     def __repr__(self):
-        if self.test_bit == -1:
-            return f"BitTest {self.value} (Z flag)"
         return f"BitTest {self.value} bit {self.test_bit}"
 
 
@@ -993,7 +987,7 @@ OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     BinaryOp:       (_write_rr('dest'), _read_ri('left'), _read_ri('right')),
     UnaryOp:        (_write_rr('dest'), _read_ri('operand')),
     Compare:        (_read_ri('left'), _read_ri('right')),
-    BitTest:        (_read_ri('value'),),
+    BitTest:        (_read_rr('value'),),  # BIT #imm sets only Z, never N or V
     CondBranch:     (_read_rr('condition'),),
     JumpTable:      (_read_rr('scrutinee'),),
     LookupTable:    (_write_vr('dest'), _read_rr('scrutinee')),

@@ -503,65 +503,36 @@ class CompareSelector(BaseSelector):
 
     def select_bit_test(self, instr: BitTest):
         """
-        Generate code for BitTest instruction using BIT instruction.
+        Set N (and, for memory, V) from the bits a BitTest names.
 
-        BIT instruction sets flags based on memory value:
-        - N flag = bit 7 of memory
-        - V flag = bit 6 of memory
-        - Z flag = (A & memory) == 0
+        Bits 7/6 are tested in m8, which reads the low byte of a wider value;
+        bits 15/14 in m16. N is the top bit of any load, so a value on the
+        stack is just loaded and one in A is compared with 0, which leaves A
+        alone. V comes only from BIT on memory, and MIR builds a V test for
+        nothing else.
 
         Args:
             instr: BitTest instruction
         """
         value_loc = self.parent._get_operand_location(instr.value)
+        if instr.test_bit >= 8:
+            self.parent._ensure_m16_mode()
+        else:
+            self.parent._ensure_m8_mode()
 
-        # The test is of bit 7 or 6 of the low byte. In m16, BIT and AND set
-        # N and V from bits 15 and 14 instead, so a u16 value (or a u8 one
-        # read while A is 16-bit) would branch on the wrong bit.
-        self.parent._ensure_m8_mode()
-
-        # BIT instruction requires a memory operand. If value is on the stack
-        # or in a hardware register (A — coalesced from a vreg), spill to a
-        # temp DP scratch so we can emit a real BIT (which sets N, V, and Z).
-        if value_loc.kind == LocationKind.STACK or (
-            value_loc.kind == LocationKind.HARDWARE and value_loc.hw_register == 'A'
-        ):
-            # Load value into A (skip when already there)
+        if value_loc.kind == LocationKind.STACK or value_loc.is_hw('A'):
+            if instr.test_bit not in (7, 15):
+                raise InstructionSelectionError(
+                    f"BitTest of bit {instr.test_bit} needs a memory operand",
+                    source_loc=self.parent._current_source_loc)
             if value_loc.kind == LocationKind.STACK:
                 self._emit_load_store('LDA', value_loc)
-
-            # Try to get a scratch for true BIT instruction
-            temp_addr = self.parent._get_temp_address()
-            if temp_addr:
-                self._emit_instr(Opcode.STA_DP, temp_addr, "Store to temp for BIT")
-                self._emit_instr(Opcode.BIT_DP, temp_addr)
             else:
-                # No scratch available - use AND-based approach
-                # For bit test, we want to set Z flag based on whether bits are set
-                # The value is already in A, so we just use BIT #immediate with A value
-                # However, BIT #imm tests A against immediate, which is what we want
-                # for Z flag tests (A AND imm == 0)
-                if instr.test_bit == 7:
-                    # Test bit 7: AND #$80, then check Z flag
-                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x80), "Test bit 7")
-                elif instr.test_bit == 6:
-                    # Test bit 6: AND #$40, then check Z flag
-                    self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x40), "Test bit 6")
-                else:
-                    # General Z flag test - value is already in A
-                    # BIT #imm equivalent: CMP #0 sets Z if A==0
-                    # But we want to preserve A... use ORA #0 to just set flags
-                    self._emit_instr(Opcode.ORA_IMMEDIATE, Immediate(0x00), "Set Z flag from A")
+                self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate(0), "Set N from A")
             return
 
-        # BIT instruction requires a memory operand
         opcode, operand = self.parent._get_opcode_for_location('BIT', value_loc)
         self._emit_instr(opcode, operand)
-
-        # Flags are now set:
-        # - For bit 7 test: N flag indicates bit 7 value
-        # - For bit 6 test: V flag indicates bit 6 value
-        # - Z flag can also be used if needed
 
     # ========================================================================
     # Rotate Instruction

@@ -290,10 +290,6 @@ class ControlFlowInstructionSelector(BaseSelector):
 
     # comparison kind -> (branch opcode, comment); each also emits BRA to false.
     _FLAG_BRANCH_OPS = {
-        'bit7_set':              (Opcode.BMI, "Branch if bit 7 set"),
-        'bit7_clear':            (Opcode.BPL, "Branch if bit 7 clear"),
-        'bit6_set':              (Opcode.BVS, "Branch if bit 6 set"),
-        'bit6_clear':            (Opcode.BVC, "Branch if bit 6 clear"),
         'status_carry_set':      (Opcode.BCS, "Branch if Carry set"),
         'status_carry_clear':    (Opcode.BCC, "Branch if Carry clear"),
         'status_zero_set':       (Opcode.BEQ, "Branch if Zero set"),

@@ -123,14 +123,18 @@ class ConditionLowerer:
 
         # OPTIMIZATION 0: BIT instruction for bit testing
         bit_test = self._detect_bit_test_pattern(condition)
-        if bit_test:
+        in_memory = bool(bit_test) and isinstance(bit_test[0], HIRIdentifier) \
+            and self.builder.has_explicit_location(bit_test[0].symbol)
+        # N comes from the top bit (7, or 15 for a u16) of any load; V only
+        # from BIT on memory. A computed value tests its V bit by AND instead.
+        if bit_test and (bit_test[1] in (7, 15) or in_memory):
             value_expr, bit_number, inverted = bit_test
 
             # OPTIMIZATION: For direct variable access (especially hardware registers),
             # use MemoryLocation directly instead of loading the value
             # This allows: BIT $4212 instead of: LDA $4212; STA temp; BIT temp
 
-            if isinstance(value_expr, HIRIdentifier) and self.builder.has_explicit_location(value_expr.symbol):
+            if in_memory:
                 # Direct variable access - use MemoryLocation to avoid load/store
                 # This optimization only works for static variables (especially hardware registers)
                 symbol = value_expr.symbol
@@ -163,12 +167,9 @@ class ConditionLowerer:
                     actual_true = true_target
                     actual_false = false_target
 
-                # Emit conditional branch
-                # We'll use a special comparison string to indicate BIT-based branch
-                if bit_number == 7:
-                    comparison = 'bit7_set' if not inverted else 'bit7_clear'
-                else:  # bit_number == 6
-                    comparison = 'bit6_set' if not inverted else 'bit6_clear'
+                # BIT sets N from the top bit tested and V from the one below.
+                flag = 'negative' if bit_number in (7, 15) else 'overflow'
+                comparison = f"status_{flag}_{'clear' if inverted else 'set'}"
 
                 self.emit(CondBranch(
                     condition=None,  # Uses flags from BitTest
@@ -334,6 +335,7 @@ class ConditionLowerer:
         - (value & 0x40) != 0  =>  bit 6 test
         - (value & 0x80) == 0  =>  bit 7 test (inverted)
         - (value & 0x40) == 0  =>  bit 6 test (inverted)
+        and, for a 16-bit value, 0x8000 / 0x4000 as bits 15 / 14.
 
         Returns:
             tuple: (value_expr, bit_number, inverted) or None
@@ -369,12 +371,13 @@ class ConditionLowerer:
         mask = mask_expr.value
         bit_number = None
 
-        if mask == 0x80:
-            bit_number = 7
-        elif mask == 0x40:
-            bit_number = 6
-        else:
-            return None  # Only support bit 6 and 7
+        # The top two bits of the value's width: BIT sets N and V from them.
+        bits = {0x80: 7, 0x40: 6}
+        if getattr(left.left.expr_type, 'size_bytes', 1) == 2:
+            bits.update({0x8000: 15, 0x4000: 14})
+        bit_number = bits.get(mask)
+        if bit_number is None:
+            return None
 
         # Determine if test is inverted (== 0 means inverted)
         inverted = (condition.op == '==')
