@@ -145,11 +145,62 @@ def _classify_directives(
 # ---------------------------------------------------------------------------
 
 
+def escaped_labels(nodes: List[AsmNode]) -> Set[str]:
+    """Names a label could be entered by without a branch or jump.
+
+    Only a branch or a jump is an edge `compute_modes` models. Every other
+    way of naming a label - a JSR/JSL, a `#<label>` immediate loaded into
+    a function pointer, a `.DW` jump-table entry - is an entry the
+    dataflow cannot see. Over-approximates: every identifier in such an
+    operand, directive argument or raw asm line counts.
+    """
+    from r65.compiler.codegen.asm_nodes import Directive, RawAsm
+    from r65.compiler.codegen.opcodes import BRANCH_OPCODES, JUMP_OPCODES
+
+    escaped: Set[str] = set()
+
+    def note_names(text: str) -> None:
+        escaped.update(_IDENTIFIER_RE.findall(text))
+
+    for node in nodes:
+        if isinstance(node, Instruction):
+            if node.opcode in BRANCH_OPCODES or node.opcode in JUMP_OPCODES:
+                continue
+            value = getattr(node.operand, 'value', None)
+            if isinstance(value, str):
+                note_names(value)
+        elif isinstance(node, Directive):
+            for arg in getattr(node, 'args', ()) or ():
+                if isinstance(arg, str):
+                    note_names(arg)
+        elif isinstance(node, RawAsm):
+            note_names(node.text)
+    return escaped
+
+
+def function_entry_seeds(
+    nodes: List[AsmNode],
+    entry_modes: Dict[str, Optional[int]],
+) -> Dict[str, Optional[int]]:
+    """`compute_modes` seeds that start each function at its entry mode.
+
+    A function is entered by calls the dataflow does not follow, in the
+    mode `entry_modes` gives (None where unknown). Any other label named
+    outside a branch (a jump-table target, a pushed return address) is
+    entered in a mode nothing constrains, so it is seeded unknown.
+    """
+    seeds: Dict[str, Optional[int]] = {name: None for name in escaped_labels(nodes)}
+    seeds.update(entry_modes)
+    return seeds
+
+
 def _reconcile_anchors_with_cfg(
     stripped: List[AsmNode],
     stripped_is_anchor: List[bool],
     entry_m: Dict[str, int],
     entry_x: Dict[str, int],
+    call_exit_modes: Optional[Dict[str, int]] = None,
+    entry_modes: Optional[Dict[str, Optional[int]]] = None,
 ) -> None:
     """Correct label anchors that the asm CFG contradicts, in place.
 
@@ -164,48 +215,23 @@ def _reconcile_anchors_with_cfg(
     that would make WLA-DX size the block's immediates for a width the
     CPU is not in.
 
-    So: run the dataflow with no seeds at all. Where it *proves* a
-    unique mode at an anchored label from in-file edges alone, that
-    proof wins and the anchor is rewritten to match. Where it proves
-    nothing — an unreachable label, or one only entered by a call — the
-    anchor stands.
+    So: run the dataflow seeded only with function entries (none at all
+    without ``entry_modes``). Where it *proves* a unique mode at an
+    anchored label from in-file edges, that proof wins and the anchor is
+    rewritten to match. Where it proves nothing — an unreachable label,
+    or one only entered by a call — the anchor stands.
     """
-    from r65.compiler.codegen.asm_nodes import Directive, Instruction, RawAsm
-    from r65.compiler.codegen.opcodes import (
-        Opcode, BRANCH_OPCODES, JUMP_OPCODES,
-    )
-
-    # Only a branch or a jump is an edge `compute_modes` models. Every
-    # other way of naming a label — a JSR/JSL, a `#<label>` immediate
-    # loaded into a function pointer, a `.DW` jump-table entry — is an
-    # entry the dataflow cannot see, so the mode it arrives in is not
-    # constrained by the branches that also reach it. Leave those
-    # anchors alone.
+    # A label also entered some way the dataflow cannot see arrives in a
+    # mode its branches do not constrain. Leave those anchors alone.
     #
     # (Vector-table entries like `nmi_handler` are named only by the
     # ROM header, so nothing in the stream mentions them at all; they
     # are protected instead by the `is_reachable` test below, which is
     # false for a label with no in-file edges.)
-    escaped: Set[str] = set()
+    escaped = escaped_labels(stripped)
 
-    def note_names(text: str) -> None:
-        escaped.update(_IDENTIFIER_RE.findall(text))
-
-    for node in stripped:
-        if isinstance(node, Instruction):
-            if node.opcode in BRANCH_OPCODES or node.opcode in JUMP_OPCODES:
-                continue
-            value = getattr(node.operand, 'value', None)
-            if isinstance(value, str):
-                note_names(value)
-        elif isinstance(node, Directive):
-            for arg in getattr(node, 'args', ()) or ():
-                if isinstance(arg, str):
-                    note_names(arg)
-        elif isinstance(node, RawAsm):
-            note_names(node.text)
-
-    cfg = compute_modes(stripped)
+    seeds = function_entry_seeds(stripped, entry_modes) if entry_modes is not None else None
+    cfg = compute_modes(stripped, entry_modes=seeds, call_exit_modes=call_exit_modes)
 
     n = len(stripped)
     for i, node in enumerate(stripped):
@@ -236,7 +262,11 @@ def _reconcile_anchors_with_cfg(
             j += 1
 
 
-def normalize_mode_directives(nodes: List[AsmNode]) -> List[AsmNode]:
+def normalize_mode_directives(
+    nodes: List[AsmNode],
+    call_exit_modes: Optional[Dict[str, int]] = None,
+    entry_modes: Optional[Dict[str, Optional[int]]] = None,
+) -> List[AsmNode]:
     """Reconcile ``.ACCU`` / ``.INDEX`` directives in ``nodes`` against
     the asm-mode dataflow.
 
@@ -257,6 +287,11 @@ def normalize_mode_directives(nodes: List[AsmNode]) -> List[AsmNode]:
 
     The result has correct directives at every mode change without
     requiring peephole's individual passes to bookkeep the pairing.
+
+    ``call_exit_modes`` and ``entry_modes`` must be what the peephole
+    passes' dataflow used: a SEP/REP a pass proved redundant (after a
+    call, or at a block whose codegen anchor is stale) is otherwise left
+    with directives sized for the mode before it.
     """
     if not nodes:
         return nodes
@@ -281,12 +316,14 @@ def normalize_mode_directives(nodes: List[AsmNode]) -> List[AsmNode]:
             stripped_is_anchor.append(True)
         # else: mid-block directive → drop.
 
-    _reconcile_anchors_with_cfg(stripped, stripped_is_anchor, entry_m, entry_x)
+    _reconcile_anchors_with_cfg(stripped, stripped_is_anchor, entry_m, entry_x,
+                                call_exit_modes, entry_modes)
 
     info = compute_modes(
         stripped,
         entry_modes=entry_m,
         entry_x_modes=entry_x,
+        call_exit_modes=call_exit_modes,
     )
 
     # Step 4: walk and re-emit. Track WLA-DX's belief from anchored

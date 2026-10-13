@@ -255,13 +255,19 @@ class TestSixteenBitAccumulator:
                                       args="300, 4"))
 
     def test_restore_runs_in_m16(self):
-        instrs = instrs_for(caller_body(self.CALLEE, "wide(v, p)",
-                                        params="v @ A: u16, p: u16",
-                                        args="300, 4"))
-        restore = next(i for i, s in enumerate(instrs) if s in ('TYA', 'TXA'))
-        modes = [s for s in instrs[:restore] if s.startswith(('REP', 'SEP'))]
-        assert modes and modes[-1].startswith('REP'), (
-            f"a 16-bit restore must run in m16: {instrs}")
+        # The caller is itself entered in m16 (`v @ A: u16`), so no switch
+        # need precede the restore; `.ACCU` follows the mode dataflow.
+        asm = _get_function_asm(compile_string(caller_body(
+            self.CALLEE, "wide(v, p)", params="v @ A: u16, p: u16",
+            args="300, 4")), "caller")
+        width = None
+        for line in asm.splitlines():
+            parts = line.split()
+            if parts[:1] == ['.ACCU']:
+                width = parts[1]
+            elif parts[:1] in (['TYA'], ['TXA']):
+                break
+        assert width == '16', f"a 16-bit restore must run in m16:\n{asm}"
 
 
 class TestPreservedRegisterNotUsedForParking:

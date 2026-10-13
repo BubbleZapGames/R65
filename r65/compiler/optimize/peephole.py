@@ -278,6 +278,9 @@ class PeepholeOptimizer:
         # the other regions (for queries that must see the whole program).
         self._start_bits: Optional[Tuple[int, int]] = None
         self._outside: List[List['AsmNode']] = []
+        # Seeds for the passes' mode dataflow; see optimize().
+        self._entry_modes: dict = {}
+        self._call_exit_modes: Optional[dict] = None
 
     @property
     def optimizations_applied(self) -> int:
@@ -285,7 +288,9 @@ class PeepholeOptimizer:
         return self.stats.total
 
     def optimize(self, nodes: List['AsmNode'],
-                 region_starts: Optional[List['AsmNode']] = None) -> List['AsmNode']:
+                 region_starts: Optional[List['AsmNode']] = None,
+                 entry_modes: Optional[dict] = None,
+                 call_exit_modes: Optional[dict] = None) -> List['AsmNode']:
         """
         Apply peephole optimizations to AsmNode list.
 
@@ -295,14 +300,20 @@ class PeepholeOptimizer:
                 (one per function). Each region is iterated to its own
                 fixpoint, so a function that has converged is not
                 re-scanned while another still changes.
+            entry_modes: ``{label: mode}`` each function is entered in
+                (None where unknown, e.g. an interrupt handler).
+            call_exit_modes: ``{label: mode}`` each function returns in.
+                Given both, the passes' mode dataflow starts every
+                function at its entry mode and follows calls and inline
+                asm; without them function bodies are unreachable to it
+                and the mode-driven passes leave them alone.
 
         Returns:
             Optimized node list
         """
         from r65.compiler.optimize.mode_directive_rewrite import (
-            normalize_mode_directives,
+            function_entry_seeds, normalize_mode_directives,
         )
-        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
 
         # Strip and re-emit mode directives once up-front. This drops
         # the mid-block `.ACCU` / `.INDEX` directives codegen pairs with
@@ -311,7 +322,11 @@ class PeepholeOptimizer:
         # passes below no longer need to keep `.ACCU` directives in
         # sync when they rewrite SEP/REP — the final normalize call
         # regenerates them after all optimizations settle.
-        nodes = normalize_mode_directives(nodes)
+        nodes = normalize_mode_directives(nodes, call_exit_modes, entry_modes)
+
+        if call_exit_modes is not None:
+            self._entry_modes = function_entry_seeds(nodes, entry_modes or {})
+            self._call_exit_modes = call_exit_modes
 
         regions = _split_regions(nodes, region_starts)
         if len(regions) == 1:
@@ -319,7 +334,7 @@ class PeepholeOptimizer:
         else:
             # Seed each region with the modes the whole stream reaches its
             # first node in, so the passes' dataflow matches a whole-stream run.
-            info = compute_modes(nodes)
+            info = self._modes(nodes)
             seeds = []
             pos = 0
             for region in regions:
@@ -337,7 +352,7 @@ class PeepholeOptimizer:
         # mode dataflow. The optimizations above may have left stale or
         # missing directives; this guarantees the final stream is
         # consistent without each pass having to maintain the pairing.
-        nodes = normalize_mode_directives(nodes)
+        nodes = normalize_mode_directives(nodes, call_exit_modes, entry_modes)
 
         return nodes
 
@@ -378,6 +393,13 @@ class PeepholeOptimizer:
             changed = self.stats.total > prev_total
 
         return nodes
+
+    def _modes(self, nodes: List['AsmNode']):
+        """The asm-mode dataflow over `nodes`, seeded as optimize() set up."""
+        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
+        return compute_modes(nodes, entry_modes=self._entry_modes,
+                             start_bits=self._start_bits,
+                             call_exit_modes=self._call_exit_modes)
 
     def _rewrite_adjacent_pairs(self, nodes: List['AsmNode'], match) -> List['AsmNode']:
         """Scan for adjacent Instruction pairs and rewrite matches.
@@ -546,29 +568,23 @@ class PeepholeOptimizer:
 
         return False
 
-    def _get_accu_mode_at(self, nodes: List['AsmNode'], idx: int) -> int:
+    def _get_accu_mode_at(self, nodes: List['AsmNode'], idx: int) -> Optional[int]:
         """Determine accumulator width (8 or 16) at the given index.
 
         Backed by the asm-mode dataflow: returns the unique mode that
-        all paths into nodes[idx] agree on. Falls back to m8 (the
-        SNES default) when the dataflow is inconclusive — either
-        because the index is at function entry (no incoming edges
-        seeded), because a path arrives in unknown mode (post-PLP/RTI),
-        or because two paths disagree.
+        all paths into nodes[idx] agree on, or None when the dataflow is
+        inconclusive — the index is unreachable to it, a path arrives in
+        unknown mode (post-PLP/RTI/call), or two paths disagree.
 
         Caches the dataflow result keyed on `id(nodes)`; callers in a
         rewrite-heavy pass (e.g. `_eliminate_dead_stores`) should
         invalidate `self._accu_mode_cache` whenever they hand in a
         freshly-allocated node list.
         """
-        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
-
         cache = getattr(self, '_accu_mode_cache', None)
         if cache is None or cache[0] is not nodes:
-            self._accu_mode_cache = (nodes, compute_modes(nodes, start_bits=self._start_bits))
-        info = self._accu_mode_cache[1]
-        mode = info.unique_mode_at(idx)
-        return mode if mode is not None else 8
+            self._accu_mode_cache = (nodes, self._modes(nodes))
+        return self._accu_mode_cache[1].unique_mode_at(idx)
 
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
         """
@@ -587,15 +603,16 @@ class PeepholeOptimizer:
         is_stack_relative = isinstance(store_operand, StackOffset)
 
         # In m16 mode, STA writes 2 bytes: offset N and N+1.
-        # We need to check reads from the adjacent byte too.
+        # We need to check reads from the adjacent byte too - unless the
+        # store is proven m8.
         adjacent_operand = None
         if is_stack_relative:
             accu_mode = self._get_accu_mode_at(nodes, store_idx)
-            if accu_mode == 16:
+            if accu_mode != 8:
                 adjacent_operand = StackOffset(store_operand.offset + 1)
         elif isinstance(store_operand, Address) and isinstance(store_operand.value, int):
             accu_mode = self._get_accu_mode_at(nodes, store_idx)
-            if accu_mode == 16:
+            if accu_mode != 8:
                 adjacent_operand = Address(store_operand.value + 1)
 
         j = store_idx + 1
@@ -783,9 +800,8 @@ class PeepholeOptimizer:
         to bookkeep the pairing.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
-        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
 
-        info = compute_modes(nodes, start_bits=self._start_bits)
+        info = self._modes(nodes)
 
         optimized: List = []
         i = 0
@@ -1034,7 +1050,7 @@ class PeepholeOptimizer:
             Instruction, Immediate, Directive, Label, ModeChange,
         )
         from r65.compiler.optimize.asm_mode_dataflow import (
-            compute_modes, first_constraining_mode_after,
+            first_constraining_mode_after,
         )
 
         # Loop until no more rewrites apply. Each rewrite changes the
@@ -1045,7 +1061,7 @@ class PeepholeOptimizer:
         any_change = True
         while any_change:
             any_change = False
-            info = compute_modes(nodes, start_bits=self._start_bits)
+            info = self._modes(nodes)
             new_nodes: List = []
             i = 0
             n = len(nodes)
@@ -1911,6 +1927,7 @@ class PeepholeOptimizer:
         # / `.INDEX` directives between — those are inert hints we walk
         # past to find the real instruction).
         hoists = []  # (label_idx, sep_idx, target_mode)
+        info = None
 
         for i, node in enumerate(nodes):
             if not isinstance(node, Label):
@@ -1972,11 +1989,16 @@ class PeepholeOptimizer:
                     current_mode = None
                     break
 
-                # Check for back-edge
+                # Check for back-edge. The walk above follows text order,
+                # which can run past a return into a block entered from
+                # elsewhere in another mode, so the dataflow - every path
+                # into the branch - must agree.
                 if (n.opcode in BACK_EDGE_OPCODES and
                         hasattr(n.operand, 'value') and n.operand.value == label_name):
                     if current_mode == target_mode:
-                        found_back_edge = True
+                        if info is None:
+                            info = self._modes(nodes)
+                        found_back_edge = info.unique_mode_at(k) == target_mode
                     break
 
                 # If we hit an unconditional branch/jump to elsewhere, stop
@@ -2569,6 +2591,8 @@ def _split_regions(nodes: List['AsmNode'],
 def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
                    volatile_addresses: Set[int] = None,
                    region_starts: Optional[List['AsmNode']] = None,
+                   entry_modes: Optional[dict] = None,
+                   call_exit_modes: Optional[dict] = None,
                    ) -> Tuple[List['AsmNode'], int]:
     """
     Apply peephole optimizations to AsmNode list.
@@ -2581,10 +2605,12 @@ def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
                            Stores to these addresses will not be eliminated.
         region_starts: Optional first nodes of the regions (functions) to
                        optimize independently; see PeepholeOptimizer.optimize.
+        entry_modes, call_exit_modes: Each function's entry and exit mode;
+                       see PeepholeOptimizer.optimize.
 
     Returns:
         Tuple of (optimized nodes, number of optimizations applied)
     """
     optimizer = PeepholeOptimizer(volatile_names, volatile_addresses)
-    optimized = optimizer.optimize(nodes, region_starts)
+    optimized = optimizer.optimize(nodes, region_starts, entry_modes, call_exit_modes)
     return optimized, optimizer.optimizations_applied

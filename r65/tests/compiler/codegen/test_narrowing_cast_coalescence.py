@@ -66,17 +66,19 @@ def test_narrowing_cast_needs_no_frame():
 
 
 def test_narrowing_cast_is_just_a_mode_switch():
-    """`A = A as u8` truncates by switching width — no instruction of its own."""
+    """`A = A as u8` truncates by switching width — no instruction of its own.
+
+    (`v @ A: u16` enters in m16, so `v + 1` is a bare `INC A`.)"""
     asm = _func_asm(SOURCE, "narrowed")
     ops = re.findall(r"^\s*([A-Z]{3})\b", asm, re.M)
-    assert ops == ["REP", "ADC", "SEP"]
+    assert ops == ["INC", "SEP"]
 
 
 def test_shift_then_narrow_drops_the_mask():
     """With the spill gone, the existing AND-before-SEP peephole can fire."""
     asm = _func_asm(SOURCE, "shifted")
     ops = re.findall(r"^\s*([A-Z]{3})\b", asm, re.M)
-    assert ops == ["REP", "ADC", "XBA", "SEP"]
+    assert ops == ["INC", "XBA", "SEP"]
     assert "AND" not in asm
 
 
@@ -84,7 +86,7 @@ def test_unrelated_arithmetic_is_unaffected():
     """The no-cast baseline this was measured against must not move."""
     asm = _func_asm(SOURCE, "nocast")
     ops = re.findall(r"^\s*([A-Z]{3})\b", asm, re.M)
-    assert ops == ["REP", "ADC"]
+    assert ops == ["INC"]
 
 
 def test_unsigned_widening_is_a_mask_in_a():
@@ -139,5 +141,5 @@ def test_source_in_a_with_uncoalesced_destination():
         #[entry] fn main() { B1 = f(0x1122); B1 = f(0x3344); }
     """, "f")
     ops = re.findall(r"^\s*([A-Z]{3})\b", asm, re.M)
-    assert ops == ["REP", "ADC", "SEP", "STA", "INC"]
+    assert ops == ["INC", "SEP", "STA", "INC"]
     assert not re.search(r"^\s*STA \$[0-9A-F]+,S", asm, re.M)

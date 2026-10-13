@@ -22,6 +22,8 @@ Symptom in rotor_raiders: `UNIT_BASES[k].base()` returned a pointer whose
 high byte was garbage, and the field reads through it hit zero page.
 """
 
+import re
+
 from r65.compiler.main import compile_string
 
 
@@ -58,9 +60,11 @@ def test_callee_keeps_the_pointer_16_bit():
 def test_caller_spills_both_pointer_bytes():
     code = _fn(compile_string(SRC, "test.r65"), "use_it")
     spill = code[:code.index("Spill A pointer to scratch")]
-    # The last mode switch before the store must widen A, or STA writes one byte.
-    modes = [m for m in spill.split("\n") if "REP #$20" in m or "SEP #$20" in m]
-    assert modes and "REP" in modes[-1], code
+    # The store must run in m16, or STA writes one byte. `pick` returns in
+    # m16, so the call itself may be what widened A; `.ACCU` follows the
+    # mode dataflow either way.
+    widths = re.findall(r"\.ACCU (8|16)", spill)
+    assert widths and widths[-1] == "16", code
 
 
 def test_indirect_read_follows_the_spill():

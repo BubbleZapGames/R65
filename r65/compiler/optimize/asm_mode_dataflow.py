@@ -45,6 +45,7 @@ Notes on `.ACCU`:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -52,6 +53,7 @@ from r65.compiler.codegen.constants import M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import (
     Opcode,
     BRANCH_OPCODES,
+    CALL_OPCODES,
     JUMP_OPCODES,
     RETURN_OPCODES,
     M16_IMMEDIATE_OPCODES,
@@ -230,6 +232,75 @@ def _transfer(in_bits: int, node, *, flag: int = M_FLAG) -> int:
     return in_bits
 
 
+# Every 65816 mnemonic the compiler knows. An inline-asm line starting
+# with one of these (other than the mode-setting ones handled first)
+# leaves the m/x flags alone.
+_MNEMONICS = frozenset(op.name.split('_')[0] for op in Opcode)
+_IMMEDIATE_RE = re.compile(r'#\s*(\$[0-9A-F]+|%[01]+|[0-9]+)\b')
+
+
+def _rawasm_effect(text: str):
+    """The (m, x) lattice masks a raw asm line leaves, None for each flag
+    it does not touch, or None if it touches neither.
+
+    Inline asm reaches the stream as text, so SEP/REP/PLP inside an
+    `asm!` would otherwise be invisible. A line that cannot be read with
+    certainty - an unknown mnemonic (a macro), an `.INCLUDE`, a SEP/REP
+    whose immediate does not parse - makes both flags unknown.
+    """
+    line = text.split(';', 1)[0].strip().upper()
+    if not line:
+        return None
+    if line.startswith('.'):
+        if line.startswith('.INCLUDE'):
+            return (_BIT_UNK, _BIT_UNK)
+        return None
+    if line.endswith(':'):
+        return None
+    mnemonic = line.split()[0].split('.')[0]
+    if mnemonic in ('SEP', 'REP'):
+        match = _IMMEDIATE_RE.search(line)
+        if match is None:
+            return (_BIT_UNK, _BIT_UNK)
+        digits = match.group(1)
+        if digits.startswith('$'):
+            value = int(digits[1:], 16)
+        elif digits.startswith('%'):
+            value = int(digits[1:], 2)
+        else:
+            value = int(digits)
+        bits = _BIT_M8 if mnemonic == 'SEP' else _BIT_M16
+        return (bits if value & M_FLAG else None,
+                bits if value & X_FLAG else None)
+    if mnemonic in ('PLP', 'RTI', 'XCE'):
+        return (_BIT_UNK, _BIT_UNK)
+    if mnemonic in _MNEMONICS:
+        return None
+    return (_BIT_UNK, _BIT_UNK)
+
+
+def _modeled_effect(node, call_exit_modes: Dict[str, Mode]):
+    """The (m, x) masks `node` leaves under the modeled-calls analysis
+    (None per flag for the ordinary transfer), or None to use
+    `_transfer` for both."""
+    from r65.compiler.codegen.asm_nodes import Instruction, RawAsm
+
+    if isinstance(node, RawAsm):
+        return _rawasm_effect(node.text)
+    if not isinstance(node, Instruction):
+        return None
+    if node.opcode in CALL_OPCODES:
+        # A call returns in the callee's exit mode; an unknown callee
+        # (indirect, or a label codegen did not describe) in any mode.
+        target = getattr(node.operand, 'value', None)
+        if isinstance(target, str) and target in call_exit_modes:
+            return (_mode_bit(call_exit_modes[target]), None)
+        return (_BIT_UNK, None)
+    if node.opcode == Opcode.XCE:
+        return (_BIT_UNK, _BIT_UNK)
+    return None
+
+
 def _branch_target(node) -> Optional[str]:
     """If node is a branch/jump with a label target, return the label name."""
     from r65.compiler.codegen.asm_nodes import Instruction, Address
@@ -261,6 +332,7 @@ def compute_modes(
     entry_modes: Optional[Dict[str, Mode]] = None,
     entry_x_modes: Optional[Dict[str, Mode]] = None,
     start_bits: Optional[Tuple[int, int]] = None,
+    call_exit_modes: Optional[Dict[str, Mode]] = None,
 ) -> ModeInfo:
     """Run forward dataflow over `nodes`; return per-node mode info.
 
@@ -284,6 +356,12 @@ def compute_modes(
             nodes[0], replacing the program-start seed. For a slice of a
             larger stream, pass the masks the whole stream computed at
             the slice's first node so the slice sees the same modes.
+        call_exit_modes: when given, model what the plain analysis
+            passes straight through: a JSR/JSL leaves the callee's exit
+            mode from this ``{label: mode}`` map (unknown for any other
+            callee), XCE leaves both flags unknown, and inline asm
+            (RawAsm) applies its SEP/REP/PLP - unknown where it cannot
+            be read. Without it, calls and RawAsm are mode-transparent.
 
     Returns:
         ModeInfo. Every reachable node has a non-empty ``incoming`` set;
@@ -307,6 +385,12 @@ def compute_modes(
             # First occurrence wins if (somehow) duplicated.
             label_idx.setdefault(node.name, i)
         info.required[i] = _required_mode_of(node)
+
+    # Nodes whose effect the plain transfer does not model (calls, XCE,
+    # inline asm), resolved once up front.
+    effects: Optional[List] = None
+    if call_exit_modes is not None:
+        effects = [_modeled_effect(node, call_exit_modes) for node in nodes]
 
     # Count physical predecessors (fall-through + branch/jump sources).
     # The fall-through count is fixed by source order: every node has at
@@ -372,6 +456,12 @@ def compute_modes(
             node = nodes[i]
             out_bits = _transfer(in_bits, node, flag=M_FLAG) if in_bits else 0
             out_x_bits = _transfer(in_x_bits, node, flag=X_FLAG) if in_x_bits else 0
+            effect = effects[i] if effects is not None else None
+            if effect is not None:
+                if in_bits and effect[0] is not None:
+                    out_bits = effect[0]
+                if in_x_bits and effect[1] is not None:
+                    out_x_bits = effect[1]
 
             # Fall-through successor (next index), unless this node
             # unconditionally transfers control elsewhere. Frozen

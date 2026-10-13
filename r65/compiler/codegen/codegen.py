@@ -24,6 +24,23 @@ from r65.compiler.errors import CodegenError
 # Note: Optimize imports are done lazily in generate() to avoid circular imports
 
 
+def _function_modes(mir_func):
+    """The accumulator width (8/16) `mir_func` is entered and returns in.
+
+    The entry mode is the one its `.ACCU` anchor declares and its callers
+    switch to. An interrupt handler interrupts code in either mode and the
+    reset entry starts in emulation mode, so theirs is unknown (None).
+    """
+    from r65.compiler.typeck.processor_mode import ModeState
+
+    if mir_func.interrupt_attr is not None or mir_func.is_entry:
+        entry = None
+    else:
+        entry = 16 if mir_func.entry_m_mode == ModeState.M16 else 8
+    exit_mode = 16 if mir_func.exit_m_mode == ModeState.M16 else 8
+    return entry, exit_mode
+
+
 class ProgramCodeGenerator:
     """
     Generates complete assembly program from MIR.
@@ -312,6 +329,8 @@ class ProgramCodeGenerator:
 
         # Generate code for each bank
         function_starts = []
+        entry_modes = {}
+        exit_modes = {}
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
 
@@ -335,6 +354,8 @@ class ProgramCodeGenerator:
                 # The peephole optimizer iterates each function separately.
                 if len(self.emitter.nodes) > start:
                     function_starts.append(self.emitter.nodes[start])
+                entry_modes[mir_func.name], exit_modes[mir_func.name] = (
+                    _function_modes(mir_func))
                 # Emit this function's local array/string/struct literal
                 # init data immediately after its body so the data lands in
                 # the same ROM bank as the function's inlined MVN block-copy.
@@ -395,7 +416,8 @@ class ProgramCodeGenerator:
         if opt_level >= 1:
             optimized_nodes, num_optimizations = optimize_nodes(
                 nodes, volatile_names, volatile_addresses,
-                region_starts=function_starts)
+                region_starts=function_starts,
+                entry_modes=entry_modes, call_exit_modes=exit_modes)
             if num_optimizations > 0:
                 print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
         else:
