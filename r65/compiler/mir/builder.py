@@ -1448,84 +1448,23 @@ class MIRBuilder:
             # Condition is always false - only evaluate else branch
             return self.lower_expression(expr.else_block)
 
-        # Non-constant condition - generate full control flow
-        # Allocate result register
         result_vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, "if_result")
 
-        # Create blocks
-        then_block = self.cfg_builder.new_block()
-        else_block = self.cfg_builder.new_block()
-        merge_block = self.cfg_builder.new_block()
+        def arm(body):
+            def lower():
+                value = self.lower_expression(body)
+                if not self._block_has_terminator():
+                    self.emit(Move(dest=result_vreg, source=value, type_info=expr.expr_type))
+            return lower
 
-        # Lower condition with short-circuit evaluation
-        self.cond_lowerer.lower_condition(expr.condition, then_block.block_id, else_block.block_id)
-
-        # Lower then branch
-        self.current_block = then_block
-        then_result = self.lower_expression(expr.then_block)
-        # Move result to result_vreg (must be done before jump, in the then block)
-        if not self._block_has_terminator():
-            self.emit(Move(dest=result_vreg, source=then_result, type_info=expr.expr_type))
-            self.emit(Jump(target=merge_block.block_id))
-            self.cfg_builder.add_edge(then_block, merge_block)
-
-        # Lower else branch
-        self.current_block = else_block
-        else_result = self.lower_expression(expr.else_block)
-        if not self._block_has_terminator():
-            self.emit(Move(dest=result_vreg, source=else_result, type_info=expr.expr_type))
-            self.emit(Jump(target=merge_block.block_id))
-            self.cfg_builder.add_edge(else_block, merge_block)
-
-        # Continue at merge block
-        self.current_block = merge_block
-
+        self._lower_branches(expr.condition, arm(expr.then_block), arm(expr.else_block))
         return result_vreg
 
     def _lower_loop_expression(self, expr: HIRLoopExpression) -> VirtualRegister:
-        """
-        Lower loop expression to MIR.
-
-        Similar to lower_while_statement but allocates a result vreg
-        that break statements write to before jumping to exit.
-        """
-        # Allocate result register
+        """`loop { .. }` as a value: an infinite loop whose breaks write the
+        result vreg before jumping to the exit."""
         result_vreg = self.current_function.vreg_allocator.alloc(expr.expr_type, "loop_result")
-
-        # Create header and exit blocks (same as infinite loop)
-        header_block = self.cfg_builder.new_block()
-        body_block = self.cfg_builder.new_block()
-        exit_block = self.cfg_builder.new_block()
-
-        self._hoist_invariant_index_terms(expr.body)
-
-        # Jump to header
-        self.emit(Jump(target=header_block.block_id))
-        self.cfg_builder.add_edge(self.current_block, header_block)
-
-        # Header: jump to body (infinite loop)
-        self.current_block = header_block
-        self.emit(Jump(target=body_block.block_id))
-        self.cfg_builder.add_edge(header_block, body_block)
-
-        # Body: track loop context with result vreg
-        self.current_block = body_block
-        self.loop_stack.append((header_block.block_id, exit_block.block_id, expr.label, result_vreg))
-        self.lower_block(expr.body)
-        self.loop_stack.pop()
-        self._hoisted_index_terms.pop()
-
-        # Jump back to header (unless body ends with break/return)
-        if not self._block_has_terminator():
-            self.emit(Jump(target=header_block.block_id))
-            # Use current_block (not body_block) because body lowering may
-            # have created new blocks, so current_block is the actual block
-            # containing the Jump instruction.
-            self.cfg_builder.add_edge(self.current_block, header_block)
-
-        # Continue at exit block
-        self.current_block = exit_block
-
+        self._lower_loop(expr.body, expr.label, None, True, result_vreg)
         return result_vreg
 
     # ========================================================================
@@ -1592,68 +1531,57 @@ class MIRBuilder:
                     self.lower_block(stmt.else_block)
             return
 
-        # Non-constant condition - generate full control flow
-        # Create target blocks
+        def lower_else():
+            # Handle else-if chains (else_block can be HIRIfStmt)
+            if isinstance(stmt.else_block, HIRIfStmt):
+                self.lower_if_statement(stmt.else_block)
+            else:
+                self.lower_block(stmt.else_block)
+
+        self._lower_branches(stmt.condition,
+                             lambda: self.lower_block(stmt.then_block),
+                             lower_else if stmt.else_block else None)
+
+    def _lower_branches(self, condition, lower_then, lower_else):
+        """Branch on *condition* to a then block and (if *lower_else*) an else
+        block, each lowered by its callback, then continue at the merge.
+
+        Cached loads of statics are dropped between the arms - a load in the
+        then arm must not be reused by the else arm, a sibling rather than a
+        successor - and again at the merge, where either arm may have written
+        them. Local-variable vregs persist: they ARE the variable's storage.
+        Each arm's closing jump leaves from `current_block`, wherever its
+        body ended.
+        """
         then_block = self.cfg_builder.new_block()
         merge_block = self.cfg_builder.new_block()
-        else_block = self.cfg_builder.new_block() if stmt.else_block else merge_block
+        else_block = self.cfg_builder.new_block() if lower_else else merge_block
 
-        # Lower condition with short-circuit evaluation
-        self.cond_lowerer.lower_condition(stmt.condition, then_block.block_id, else_block.block_id)
+        self.cond_lowerer.lower_condition(condition, then_block.block_id, else_block.block_id)
 
-        # Save memloc cache entries before branching.  A Load for a static
-        # variable emitted in the then-block must not create a cached vreg
-        # that the else-block (a sibling, not a successor) silently reuses.
-        # Only memloc entries (explicit-location statics) are saved/restored;
-        # local-variable vregs must persist because they ARE the storage.
         saved_memloc = {
             sym_id: self.symbol_to_vreg[sym_id]
             for sym_id in self.ctx.memloc_cached_symbols
             if sym_id in self.symbol_to_vreg
         }
 
-        # Lower then branch
         self.current_block = then_block
-        self.lower_block(stmt.then_block)
-        # Jump to merge (unless then block ends with return/break/continue).
-        # The body may have created new blocks (nested ifs, etc.), so the
-        # block emitting the trailing Jump is `self.current_block`, NOT the
-        # original `then_block`. Adding the edge from `then_block` would
-        # leave the CFG out of sync with the emitted Jump.
+        lower_then()
         if not self._block_has_terminator():
-            self.emit(Jump(target=merge_block.block_id))
-            self.cfg_builder.add_edge(self.current_block, merge_block)
+            self.jump_to(merge_block)
 
-        # Lower else branch if present
-        if stmt.else_block:
-            # Restore memloc cache entries to pre-branch state so the
-            # else-block doesn't reuse vregs loaded only in the then-block.
+        if lower_else:
             for sym_id in list(self.ctx.memloc_cached_symbols):
                 if sym_id in self.symbol_to_vreg:
                     del self.symbol_to_vreg[sym_id]
             for sym_id, vreg in saved_memloc.items():
                 self.symbol_to_vreg[sym_id] = vreg
             self.current_block = else_block
-            # Handle else-if chains (else_block can be HIRIfStmt)
-            if isinstance(stmt.else_block, HIRIfStmt):
-                self.lower_if_statement(stmt.else_block)
-            else:
-                self.lower_block(stmt.else_block)
-            # Jump to merge: same rationale as the then-branch — use
-            # current_block, not the original else_block, since the body
-            # may have left us in a freshly-created block.
+            lower_else()
             if not self._block_has_terminator():
-                self.emit(Jump(target=merge_block.block_id))
-                self.cfg_builder.add_edge(self.current_block, merge_block)
+                self.jump_to(merge_block)
 
-        # At the merge point, invalidate cached vregs for symbols with
-        # explicit memory locations (statics).  Either branch may have
-        # modified them, so the only safe value is a fresh Load.
-        # Local-variable vregs (no explicit location) are fine — they
-        # ARE the variable's storage and persist across blocks.
         self._invalidate_memloc_cache()
-
-        # Continue at merge block
         self.current_block = merge_block
 
     # ========================================================================
@@ -1684,62 +1612,42 @@ class MIRBuilder:
            |
           Jump (back to header)
         """
-        # Create blocks
+        self._lower_loop(stmt.body, stmt.label, stmt.condition, stmt.is_infinite, None)
+
+    def _lower_loop(self, body, label, condition, is_infinite: bool, result_vreg):
+        """Header, body and exit blocks for a while, loop or loop expression.
+        *result_vreg* is where a `break value` lands (None for statements)."""
         header_block = self.cfg_builder.new_block()
         body_block = self.cfg_builder.new_block()
         exit_block = self.cfg_builder.new_block()
 
-        self._hoist_invariant_index_terms(stmt.body)
-
-        # Jump from current block to header
-        self.emit(Jump(target=header_block.block_id))
-        self.cfg_builder.add_edge(self.current_block, header_block)
-
-        # Header: condition check (or infinite loop)
+        self._hoist_invariant_index_terms(body)
+        self.jump_to(header_block)
         self.current_block = header_block
 
-        # Try to evaluate condition at compile time
-        const_cond = None
-        if stmt.condition:
-            const_cond = self._try_eval_const_condition(stmt.condition)
-
-        if const_cond is True or stmt.is_infinite:
-            # Infinite loop: `loop { }` or `while true { }`
-            self.emit(Jump(target=body_block.block_id))
-            self.cfg_builder.add_edge(header_block, body_block)
-        elif const_cond is False:
+        const_cond = self._try_eval_const_condition(condition) if condition else None
+        if const_cond is False:
             # Dead loop: `while false { }` - skip entirely
-            self.emit(Jump(target=exit_block.block_id))
-            self.cfg_builder.add_edge(header_block, exit_block)
+            self.jump_to(exit_block)
             self.current_block = exit_block
             self._hoisted_index_terms.pop()
             return
-        elif stmt.condition:
-            # while condition: conditional loop
-            # Use condition lowerer for proper Compare + CondBranch generation
-            self.cond_lowerer.lower_condition(stmt.condition, body_block.block_id, exit_block.block_id)
+        if condition and const_cond is not True and not is_infinite:
+            self.cond_lowerer.lower_condition(condition, body_block.block_id, exit_block.block_id)
         else:
-            # loop: infinite loop (fallback)
-            self.emit(Jump(target=body_block.block_id))
-            self.cfg_builder.add_edge(header_block, body_block)
+            # `loop { }`, `while true { }`
+            self.jump_to(body_block)
 
-        # Body: track loop context for break/continue
+        # Loop context for break/continue: (continue=header, break=exit, ...)
         self.current_block = body_block
-        # Push loop context: (continue_target=header, break_target=exit, label, result_vreg)
-        self.loop_stack.append((header_block.block_id, exit_block.block_id, stmt.label, None))
-        self.lower_block(stmt.body)
+        self.loop_stack.append((header_block.block_id, exit_block.block_id, label, result_vreg))
+        self.lower_block(body)
         self.loop_stack.pop()
         self._hoisted_index_terms.pop()
 
-        # Jump back to header (unless body ends with break/return)
+        # Back to the header, unless the body ended with break/return
         if not self._block_has_terminator():
-            self.emit(Jump(target=header_block.block_id))
-            # Use current_block (not body_block) because body lowering may
-            # have created new blocks, so current_block is the actual block
-            # containing the Jump instruction.
-            self.cfg_builder.add_edge(self.current_block, header_block)
-
-        # Continue at exit block
+            self.jump_to(header_block)
         self.current_block = exit_block
 
     def _find_loop_target(self, label: str = None) -> tuple:
@@ -1870,14 +1778,12 @@ class MIRBuilder:
         # True block: result = 1
         self.current_block = true_block
         self.emit(Move(dest=result, source=Immediate(1), type_info=result_type))
-        self.emit(Jump(target=merge_block.block_id))
-        self.cfg_builder.add_edge(true_block, merge_block)
+        self.jump_to(merge_block)
 
         # False block: result = 0
         self.current_block = false_block
         self.emit(Move(dest=result, source=Immediate(0), type_info=result_type))
-        self.emit(Jump(target=merge_block.block_id))
-        self.cfg_builder.add_edge(false_block, merge_block)
+        self.jump_to(merge_block)
 
         # Continue in merge block
         self.current_block = merge_block
@@ -2574,6 +2480,16 @@ class MIRBuilder:
 
         last_instr = self.current_block.instructions[-1]
         return isinstance(last_instr, (Return, ReturnFromInterrupt, Jump, CondBranch))
+
+    def jump_to(self, block: BasicBlock):
+        """End the current block with a Jump to *block* and record the edge.
+
+        The edge leaves `current_block` - wherever lowering has got to - not
+        the block a construct began in: an arm that holds its own branches
+        ends in a later block than it started in.
+        """
+        self.emit(Jump(target=block.block_id))
+        self.cfg_builder.add_edge(self.current_block, block)
 
     def emit(self, instruction: MIRInstruction):
         """

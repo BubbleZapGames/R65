@@ -15,9 +15,9 @@ from r65.compiler.hir import (
 )
 from r65.compiler.hir.types import strip_newtype, BasicTypeInfo, PointerTypeInfo
 from r65.compiler.mir.nodes import (
-    VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Move, Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool,
-    Compare, CondBranch, Jump,
+    VirtualRegister, HardwareRegister, Immediate, MemoryLocation, Move,
+    Load, LoadIndirect, BinaryOp, UnaryOp, TypeConvert, ToBool, Compare,
+    CondBranch,
 )
 from r65.compiler.errors import MIRLoweringError
 
@@ -159,13 +159,11 @@ class ExpressionLowerer:
 
         self.builder.current_block = true_block
         self.emit(Move(dest=result, source=Immediate(1), type_info=result_type))
-        self.emit(Jump(target=merge_block.block_id))
-        self.builder.cfg_builder.add_edge(true_block, merge_block)
+        self.builder.jump_to(merge_block)
 
         self.builder.current_block = false_block
         self.emit(Move(dest=result, source=Immediate(0), type_info=result_type))
-        self.emit(Jump(target=merge_block.block_id))
-        self.builder.cfg_builder.add_edge(false_block, merge_block)
+        self.builder.jump_to(merge_block)
 
         self.builder.current_block = merge_block
         return result
@@ -581,15 +579,28 @@ class ExpressionLowerer:
 
     def _lower_variable_index(self, result, base_memloc, index_operand, element_size, element_type, index_type=None, reuse_key=None):
         """Lower variable array index with indexed addressing."""
-        # Use the index type (not element type) for offset computation and X register load.
-        # The index type determines the bit width: u16 indices must load as 16-bit
-        # to avoid truncation when index >= 256.
-        offset_type = index_type if index_type is not None else element_type
+        source = self._x_indexed_memloc(base_memloc, index_operand, element_size,
+                                        index_type or element_type, reuse_key)
+        self.emit(Load(dest=result, source=source, type_info=element_type))
+        return result
 
-        # Create indexed memory location. Preserve base_memloc.offset so an
-        # array that is a struct field (address=None, offset=field_offset)
-        # still resolves at codegen time.
-        indexed_memloc = MemoryLocation(
+    def _x_indexed_memloc(self, base_memloc, index_operand, element_size, offset_type, reuse_key):
+        """`base,X` with X = index * element_size, shared by loads and stores.
+
+        *offset_type* is the index's type: a u16 index must load X as 16 bits
+        or an index past 255 truncates. A u8 index widens before it is scaled.
+        Consecutive `arr[i]` with the same (array, index) skip the scale and
+        Move when the reuse cache says X still holds it. `base_memloc.offset`
+        carries over, so an array that is a struct field (address None,
+        offset the field's) still resolves at codegen time.
+        """
+        if not self.builder.x_index_cache_hit(reuse_key):
+            offset_operand = index_operand
+            if element_size > 1:
+                offset_operand = self._compute_index_offset(index_operand, element_size, offset_type)
+            self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
+            self.builder.x_index_cache_set(reuse_key)
+        return MemoryLocation(
             storage_type=base_memloc.storage_type,
             address=base_memloc.address,
             symbol=base_memloc.symbol,
@@ -597,19 +608,6 @@ class ExpressionLowerer:
             index_register='X',
             offset=base_memloc.offset
         )
-
-        # X holds index * element_size. Consecutive arr[i] accesses with the
-        # same (array, index) can reuse it (skip the scale + Move) when the
-        # reuse cache says X is still valid.
-        if not self.builder.x_index_cache_hit(reuse_key):
-            offset_operand = index_operand
-            if element_size > 1:
-                offset_operand = self._compute_index_offset(index_operand, element_size, offset_type)
-            self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
-            self.builder.x_index_cache_set(reuse_key)
-
-        self.emit(Load(dest=result, source=indexed_memloc, type_info=element_type))
-        return result
 
     def _compute_index_offset(self, index_operand, element_size, element_type):
         """Compute byte offset from array index.

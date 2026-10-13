@@ -6,6 +6,9 @@ needs X, and Y is taken) sits in a stack slot, and every `units[j].field`
 reloaded it: `LDA j,S; TAX` for a byte plane, `LDA j,S; ASL A; TAX` for a u16
 plane. The emitter now tracks what X holds — a stack slot, shifted left k times
 — so a reload that would give X the value it already has is not emitted.
+
+The `*P = 0` keeps the counter in its slot: the store goes through Y, so loop
+register promotion cannot give `j` to Y.
 """
 
 from r65.compiler.main import compile_string
@@ -15,6 +18,7 @@ enum UnitType { Free, Tank(Tank), Van }
 #[soa]
 struct Unit { x_px: u16, owner: u8, kind: UnitType }
 #[lowram] static mut units: [Unit; 32];
+#[zeropage] static mut P: *u8;
 
 #[inline(never)]
 fn target(self_i: u16, range: u16) -> u16 {
@@ -23,6 +27,7 @@ fn target(self_i: u16, range: u16) -> u16 {
     let mut best: u16 = 32;
     let mut best_d: u16 = range;
     for j in 0..32 {
+        *P = 0;
         match units[j].kind {
             UnitType::Free => {}
             _ => {

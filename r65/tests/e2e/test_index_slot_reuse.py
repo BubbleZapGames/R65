@@ -16,6 +16,8 @@ def test_nearest_opposing_unit(e2e):
         struct Unit { x_px: u16, owner: u8, kind: UnitType }
         #[lowram] static mut units: [Unit; 8];
         #[zeropage(0x60)] static mut OUT: [u16; 2];
+        #[zeropage(0x64)] static mut SINK: u8;
+        #[zeropage(0x66)] static mut P: *u8;
 
         #[inline(never)]
         fn target(self_i: u16, range: u16) -> u16 {
@@ -24,6 +26,7 @@ def test_nearest_opposing_unit(e2e):
             let mut best: u16 = 8;
             let mut best_d: u16 = range;
             for j in 0..8 {
+                *P = 0;          // a store through Y keeps j in its stack slot
                 match units[j].kind {
                     UnitType::Free => {}
                     _ => {
@@ -40,6 +43,7 @@ def test_nearest_opposing_unit(e2e):
 
         #[entry]
         fn main() {
+            P = &SINK;
             for i in 0..8 { units[i].kind = UnitType::Free; }
             units[0].kind = UnitType::Van;  units[0].owner = 0; units[0].x_px = 1000;
             units[2].kind = UnitType::Van;  units[2].owner = 1; units[2].x_px = 1300;   // d 300

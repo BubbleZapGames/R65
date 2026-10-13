@@ -16,8 +16,8 @@ from r65.compiler.hir import (
 )
 from r65.compiler.hir.nodes import HIRStatement
 from r65.compiler.mir.nodes import (
-    VirtualRegister, HardwareRegister, Immediate,
-    Move, Compare, Jump, CondBranch, JumpTable, LookupTable,
+    VirtualRegister, HardwareRegister, Immediate, Move, Compare, CondBranch,
+    JumpTable, LookupTable,
 )
 from r65.compiler.hir.hir_const_eval import try_eval_const_int
 from r65.compiler.errors import MIRLoweringError
@@ -374,38 +374,8 @@ class MatchLowerer:
             # Emit pattern matching logic
             self._lower_pattern_match(arm.pattern, scrutinee_vreg, scrutinee_type, arm_block, next_block)
 
-            # Emit arm body in arm_block
-            self.ctx.set_current_block(arm_block)
-
-            # Handle identifier pattern binding
-            if isinstance(arm.pattern, HIRIdentifierPattern):
-                # Bind scrutinee to the pattern variable
-                binding_vreg = self.ctx.alloc_vreg(
-                    arm.pattern.symbol.var_type,
-                    arm.pattern.name
-                )
-                self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
-                self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
-
-            # Lower arm body. Statement bodies (return/break/continue) usually
-            # terminate the block, but a plain `Block` statement is also a
-            # HIRStatement here and does NOT terminate — fall through into
-            # the next arm's label would corrupt control flow. Always check
-            # for a terminator and emit Jump-to-merge if missing.
-            if isinstance(arm.body, HIRStatement):
-                self.builder.lower_statement(arm.body)
-                if not self.builder._block_has_terminator():
-                    self.emit(Jump(target=merge_block.block_id))
-                    self.ctx.add_cfg_edge(arm_block, merge_block)
-            else:
-                arm_result = self.builder.lower_expression(arm.body)
-
-                # Move result to result_vreg
-                self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
-
-                # Jump to merge block
-                self.emit(Jump(target=merge_block.block_id))
-                self.ctx.add_cfg_edge(arm_block, merge_block)
+            self._lower_arm_body(arm, arm_block, scrutinee_vreg, result_vreg,
+                                 expr.expr_type, merge_block)
 
             # Continue with next pattern (if not last)
             if not is_last_arm:
@@ -494,39 +464,8 @@ class MatchLowerer:
 
         # Lower each arm body
         for i, arm in enumerate(expr.arms):
-            arm_block = arm_blocks[i]
-            self.ctx.set_current_block(arm_block)
-
-            # Handle identifier pattern binding
-            if isinstance(arm.pattern, HIRIdentifierPattern):
-                binding_vreg = self.ctx.alloc_vreg(
-                    arm.pattern.symbol.var_type,
-                    arm.pattern.name
-                )
-                self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
-                self.emit(Move(dest=binding_vreg, source=scrutinee_vreg, type_info=arm.pattern.symbol.var_type))
-
-            # Lower arm body. Statement bodies (return/break/continue) usually
-            # terminate the block on their own. A plain `Block` statement is
-            # also classified as HIRStatement by the HIR builder, but does NOT
-            # terminate — its inner statements just lower into the current
-            # block. Always check `_block_has_terminator` after a statement
-            # body and emit a Jump-to-merge if the block is still open;
-            # otherwise the arm falls through into the next arm's label.
-            if isinstance(arm.body, HIRStatement):
-                self.builder.lower_statement(arm.body)
-                if not self.builder._block_has_terminator():
-                    self.emit(Jump(target=merge_block.block_id))
-                    self.ctx.add_cfg_edge(arm_block, merge_block)
-            else:
-                arm_result = self.builder.lower_expression(arm.body)
-
-                # Move result to result_vreg
-                self.emit(Move(dest=result_vreg, source=arm_result, type_info=expr.expr_type))
-
-                # Jump to merge
-                self.emit(Jump(target=merge_block.block_id))
-                self.ctx.add_cfg_edge(arm_block, merge_block)
+            self._lower_arm_body(arm, arm_blocks[i], scrutinee_vreg, result_vreg,
+                                 expr.expr_type, merge_block)
 
         # Set current block to merge
         self.ctx.set_current_block(merge_block)
@@ -536,6 +475,30 @@ class MatchLowerer:
     # ========================================================================
     # Pattern Matching
     # ========================================================================
+
+    def _lower_arm_body(self, arm, arm_block, scrutinee_vreg, result_vreg,
+                        result_type, merge_block):
+        """Lower one arm's body into *arm_block*, ending in a jump to merge.
+
+        An identifier pattern binds the scrutinee first. A statement body
+        (return/break/continue) usually terminates the block itself, but a
+        plain `Block` statement is a HIRStatement too and does not - without
+        the jump it would fall through into the next arm's label.
+        """
+        self.ctx.set_current_block(arm_block)
+        if isinstance(arm.pattern, HIRIdentifierPattern):
+            binding_vreg = self.ctx.alloc_vreg(arm.pattern.symbol.var_type, arm.pattern.name)
+            self.ctx.symbol_to_vreg[id(arm.pattern.symbol)] = binding_vreg
+            self.emit(Move(dest=binding_vreg, source=scrutinee_vreg,
+                           type_info=arm.pattern.symbol.var_type))
+        if isinstance(arm.body, HIRStatement):
+            self.builder.lower_statement(arm.body)
+            if not self.builder._block_has_terminator():
+                self.builder.jump_to(merge_block)
+        else:
+            arm_result = self.builder.lower_expression(arm.body)
+            self.emit(Move(dest=result_vreg, source=arm_result, type_info=result_type))
+            self.builder.jump_to(merge_block)
 
     def _lower_pattern_match(self, pattern, scrutinee_vreg, scrutinee_type, match_block, no_match_block):
         """
@@ -572,14 +535,12 @@ class MatchLowerer:
 
         elif isinstance(pattern, HIRWildcardPattern):
             # Wildcard always matches - unconditional jump
-            self.emit(Jump(target=match_block.block_id))
-            self.ctx.add_cfg_edge(self.ctx.current_block, match_block)
+            self.builder.jump_to(match_block)
 
         elif isinstance(pattern, HIRIdentifierPattern):
             # Identifier always matches - unconditional jump
             # Binding happens in the arm block
-            self.emit(Jump(target=match_block.block_id))
-            self.ctx.add_cfg_edge(self.ctx.current_block, match_block)
+            self.builder.jump_to(match_block)
 
         elif isinstance(pattern, HIRRangePattern):
             upper = pattern.end if pattern.inclusive else pattern.end - 1

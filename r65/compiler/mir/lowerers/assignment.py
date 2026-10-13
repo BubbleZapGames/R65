@@ -15,8 +15,8 @@ from r65.compiler.hir import (
 )
 from r65.compiler.hir.types import MultiReturnTypeInfo
 from r65.compiler.mir.nodes import (
-    VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
-    Move, Store, StoreIndirect, BinaryOp, StatusFlagSet, Push, Pull,
+    VirtualRegister, HardwareRegister, Immediate, Move, Store,
+    StoreIndirect, BinaryOp, StatusFlagSet, Push, Pull,
 )
 from r65.compiler.errors import MIRLoweringError
 
@@ -505,44 +505,9 @@ class AssignmentLowerer:
 
     def _lower_variable_index_assignment(self, value, base_memloc, index_operand, element_size, element_type, index_type=None, reuse_key=None):
         """Lower variable array index assignment with indexed addressing."""
-        # Use the index type (not element type) for offset computation and X register load.
-        # The index type determines the bit width: u16 indices must load as 16-bit
-        # to avoid truncation when index >= 256.
-        offset_type = index_type if index_type is not None else element_type
-
-        # Create indexed memory location with X register. Preserve
-        # base_memloc.offset so an array that is a struct field
-        # (address=None, offset=field_offset) still resolves at codegen time.
-        indexed_memloc = MemoryLocation(
-            storage_type=base_memloc.storage_type,
-            address=base_memloc.address,
-            symbol=base_memloc.symbol,
-            is_volatile=base_memloc.is_volatile,
-            index_register='X',  # Mark as indexed with X
-            offset=base_memloc.offset
-        )
-
-        # X holds index * element_size. Consecutive arr[i] accesses with the
-        # same (array, index) can reuse it (skip the scale + Move) when the
-        # reuse cache says X is still valid.
-        if not self.builder.x_index_cache_hit(reuse_key):
-            offset_operand = index_operand
-            # If element size > 1, scale the index. Delegate to the read path's
-            # _compute_index_offset so writes stay symmetric with reads: it
-            # widens a u8/i8 index to u16 before the shift. A raw
-            # `index << log2(size)` sized as the u8 index overflows whenever
-            # index * element_size > 255 (e.g. arr[150] in a [u16; N]),
-            # corrupting the store address.
-            if element_size > 1:
-                offset_operand = self.builder.expr_lowerer._compute_index_offset(
-                    index_operand, element_size, offset_type
-                )
-
-            self.emit(Move(dest=HardwareRegister('X'), source=offset_operand, type_info=offset_type))
-            self.builder.x_index_cache_set(reuse_key)
-
-        # Emit store using indexed addressing (e.g., STA $20,X)
-        self.emit(Store(source=value, dest=indexed_memloc, type_info=element_type))
+        dest = self.builder.expr_lowerer._x_indexed_memloc(
+            base_memloc, index_operand, element_size, index_type or element_type, reuse_key)
+        self.emit(Store(source=value, dest=dest, type_info=element_type))
         return value
 
     # ========================================================================
