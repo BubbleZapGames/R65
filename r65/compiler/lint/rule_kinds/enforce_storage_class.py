@@ -34,12 +34,7 @@ from r65.compiler.lint.rule_kinds._common import (
 KIND_NAME = "enforce_storage_class"
 
 
-_STORAGE_KIND_BY_NAME = {
-    "#[zeropage]": StorageKind.ZEROPAGE,
-    "#[lowram]": StorageKind.LOWRAM,
-    "#[ram]": StorageKind.RAM,
-    "#[hw]": StorageKind.HW,
-}
+_STORAGE_KIND_BY_NAME = {f"#[{kind.value}]": kind for kind in StorageKind}
 
 
 class EnforceStorageClass(LintRule):

@@ -27,7 +27,7 @@ from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.codegen.abi_model import ABIKind
 from r65.compiler.codegen.opcodes import (
     Opcode, TRANSFER_OPCODES, PUSH_OPCODES, PULL_OPCODES,
-    LOAD_IMMEDIATE_OPCODES, STORE_MNEMONICS, BUILTIN_OPCODES
+    LOAD_IMMEDIATE_OPCODES, STORE_MNEMONICS,
 )
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.errors import unknown_value
@@ -2410,7 +2410,7 @@ class CallInstructionSelector(BaseSelector):
 
     def _emit_processor_control_builtin(self, instr: Call, builtin):
         """Emit processor control built-in (NOP)."""
-        opcode = BUILTIN_OPCODES.get(builtin.instruction)
+        opcode = Opcode.__members__.get(builtin.instruction)
         if not opcode:
             raise unknown_value("processor control builtin", builtin.instruction, source_loc=self.parent._current_source_loc)
 

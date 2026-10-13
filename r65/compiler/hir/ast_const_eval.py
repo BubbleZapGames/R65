@@ -10,8 +10,8 @@ from r65.compiler.frontend import ast
 from r65.compiler.hir.errors import *
 from r65.compiler.errors import compiler_assert
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
-from r65.compiler.hir.types import ArrayTypeInfo
-from r65.compiler.builtins.registry import BuiltinRegistry
+from r65.compiler.hir.types import ArrayTypeInfo, INTEGER_TYPE_NAMES
+from r65.compiler.builtins.registry import BuiltinRegistry, BuiltinKind
 from r65.compiler.frontend.ast import CfgIdentifier
 import math as _math
 
@@ -415,7 +415,7 @@ class ConstEvaluator:
                 type_name = payload_name
 
             # Cast to integer types
-            if type_name in ['u8', 'i8', 'u16', 'i16']:
+            if type_name in INTEGER_TYPE_NAMES:
                 int_val = self._ensure_int(value)
 
                 # Apply type bounds
@@ -490,11 +490,11 @@ class ConstEvaluator:
         builtin = BuiltinRegistry.get_builtin(func_name)
 
         # Only allow type info and const math built-ins in const expressions
-        if builtin.kind.value not in ("type_info", "const_math"):
+        if builtin.kind not in (BuiltinKind.TYPE_INFO, BuiltinKind.CONST_MATH):
             raise HIRError(f"Built-in '{func_name}' is not allowed in const expressions", source_loc=expr.source_loc)
 
         # Handle const math builtins
-        if builtin.kind.value == "const_math":
+        if builtin.kind is BuiltinKind.CONST_MATH:
             arg_values = [self.eval(arg) for arg in expr.args]
             return self._eval_const_math(func_name, arg_values, expr.source_loc)
 
@@ -1023,7 +1023,7 @@ class ConstEvaluator:
             inner = self._transpile_expr(expr.expr)
             if isinstance(expr.target_type, ast.BasicType):
                 type_name = expr.target_type.name
-                if type_name in ('u8', 'u16', 'i8', 'i16'):
+                if type_name in INTEGER_TYPE_NAMES:
                     return f"_ns_['_{type_name}']({inner})"
                 elif type_name == 'bool':
                     return f"_ns_['_bool']({inner})"
@@ -1048,7 +1048,7 @@ class ConstEvaluator:
 
                 # Check for const_math builtins
                 builtin = BuiltinRegistry.get_builtin(func_name)
-                if builtin and builtin.kind.value == "const_math":
+                if builtin and builtin.kind is BuiltinKind.CONST_MATH:
                     args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
                     return f"_ns_['{func_name}']({args_str})"
 

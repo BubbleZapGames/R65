@@ -10,13 +10,13 @@ from r65.compiler.mir.nodes import Load, Store, IncDecMemory, LoadIndirect, Stor
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
+from r65.compiler.codegen.constants import M_FLAG
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.type_utils import is_far_ptr
 from r65.compiler.hir.types import PointerTypeInfo
 
 # Mode flag constants
-M_FLAG = 0x20  # Accumulator size (0=16-bit, 1=8-bit)
 
 
 is_far_pointer_type = is_far_ptr

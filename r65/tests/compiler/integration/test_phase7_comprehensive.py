@@ -129,7 +129,6 @@ try:
     print("   - RTI return instruction")
     print()
     print("3. ✅ Register Preservation Instructions")
-    print("   - SaveRegister/RestoreRegister exist for manual use")
     print("   - No automatic preservation for regular functions")
     print()
     print("=" * 80)

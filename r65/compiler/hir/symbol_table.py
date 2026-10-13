@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any
 from enum import Enum
 
 from r65.compiler.hir.errors import *
+from r65.compiler.registers import REGISTERS
 
 
 class SymbolKind(Enum):
@@ -44,7 +45,6 @@ class Symbol:
     is_mutable: bool = False
 
     # For functions
-    func_signature: Optional[Any] = None  # Will be function signature info
 
     # For constants
     const_value: Optional[Any] = None
@@ -95,13 +95,13 @@ class SymbolTable:
         # Add hardware registers
         # A, X, Y, B are mode-dependent; STATUS, D, DBR, PBR, S are fixed
         # B is only valid in m8 mode (type checker enforces this)
-        for reg_name in ['A', 'X', 'Y', 'B', 'STATUS', 'D', 'DBR', 'PBR', 'S']:
-            global_scope.symbols[reg_name] = Symbol(
-                name=reg_name,
+        for reg in REGISTERS.values():
+            global_scope.symbols[reg.name] = Symbol(
+                name=reg.name,
                 kind=SymbolKind.REGISTER,
                 definition=None,  # Built-in
                 scope_id=0,
-                is_mutable=(reg_name != 'PBR')  # PBR is read-only
+                is_mutable=reg.writable,
             )
 
         # Add built-in functions

@@ -33,9 +33,9 @@ from typing import Callable
 
 from r65.compiler.mir.nodes import (
     ChainRole, MIRFunction, HardwareRegister, OperandRole, iter_operands,
-    Load, Store, LoadIndirect, StoreIndirect,
-    Call, TraitDispatch, MemoryLocation, VirtualRegister,
-    Move, TypeConvert, Compare, BinaryOp, UnaryOp, BitTest, InlineAsm, iter_memory_operands,
+    Load, LoadIndirect, StoreIndirect,
+    Call, TraitDispatch, VirtualRegister,
+    Move, TypeConvert, BinaryOp, UnaryOp, InlineAsm, iter_memory_operands,
 )
 
 
@@ -644,27 +644,13 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=No
       - call to a non-DBR-independent function
       - nested far-self TraitDispatch on a DIFFERENT self vreg
     """
-    if isinstance(instr, (Load, Store)):
-        loc = instr.source if isinstance(instr, Load) else instr.dest
-        if isinstance(loc, MemoryLocation):
-            st = loc.storage_type
-            if st in ('ram', 'lowram'):
-                # RAM and lowram both use DBR-relative absolute addressing.
-                # ROM/HW are emitted as LONG already; zeropage uses DP.
-                # Lowram lives in bank $7E ($00-$1FFF) but the codegen
-                # emits absolute (not LONG), so under a non-default DBR
-                # it would address the wrong bank.
-                return False
-        return True
-
-    # Some MIR instructions accept a MemoryLocation directly as an
-    # operand (the codegen folds Load+Compare into a single CMP abs).
-    # Reject any direct memory operand whose storage type is DBR-
-    # dependent. Inline MemoryLocation operands are observed on
-    # Compare, BitTest, BinaryOp, UnaryOp.
-    if isinstance(instr, (Compare, BitTest, BinaryOp, UnaryOp)):
-        return not any(m.storage_type in ('ram', 'lowram')
-                       for m in iter_memory_operands(instr))
+    # RAM and lowram both use DBR-relative absolute addressing. ROM/HW are
+    # emitted as LONG already; zeropage uses DP. Lowram lives in bank $7E
+    # ($00-$1FFF) but the codegen emits absolute (not LONG), so under a
+    # non-default DBR it would address the wrong bank. Any node may name
+    # one - a load or store, a folded operand, a read-modify-write, a copy.
+    if any(m.storage_type in ('ram', 'lowram') for m in iter_memory_operands(instr)):
+        return False
 
     if isinstance(instr, (LoadIndirect, StoreIndirect)):
         if not instr.is_far:

@@ -25,7 +25,7 @@ from r65.compiler.hir import (
     HIRFunctionAddress, HIRFunctionCall, HIRFunctionDecl, HIRIdentifier,
     HIRIfStmt, HIRLetStmt, HIRMethodCall, HIRMultiAssignment, HIRProgram,
     HIRReturnStmt, HIRStatement, HIRStaticDecl, HIRStructLiteralExpr,
-    HIRMultiLetStmt, HIRTupleLetStmt, HIRTypeCast, HIRUnaryOp, HIRWhileStmt,
+    HIRMultiLetStmt, HIRTypeCast, HIRUnaryOp, HIRWhileStmt,
 )
 from r65.compiler.hir.nodes import (
     HIRBlockExpression,

@@ -8,6 +8,7 @@ AST type nodes — needed during const evaluation before HIR lowering.
 """
 
 from typing import Any
+from r65.compiler.hir.symbol_table import SymbolKind
 from r65.compiler.hir.errors import HIRError
 from r65.compiler.hir.types import TypeInfo, _TYPE_SIZES
 
@@ -67,7 +68,7 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
                 if hasattr(symbol, 'definition') and symbol.definition:
                     if hasattr(symbol.definition, 'fields'):
                         return _get_ast_struct_size(symbol.definition, symbol_table)
-                elif symbol.kind.value == "enum":
+                elif symbol.kind is SymbolKind.ENUM:
                     return 1
         raise HIRError(
             f"Cannot determine size of type: {type_name}",

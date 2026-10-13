@@ -13,7 +13,7 @@ from r65.compiler.hir import (
     HIROrPattern, BasicTypeInfo
 )
 from r65.compiler.hir.nodes import HIRStatement
-from r65.compiler.hir.types import TypeInfo, EnumTypeInfo, strip_newtype
+from r65.compiler.hir.types import TypeInfo, EnumTypeInfo, strip_newtype, INTEGER_TYPE_NAMES
 from r65.compiler.typeck.errors import TypeCheckError
 from r65.compiler.typeck.type_utils import TypeUtils
 
@@ -175,7 +175,7 @@ class MatchValidator:
                         f"Non-exhaustive match: missing patterns for {', '.join(missing)}",
                         source_loc=expr.source_loc
                     )
-            elif payload_type.name in ('u8', 'i8', 'u16', 'i16'):
+            elif payload_type.name in INTEGER_TYPE_NAMES:
                 # Integer types need wildcard - too many values to enumerate
                 raise TypeCheckError(
                     f"Non-exhaustive match on {scrutinee_type}: "
@@ -236,7 +236,7 @@ class MatchValidator:
                 if payload_type.name != 'bool':
                     raise TypeCheckError(f"Cannot match bool literal against {scrutinee_type}", source_loc=pattern.source_loc)
             elif isinstance(pattern.value, int):
-                if payload_type.name not in ('u8', 'i8', 'u16', 'i16'):
+                if payload_type.name not in INTEGER_TYPE_NAMES:
                     raise TypeCheckError(f"Cannot match integer literal against {scrutinee_type}", source_loc=pattern.source_loc)
             return False
 
@@ -257,7 +257,7 @@ class MatchValidator:
 
         elif isinstance(pattern, HIRRangePattern):
             # Range pattern only matches integer types
-            if payload_type.name not in ('u8', 'i8', 'u16', 'i16'):
+            if payload_type.name not in INTEGER_TYPE_NAMES:
                 raise TypeCheckError(f"Cannot use range pattern against {scrutinee_type}", source_loc=pattern.source_loc)
             # Validate range is non-empty
             if pattern.inclusive:

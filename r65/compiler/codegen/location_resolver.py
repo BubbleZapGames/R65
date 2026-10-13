@@ -44,35 +44,11 @@ class AddressingMode(Enum):
     STACK_INDIRECT_Y = auto()     # (sr,S),Y
 
 
-# Mapping from AddressingMode to opcode variant key
-_MODE_TO_VARIANT_KEY = {
-    AddressingMode.IMMEDIATE: 'IMMEDIATE',
-    AddressingMode.DP: 'DP',
-    AddressingMode.DP_X: 'DP_X',
-    AddressingMode.DP_Y: 'DP_Y',
-    AddressingMode.ABSOLUTE: 'ABSOLUTE',
-    AddressingMode.ABSOLUTE_X: 'ABSOLUTE_X',
-    AddressingMode.ABSOLUTE_Y: 'ABSOLUTE_Y',
-    AddressingMode.STACK: 'STACK',
-    AddressingMode.LONG: 'LONG',
-    AddressingMode.LONG_X: 'LONG_X',
-    AddressingMode.DP_INDIRECT: 'DP_INDIRECT',
-    AddressingMode.DP_INDIRECT_X: 'DP_INDIRECT_X',
-    AddressingMode.DP_INDIRECT_Y: 'DP_INDIRECT_Y',
-    AddressingMode.DP_INDIRECT_LONG: 'DP_INDIRECT_LONG',
-    AddressingMode.DP_INDIRECT_LONG_Y: 'DP_INDIRECT_LONG_Y',
-    AddressingMode.STACK_INDIRECT_Y: 'STACK_INDIRECT_Y',
-}
-
-
 @dataclass
 class ResolvedLocation:
     """Result of resolving a location to an addressing mode and operand."""
     mode: AddressingMode
     operand: Address | StackOffset | Immediate
-    address: Optional[int] = None  # Numeric address if applicable
-    label: Optional[str] = None    # Label if applicable
-    is_dp: bool = False            # True if direct page address
 
 
 class LocationResolver:
@@ -120,23 +96,14 @@ class LocationResolver:
         """Resolve stack-relative location."""
         return ResolvedLocation(
             mode=AddressingMode.STACK,
-            operand=StackOffset(location.stack_offset),
-            address=location.stack_offset
+            operand=StackOffset(location.stack_offset)
         )
 
     def _resolve_scratch(self, location: PhysicalLocation) -> ResolvedLocation:
         """Resolve scratch register (always DP) location."""
         addr = location.scratch_addr
-        mode = self._get_indexed_mode(
-            location.index_register,
-            is_dp=True
-        )
-        return ResolvedLocation(
-            mode=mode,
-            operand=Address(addr),
-            address=addr,
-            is_dp=True
-        )
+        mode = self._get_indexed_mode(location.index_register, is_dp=True)
+        return ResolvedLocation(mode=mode, operand=Address(addr))
 
     def _resolve_memory(self, location: PhysicalLocation) -> ResolvedLocation:
         """Resolve memory location (RAM, ROM, etc.)."""
@@ -149,12 +116,7 @@ class LocationResolver:
                 is_dp=False,
                 is_long=True  # Cross-bank ROM data needs long addressing
             )
-            return ResolvedLocation(
-                mode=mode,
-                operand=Address(location.memory_label),
-                label=location.memory_label,
-                is_dp=False
-            )
+            return ResolvedLocation(mode=mode, operand=Address(location.memory_label))
 
         # Numeric address
         addr = location.memory_addr
@@ -162,19 +124,13 @@ class LocationResolver:
         is_long = addr > 0xFFFF  # 24-bit address needs long addressing
         mode = self._get_indexed_mode(location.index_register, is_dp, is_long)
 
-        return ResolvedLocation(
-            mode=mode,
-            operand=Address(addr),
-            address=addr,
-            is_dp=is_dp
-        )
+        return ResolvedLocation(mode=mode, operand=Address(addr))
 
     def _resolve_immediate(self, location: PhysicalLocation) -> ResolvedLocation:
         """Resolve immediate value location."""
         return ResolvedLocation(
             mode=AddressingMode.IMMEDIATE,
-            operand=Immediate(location.immediate_value),
-            address=location.immediate_value
+            operand=Immediate(location.immediate_value)
         )
 
     def _get_indexed_mode(self, index_register: Optional[str], is_dp: bool, is_long: bool = False) -> AddressingMode:
@@ -224,15 +180,20 @@ class LocationResolver:
         if not variants:
             raise InstructionSelectionError(f"No opcode variants for mnemonic: {mnemonic}", source_loc=None)
 
-        variant_key = _MODE_TO_VARIANT_KEY.get(resolved.mode)
-        if not variant_key:
-            raise InstructionSelectionError(f"No variant key for mode: {resolved.mode}", source_loc=None)
-
+        variant_key = resolved.mode.name
         opcode = variants.get(variant_key)
         if not opcode:
             raise unsupported_addressing_mode(mnemonic, variant_key.lower().replace('_', ' '), source_loc=None)
 
         return opcode
+
+    def forced_opcode(self, mnemonic: str, operand: Address,
+                      index_register: Optional[str], is_long: bool) -> Opcode:
+        """The opcode for *mnemonic* at absolute (or long) addressing,
+        whatever *operand*'s value - for when direct page, or the DBR bank,
+        does not reach what the operand names."""
+        mode = self._get_indexed_mode(index_register, is_dp=False, is_long=is_long)
+        return self.get_opcode(mnemonic, ResolvedLocation(mode=mode, operand=operand))
 
     def resolve_and_get_opcode(self, mnemonic: str, location: PhysicalLocation) -> Tuple[Opcode, Address | StackOffset | Immediate]:
         """

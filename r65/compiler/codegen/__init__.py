@@ -13,14 +13,12 @@ from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
 from r65.compiler.codegen.register_alloc import (
     RegisterAllocator,
     ScratchRegisterPool,
-    StackAllocator,
     PhysicalLocation,
     LocationKind,
 )
 from r65.compiler.codegen.instruction_select import InstructionSelector
-from r65.compiler.codegen.addressing_mode import AddressingModeSelector, AddressingMode
 from r65.compiler.codegen.function_gen import FunctionCodeGenerator, ProgramFunctionGenerator
-from r65.compiler.codegen.hw_register_tracker import HardwareRegisterTracker, compute_vreg_last_uses
+from r65.compiler.codegen.hw_register_tracker import HardwareRegisterTracker
 
 __all__ = [
     'AssemblyEmitter',
@@ -30,14 +28,10 @@ __all__ = [
     'SymbolDefinitionGenerator',
     'RegisterAllocator',
     'ScratchRegisterPool',
-    'StackAllocator',
     'PhysicalLocation',
     'LocationKind',
     'InstructionSelector',
-    'AddressingModeSelector',
-    'AddressingMode',
     'FunctionCodeGenerator',
     'ProgramFunctionGenerator',
     'HardwareRegisterTracker',
-    'compute_vreg_last_uses',
 ]

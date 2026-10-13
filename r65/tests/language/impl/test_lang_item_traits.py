@@ -17,7 +17,7 @@ from r65.compiler.errors import HIRError
 
 
 def build_hir(source: str):
-    """Parse + build HIR; return the HIRBuilder (exposes _clone_impls)."""
+    """Parse + build HIR; return the HIRBuilder."""
     program = parse(source, "test.r65")
     hb = HIRBuilder(source_file="test.r65")
     hb.build_program(program)
@@ -42,8 +42,8 @@ class TestLangItemImplAcceptance:
 
     def test_empty_clone_impl_is_auto(self):
         hb = build_hir("struct V { x: u8 }\nimpl Clone for V {}\n")
-        assert hb._clone_impls["V"]["auto"] is True
-        assert hb._clone_impls["V"]["mangled"] is None
+        assert hb.symbol_table.lookup("V$Clone").type_info['clone_auto'] is True
+        assert hb.symbol_table.lookup("V__clone_from") is None
 
     def test_manual_clone_impl_recorded(self):
         src = """
@@ -53,8 +53,8 @@ class TestLangItemImplAcceptance:
             }
         """
         hb = build_hir(src)
-        assert hb._clone_impls["V"]["auto"] is False
-        assert hb._clone_impls["V"]["mangled"] == "V__clone_from"
+        assert hb.symbol_table.lookup("V$Clone").type_info['clone_auto'] is False
+        assert hb.symbol_table.lookup("V__clone_from") is not None
 
     def test_operator_trait_impl_accepted_without_declaration(self):
         """Operator lang-item traits also need no `trait` declaration (Slice 0 foundation)."""

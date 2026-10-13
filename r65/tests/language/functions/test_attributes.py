@@ -99,3 +99,18 @@ class TestPreservesAccumulatorConflict:
         """A void function has no result to lose, a `-> !` function never
         reaches its epilogue, and the other registers do not carry the result."""
         self.check(signature)
+
+
+class TestPreservesRegisterNames:
+    """One list decides which registers `#[preserves]` takes. HIR accepted
+    `S`, which typeck then rejected as an unknown register."""
+
+    @pytest.mark.parametrize("reg, message", [
+        ("S", "Invalid register in #[preserves]: S"),
+        ("PBR", "read-only"),
+        ("B", "high byte of the A register"),
+    ])
+    def test_rejected_in_hir(self, reg, message):
+        with pytest.raises(Exception) as exc:
+            build_hir(f"#[preserves({reg})] fn f() {{ }}\nfn main() {{ }}")
+        assert message in str(exc.value)

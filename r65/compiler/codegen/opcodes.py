@@ -607,6 +607,98 @@ STORE_Z_OPCODES = frozenset({
 
 STORE_OPCODES = STORE_A_OPCODES | STORE_X_OPCODES | STORE_Y_OPCODES | STORE_Z_OPCODES
 
+# Mnemonics that write memory. INC/DEC and the shifts write A instead in
+# their accumulator form, which MEMORY_WRITE_OPCODES leaves out.
+MEMORY_WRITE_MNEMONICS = frozenset({'STA', 'STX', 'STY', 'STZ', 'INC', 'DEC',
+                                    'ASL', 'LSR', 'ROL', 'ROR', 'TSB', 'TRB'})
+MEMORY_WRITE_OPCODES = frozenset(
+    op for op in Opcode
+    if mnemonic(op) in MEMORY_WRITE_MNEMONICS
+    and addressing_mode(op) not in (None, 'ACCUMULATOR'))
+
+# ============================================================================
+# Instruction effects
+# ============================================================================
+# What an instruction writes and where its flags come from, by mnemonic.
+# Every pass that follows register contents or flags through emitted code
+# (emitter tracking, peephole, interrupt save scan) reads these.
+
+# INC/DEC and the shifts in accumulator form (`ASL A`): they write A, where
+# every other form writes memory.
+ACCUMULATOR_OPCODES = frozenset({Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,
+                                 Opcode.INC, Opcode.DEC})
+
+# Registers each mnemonic writes, beyond the accumulator forms above.
+# MVN/MVP walk A, X and Y and leave DBR at the destination bank.
+REGISTER_WRITES: dict[str, frozenset] = {
+    **{mn: frozenset('A') for mn in ('LDA', 'ADC', 'SBC', 'AND', 'ORA', 'EOR',
+                                     'TXA', 'TYA', 'PLA', 'XBA', 'TSC', 'TDC')},
+    **{mn: frozenset('X') for mn in ('LDX', 'TAX', 'TSX', 'TYX', 'INX', 'DEX', 'PLX')},
+    **{mn: frozenset('Y') for mn in ('LDY', 'TAY', 'TXY', 'INY', 'DEY', 'PLY')},
+    'TCD': frozenset({'D'}), 'PLD': frozenset({'D'}),
+    'PLB': frozenset({'DBR'}),
+    'MVN': frozenset({'A', 'X', 'Y', 'DBR'}), 'MVP': frozenset({'A', 'X', 'Y', 'DBR'}),
+}
+
+
+def registers_written(op: Opcode) -> frozenset:
+    """The registers among A, X, Y, D and DBR that *op* writes."""
+    regs = REGISTER_WRITES.get(mnemonic(op), frozenset())
+    return regs | {'A'} if op in ACCUMULATOR_OPCODES else regs
+
+
+MODIFIES_A_OPCODES = frozenset(op for op in Opcode if 'A' in registers_written(op))
+
+# The register whose new value N/Z reflect, at that register's width.
+_NZ_REGISTER = {
+    **{mn: 'A' for mn in ('LDA', 'AND', 'ORA', 'EOR', 'ADC', 'SBC', 'TXA', 'TYA', 'PLA')},
+    **{mn: 'X' for mn in ('LDX', 'TAX', 'TSX', 'TYX', 'INX', 'DEX', 'PLX')},
+    **{mn: 'Y' for mn in ('LDY', 'TAY', 'TXY', 'INY', 'DEY', 'PLY')},
+}
+
+# Instructions that leave N/Z as they were.
+NZ_PRESERVING_MNEMONICS = frozenset({
+    'STA', 'STX', 'STY', 'STZ',
+    'PHA', 'PHX', 'PHY', 'PHB', 'PHD', 'PHK', 'PHP', 'PEA', 'PEI', 'PER',
+    'TXS', 'TCS',
+    'NOP', 'WDM',
+    'BRA', 'BRL', 'BEQ', 'BNE', 'BCC', 'BCS', 'BMI', 'BPL', 'BVC', 'BVS',
+    'JMP',
+    'CLC', 'SEC', 'CLI', 'SEI', 'CLD', 'SED', 'CLV',
+    'REP', 'SEP',  # Only affect M/X bits (#$20/#$10) in compiler usage
+})
+
+
+def nz_register(op: Opcode, m16: "bool | None" = None) -> "str | None":
+    """The register (A, X or Y) whose value N/Z reflect after *op*, at that
+    register's width; None when they reflect something else - a compare,
+    BIT, a memory read-modify-write, PLP, a call.
+
+    XBA sets them from the new low byte and TSC/TDC from all 16 bits,
+    whatever the accumulator width, so they count for A only at the width
+    *m16* says (and not when it is unknown).
+    """
+    if op in ACCUMULATOR_OPCODES:
+        return 'A'
+    mn = mnemonic(op)
+    if mn == 'XBA':
+        return 'A' if m16 is False else None
+    if mn in ('TSC', 'TDC'):
+        return 'A' if m16 is True else None
+    return _NZ_REGISTER.get(mn)
+
+
+# Instructions whose N/Z flags are those of `CMP #0` on A, whatever the width.
+NZ_OF_A_OPCODES = frozenset(op for op in Opcode if nz_register(op) == 'A')
+
+# Instructions that read the carry, and those that replace it.
+CARRY_READ_OPCODES = frozenset(
+    op for op in Opcode
+    if mnemonic(op) in ('ADC', 'SBC', 'ROL', 'ROR', 'BCC', 'BCS', 'XCE'))
+CARRY_WRITE_OPCODES = CARRY_READ_OPCODES - {Opcode.BCC, Opcode.BCS} | frozenset(
+    op for op in Opcode
+    if mnemonic(op) in ('CLC', 'SEC', 'CMP', 'CPX', 'CPY', 'ASL', 'LSR', 'PLP'))
+
 
 # ============================================================================
 # Instruction Sizes
@@ -986,108 +1078,11 @@ X16_IMMEDIATE_OPCODES = frozenset({
 # Previously duplicated across instruction_select.py and call_select.py.
 
 # Mapping from base mnemonic to opcode variants by addressing mode
-OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {
-    'LDA': {
-        'DP': Opcode.LDA_DP, 'DP_X': Opcode.LDA_DP_X,
-        'ABSOLUTE': Opcode.LDA_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDA_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.LDA_ABSOLUTE_Y,
-        'LONG': Opcode.LDA_LONG, 'LONG_X': Opcode.LDA_LONG_X,
-        'STACK': Opcode.LDA_STACK, 'IMMEDIATE': Opcode.LDA_IMMEDIATE,
-    },
-    'STA': {
-        'DP': Opcode.STA_DP, 'DP_X': Opcode.STA_DP_X,
-        'ABSOLUTE': Opcode.STA_ABSOLUTE, 'ABSOLUTE_X': Opcode.STA_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.STA_ABSOLUTE_Y,
-        'LONG': Opcode.STA_LONG, 'LONG_X': Opcode.STA_LONG_X,
-        'STACK': Opcode.STA_STACK,
-    },
-    'LDX': {
-        'DP': Opcode.LDX_DP, 'DP_Y': Opcode.LDX_DP_Y,
-        'ABSOLUTE': Opcode.LDX_ABSOLUTE, 'ABSOLUTE_Y': Opcode.LDX_ABSOLUTE_Y,
-        'IMMEDIATE': Opcode.LDX_IMMEDIATE,
-    },
-    'STX': {
-        'DP': Opcode.STX_DP, 'DP_Y': Opcode.STX_DP_Y,
-        'ABSOLUTE': Opcode.STX_ABSOLUTE,
-    },
-    'LDY': {
-        'DP': Opcode.LDY_DP, 'DP_X': Opcode.LDY_DP_X,
-        'ABSOLUTE': Opcode.LDY_ABSOLUTE, 'ABSOLUTE_X': Opcode.LDY_ABSOLUTE_X,
-        'IMMEDIATE': Opcode.LDY_IMMEDIATE,
-    },
-    'STY': {
-        'DP': Opcode.STY_DP, 'DP_X': Opcode.STY_DP_X,
-        'ABSOLUTE': Opcode.STY_ABSOLUTE,
-    },
-    'STZ': {
-        'DP': Opcode.STZ_DP, 'DP_X': Opcode.STZ_DP_X,
-        'ABSOLUTE': Opcode.STZ_ABSOLUTE, 'ABSOLUTE_X': Opcode.STZ_ABSOLUTE_X,
-    },
-    # Memory read-modify-write: direct page / absolute only, X-indexed or not.
-    'INC': {
-        'DP': Opcode.INC_DP, 'DP_X': Opcode.INC_DP_X,
-        'ABSOLUTE': Opcode.INC_ABSOLUTE, 'ABSOLUTE_X': Opcode.INC_ABSOLUTE_X,
-    },
-    'DEC': {
-        'DP': Opcode.DEC_DP, 'DP_X': Opcode.DEC_DP_X,
-        'ABSOLUTE': Opcode.DEC_ABSOLUTE, 'ABSOLUTE_X': Opcode.DEC_ABSOLUTE_X,
-    },
-    'ADC': {
-        'DP': Opcode.ADC_DP, 'DP_X': Opcode.ADC_DP_X,
-        'ABSOLUTE': Opcode.ADC_ABSOLUTE, 'ABSOLUTE_X': Opcode.ADC_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.ADC_ABSOLUTE_Y,
-        'LONG': Opcode.ADC_LONG, 'LONG_X': Opcode.ADC_LONG_X,
-        'STACK': Opcode.ADC_STACK, 'IMMEDIATE': Opcode.ADC_IMMEDIATE,
-    },
-    'SBC': {
-        'DP': Opcode.SBC_DP, 'DP_X': Opcode.SBC_DP_X,
-        'ABSOLUTE': Opcode.SBC_ABSOLUTE, 'ABSOLUTE_X': Opcode.SBC_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.SBC_ABSOLUTE_Y,
-        'LONG': Opcode.SBC_LONG, 'LONG_X': Opcode.SBC_LONG_X,
-        'STACK': Opcode.SBC_STACK, 'IMMEDIATE': Opcode.SBC_IMMEDIATE,
-    },
-    'AND': {
-        'DP': Opcode.AND_DP, 'DP_X': Opcode.AND_DP_X,
-        'ABSOLUTE': Opcode.AND_ABSOLUTE, 'ABSOLUTE_X': Opcode.AND_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.AND_ABSOLUTE_Y,
-        'LONG': Opcode.AND_LONG, 'LONG_X': Opcode.AND_LONG_X,
-        'STACK': Opcode.AND_STACK, 'IMMEDIATE': Opcode.AND_IMMEDIATE,
-    },
-    'ORA': {
-        'DP': Opcode.ORA_DP, 'DP_X': Opcode.ORA_DP_X,
-        'ABSOLUTE': Opcode.ORA_ABSOLUTE, 'ABSOLUTE_X': Opcode.ORA_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.ORA_ABSOLUTE_Y,
-        'LONG': Opcode.ORA_LONG, 'LONG_X': Opcode.ORA_LONG_X,
-        'STACK': Opcode.ORA_STACK, 'IMMEDIATE': Opcode.ORA_IMMEDIATE,
-    },
-    'EOR': {
-        'DP': Opcode.EOR_DP, 'DP_X': Opcode.EOR_DP_X,
-        'ABSOLUTE': Opcode.EOR_ABSOLUTE, 'ABSOLUTE_X': Opcode.EOR_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.EOR_ABSOLUTE_Y,
-        'LONG': Opcode.EOR_LONG, 'LONG_X': Opcode.EOR_LONG_X,
-        'STACK': Opcode.EOR_STACK, 'IMMEDIATE': Opcode.EOR_IMMEDIATE,
-    },
-    'BIT': {
-        'DP': Opcode.BIT_DP, 'DP_X': Opcode.BIT_DP_X,
-        'ABSOLUTE': Opcode.BIT_ABSOLUTE, 'ABSOLUTE_X': Opcode.BIT_ABSOLUTE_X,
-        'IMMEDIATE': Opcode.BIT_IMMEDIATE,
-    },
-    'CMP': {
-        'DP': Opcode.CMP_DP, 'DP_X': Opcode.CMP_DP_X,
-        'ABSOLUTE': Opcode.CMP_ABSOLUTE, 'ABSOLUTE_X': Opcode.CMP_ABSOLUTE_X,
-        'ABSOLUTE_Y': Opcode.CMP_ABSOLUTE_Y,
-        'LONG': Opcode.CMP_LONG, 'LONG_X': Opcode.CMP_LONG_X,
-        'STACK': Opcode.CMP_STACK, 'IMMEDIATE': Opcode.CMP_IMMEDIATE,
-    },
-    'CPX': {
-        'DP': Opcode.CPX_DP, 'ABSOLUTE': Opcode.CPX_ABSOLUTE,
-        'IMMEDIATE': Opcode.CPX_IMMEDIATE,
-    },
-    'CPY': {
-        'DP': Opcode.CPY_DP, 'ABSOLUTE': Opcode.CPY_ABSOLUTE,
-        'IMMEDIATE': Opcode.CPY_IMMEDIATE,
-    },
-}
+OPCODE_VARIANTS: dict[str, dict[str, Opcode]] = {}
+for _op in Opcode:
+    if addressing_mode(_op) is not None:
+        OPCODE_VARIANTS.setdefault(mnemonic(_op), {})[addressing_mode(_op)] = _op
+del _op
 
 # Mappings from register name to push/pull opcodes
 PUSH_OPCODES: dict[str, Opcode] = {
@@ -1149,12 +1144,6 @@ DECREMENT_OPCODES: dict[str, Opcode] = {'X': Opcode.DEX, 'Y': Opcode.DEY, 'A': O
 
 # Power-of-2 to shift count mapping (for multiply/divide optimization)
 POWER_OF_2_SHIFTS: dict[int, int] = {1: 0, 2: 1, 4: 2, 8: 3, 16: 4, 32: 5, 64: 6, 128: 7, 256: 8}
-
-# Builtin instruction to opcode mapping
-BUILTIN_OPCODES: dict[str, Opcode] = {
-    'NOP': Opcode.NOP,
-}
-
 
 def instruction_size(op: Opcode, m16: bool = False, x16: bool = False) -> int:
     """

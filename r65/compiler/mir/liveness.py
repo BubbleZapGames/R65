@@ -11,42 +11,23 @@ from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import (
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
-    Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
-    Call, Return, Jump, CondBranch, JumpTable, LookupTable, TypeConvert, ToBool,
-    LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch, BankByte,
+    Load, Move, BinaryOp, Call, Return, TraitDispatch,
     iter_operands, OperandRole, iter_block_targets,
 )
 
 # ============================================================================
-# Use/def extraction — derived from the shared operand registry (mir/nodes.py).
-#
-# Liveness tracks the operands of a fixed set of node types; _LIVENESS_NODES is
-# that frozen set. Restricting to it keeps nodes the registry knows about but
-# that liveness historically ignored (SaveRegister/RestoreRegister, Push/Pull)
-# from leaking into use/def — preserving exact behavior. _get_uses/_get_defs
-# return both VirtualRegister and HardwareRegister; the analyzer routes VRs into
+# Use/def extraction — the shared operand registry (mir/nodes.py). Both return
+# VirtualRegister and HardwareRegister operands; the analyzer routes VRs into
 # the vreg sets and X/Y into the hw sets (A is never tracked).
 # ============================================================================
 
-_LIVENESS_NODES = frozenset({
-    Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
-    TypeConvert, ToBool, BankByte, LoadIndirect, StoreIndirect,
-    LookupTable, JumpTable, Call, TraitDispatch, Return, StatusFlagRead,
-    CondBranch, Jump,
-})
-
-
 def liveness_uses(instr) -> List:
     """The operands *instr* reads, as liveness counts them."""
-    if type(instr) not in _LIVENESS_NODES:
-        return []
     return [v for _, v in iter_operands(instr, role=OperandRole.READ)]
 
 
 def liveness_defs(instr) -> List:
     """The operands *instr* writes, as liveness counts them."""
-    if type(instr) not in _LIVENESS_NODES:
-        return []
     return [v for _, v in iter_operands(instr, role=OperandRole.WRITE)]
 
 

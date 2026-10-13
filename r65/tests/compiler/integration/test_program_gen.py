@@ -236,8 +236,6 @@ def create_test_program():
         functions=functions,
         statics=statics,
         constants=constants,
-        structs=[],
-        enums=[],
         symbol_table=None,
     )
 

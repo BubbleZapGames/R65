@@ -8,7 +8,7 @@ from r65.compiler.optimize.far_to_near import FarToNearOptimizer
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
     Move, Return, Call,
-    VirtualRegister, Immediate,
+    VirtualRegister, Immediate, FunctionPointer,
 )
 from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import (
@@ -198,7 +198,7 @@ class TestFarToNearOptimizer:
             block_id=0,
             instructions=[
                 # Take address of function (function pointer)
-                Move(dest=vreg_ptr, source=Immediate("far_callee"), type_info=BasicTypeInfo('u16')),
+                Move(dest=vreg_ptr, source=FunctionPointer("far_callee"), type_info=BasicTypeInfo('u16')),
                 # Also call directly
                 Call(function="far_callee", args=[], returns=[vreg_result], is_far=True),
                 Return(values=[vreg_result])

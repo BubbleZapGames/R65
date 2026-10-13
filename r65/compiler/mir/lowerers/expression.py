@@ -604,7 +604,6 @@ class ExpressionLowerer:
             storage_type=base_memloc.storage_type,
             address=base_memloc.address,
             symbol=base_memloc.symbol,
-            is_volatile=base_memloc.is_volatile,
             index_register='X',
             offset=base_memloc.offset
         )

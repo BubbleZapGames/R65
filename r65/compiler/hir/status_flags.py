@@ -15,12 +15,15 @@ class StatusFlag:
     """Metadata for a STATUS register flag."""
     name: str              # e.g., "Carry"
     bit_position: int      # 0-7
-    bit_mask: int          # e.g., 0x01
     branch_set: Optional[str]    # Branch if set, e.g., "BCS" (None if not branchable)
     branch_clear: Optional[str]  # Branch if clear, e.g., "BCC" (None if not branchable)
     set_instruction: Optional[str]    # Instruction to set flag, e.g., "SEC"
     clear_instruction: Optional[str]  # Instruction to clear flag, e.g., "CLC"
     is_writable: bool      # Can be written directly (False for Zero, Overflow, Negative)
+
+    @property
+    def bit_mask(self) -> int:
+        return 1 << self.bit_position
 
 
 # All STATUS flags with their metadata
@@ -29,7 +32,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'Carry': StatusFlag(
         name='Carry',
         bit_position=0,
-        bit_mask=0x01,
         branch_set='BCS',
         branch_clear='BCC',
         set_instruction='SEC',
@@ -39,7 +41,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'Zero': StatusFlag(
         name='Zero',
         bit_position=1,
-        bit_mask=0x02,
         branch_set='BEQ',
         branch_clear='BNE',
         set_instruction=None,  # Set by CPU operations
@@ -49,7 +50,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'Irq': StatusFlag(
         name='Irq',
         bit_position=2,
-        bit_mask=0x04,
         branch_set=None,  # No dedicated branch instruction
         branch_clear=None,
         set_instruction='SEI',
@@ -59,7 +59,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'Decimal': StatusFlag(
         name='Decimal',
         bit_position=3,
-        bit_mask=0x08,
         branch_set=None,  # No dedicated branch instruction
         branch_clear=None,
         set_instruction='SED',
@@ -69,7 +68,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'XY16': StatusFlag(
         name='XY16',
         bit_position=4,
-        bit_mask=0x10,
         branch_set=None,  # No dedicated branch instruction
         branch_clear=None,
         # Note: XY16=true means 16-bit mode (X flag=0), XY16=false means 8-bit (X flag=1)
@@ -81,7 +79,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'A16': StatusFlag(
         name='A16',
         bit_position=5,
-        bit_mask=0x20,
         branch_set=None,  # No dedicated branch instruction
         branch_clear=None,
         # Note: A16=true means 16-bit mode (M flag=0), A16=false means 8-bit (M flag=1)
@@ -93,7 +90,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'Overflow': StatusFlag(
         name='Overflow',
         bit_position=6,
-        bit_mask=0x40,
         branch_set='BVS',
         branch_clear='BVC',
         set_instruction=None,  # Set by CPU operations (CLV exists but no SEV)
@@ -103,7 +99,6 @@ STATUS_FLAGS: Dict[str, StatusFlag] = {
     'Negative': StatusFlag(
         name='Negative',
         bit_position=7,
-        bit_mask=0x80,
         branch_set='BMI',
         branch_clear='BPL',
         set_instruction=None,  # Set by CPU operations

@@ -14,7 +14,7 @@ from r65.compiler.hir import (
     HIRFunctionCall, HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRMultiAssignment,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
     HIRMatchExpression, HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
-    RegisterLetBinding, RegisterBinding, VariableBinding,
+    RegisterBinding, VariableBinding,
     SymbolKind,
 )
 from r65.compiler.hir.attributes import StorageKind
@@ -249,8 +249,6 @@ class MIRBuilder:
             functions=mir_functions,
             statics=all_statics,
             constants=hir_program.constants,
-            structs=hir_program.structs,
-            enums=hir_program.enums,
             symbol_table=hir_program.symbol_table,
             stack_attr=hir_program.stack_attr,
             snesrom_config=hir_program.snesrom_config,
@@ -662,7 +660,7 @@ class MIRBuilder:
         # the emit-time X-clobber check.)
         self.x_index_cache_invalidate_symbol(getattr(stmt, 'symbol', None))
 
-        if isinstance(stmt.binding, RegisterLetBinding):
+        if isinstance(stmt.binding, RegisterBinding):
             # Register alias: track in alias tracker with binding type
             hw_reg = HardwareRegister(stmt.binding.register_name)
             self.current_function.alias_tracker.add_alias(
@@ -1371,7 +1369,6 @@ class MIRBuilder:
         self.emit(StatusFlagRead(
             dest=result,
             flag_name=expr.flag_name,
-            bit_mask=expr.bit_mask
         ))
         return result
 
@@ -1822,8 +1819,7 @@ class MIRBuilder:
             return MemoryLocation(
                 storage_type=base_memloc.storage_type,
                 address=base_memloc.address + offset,
-                symbol=alloc_symbol,
-                is_volatile=base_memloc.is_volatile
+                symbol=alloc_symbol
             )
         else:
             # Address not known at MIR time (auto-allocated) -
@@ -1834,7 +1830,6 @@ class MIRBuilder:
                 storage_type=base_memloc.storage_type,
                 address=None,
                 symbol=alloc_symbol,
-                is_volatile=base_memloc.is_volatile,
                 offset=base_memloc.offset + offset
             )
 
@@ -2049,7 +2044,6 @@ class MIRBuilder:
             storage_type=memloc.storage_type,
             address=memloc.address,
             symbol=memloc.symbol,
-            is_volatile=memloc.is_volatile,
             index_register='X',
             offset=memloc.offset,
         )
@@ -2401,7 +2395,6 @@ class MIRBuilder:
                 storage_type=base_memloc.storage_type,
                 address=base_memloc.address + field_offset,
                 symbol=base_memloc.symbol,
-                is_volatile=base_memloc.is_volatile,
                 index_register='X',
             )
         else:
@@ -2409,7 +2402,6 @@ class MIRBuilder:
                 storage_type=base_memloc.storage_type,
                 address=None,
                 symbol=base_memloc.symbol,
-                is_volatile=base_memloc.is_volatile,
                 index_register='X',
                 offset=base_memloc.offset + field_offset,
             )
@@ -2508,20 +2500,9 @@ class MIRBuilder:
         if self.current_block is not None:
             self.current_block.instructions.append(instruction)
 
-    # MIR node types whose codegen is known to clobber the X register.
-    # MAINTENANCE HAZARD: this list must stay in sync with which selectors
-    # in codegen emit X-touching code. Missing one here = a stale X is reused
-    # and an indexed store/load lands at a garbage address (silent memory
-    # corruption — the same drift-bug class as DCE _READ_FIELDS vs liveness
-    # liveness_uses). When adding a new MIR node or changing a selector to use X,
-    # update this list. Verified clobberers:
-    #   Call / TraitDispatch ...... ABI: A/X/Y volatile across the call
-    #   JumpTable / LookupTable ... emit TAX to index the dispatch table
-    #   MemoryFill ................ LDX/DEX/INX fill loop counter
-    #   BlockCopy ................. MVN/MVP decrements X (and Y, A)
-    #   InlineAsm ................. black box, assumes all registers clobbered
-    #   RestoreRegister/SaveRegister X ... PLX/PHX
-    #   any instruction with dest == X ... Move/BinaryOp/Load/... into X
+    # Which nodes write X is `fixed_clobbers` / CLOBBERS_ALL in mir/nodes.py,
+    # shared with the alias check and loop promotion. Missing one there means
+    # a stale X is reused and an indexed access lands at the wrong address.
     @staticmethod
     def _instr_clobbers_x(instr) -> bool:
         """True if `instr` may change the X register.
@@ -2530,16 +2511,10 @@ class MIRBuilder:
         count — that is exactly what the reuse cache relies on.
         """
         from r65.compiler.mir.nodes import (
-            Call, TraitDispatch, JumpTable, LookupTable,
-            MemoryFill, BlockCopy, InlineAsm,
-            RestoreRegister, SaveRegister, HardwareRegister,
+            CLOBBERS_ALL, fixed_clobbers, HardwareRegister,
         )
-        if isinstance(instr, (Call, TraitDispatch, JumpTable, LookupTable,
-                              MemoryFill, BlockCopy, InlineAsm)):
+        if isinstance(instr, CLOBBERS_ALL) or 'X' in fixed_clobbers(instr):
             return True
-        if isinstance(instr, (RestoreRegister, SaveRegister)):
-            reg = getattr(instr, 'register', None)
-            return getattr(reg, 'name', reg) == 'X'
         dest = getattr(instr, 'dest', None)
         if isinstance(dest, HardwareRegister) and dest.name == 'X':
             return True
@@ -2632,7 +2607,6 @@ class MIRBuilder:
                     storage_type='rom',
                     address=None,
                     symbol=symbol,
-                    is_volatile=False,
                 )
             # Check if definition has storage_attr (HIR node)
             if hasattr(static_decl, 'storage_attr') and static_decl.storage_attr:
@@ -2641,24 +2615,21 @@ class MIRBuilder:
                 return MemoryLocation(
                     storage_type=storage_type,
                     address=storage_attr.address,
-                    symbol=symbol,
-                    is_volatile=storage_attr.storage_kind == StorageKind.HW
+                    symbol=symbol
                 )
             # Immutable statics without storage attribute are ROM
             elif hasattr(static_decl, 'is_mutable') and not static_decl.is_mutable:
                 return MemoryLocation(
                     storage_type='rom',
                     address=None,
-                    symbol=symbol,
-                    is_volatile=False
+                    symbol=symbol
                 )
 
         # Default: unknown storage (will be allocated later)
         return MemoryLocation(
             storage_type='unknown',
             address=None,
-            symbol=symbol,
-            is_volatile=False
+            symbol=symbol
         )
 
     def _get_callee_return_registers(self, expr) -> list:

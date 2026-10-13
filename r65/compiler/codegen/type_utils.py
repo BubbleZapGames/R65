@@ -150,3 +150,20 @@ def is_a_resident_convert(instr) -> bool:
     if convert_operand_widths(instr) != (1, 2):
         return False
     return not str(strip_newtype(instr.source_type)).startswith('i')
+
+
+def defines_in_a(instr) -> bool:
+    """True for a node whose codegen computes its result in A on the way to
+    its dest: arithmetic, a load, a bank byte, or a convert
+    `is_a_resident_convert` accepts.
+
+    The slot allocator coalesces such a dest into A, and the inliner returns
+    it as A; both must agree with the emitters on which nodes these are.
+    """
+    from r65.compiler.mir.nodes import (
+        BinaryOp, UnaryOp, Load, LoadIndirect, BankByte, TypeConvert,
+    )
+    kind = type(instr)
+    if kind is TypeConvert:
+        return is_a_resident_convert(instr)
+    return kind in (BinaryOp, UnaryOp, Load, LoadIndirect, BankByte)

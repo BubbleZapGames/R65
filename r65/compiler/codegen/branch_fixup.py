@@ -34,9 +34,10 @@ from r65.compiler.codegen.opcodes import (
 )
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Directive, ModeChange, RawAsm,
-    Address, invert_branch,
+    Address, invert_branch, BRANCH_INVERSIONS,
 )
 from r65.compiler.errors import compiler_assert
+from r65.compiler.codegen.asm_size import data_directive_size, raw_asm_size
 
 
 # ============================================================================
@@ -59,12 +60,7 @@ LONG_CONDITIONAL_BRANCH_SIZE = 5
 LONG_UNCONDITIONAL_BRANCH_SIZE = 3
 
 # Conditional branches that can be inverted for long branch fixup
-CONDITIONAL_BRANCH_OPCODES: Set[Opcode] = {
-    Opcode.BEQ, Opcode.BNE,
-    Opcode.BCC, Opcode.BCS,
-    Opcode.BMI, Opcode.BPL,
-    Opcode.BVC, Opcode.BVS,
-}
+CONDITIONAL_BRANCH_OPCODES: Set[Opcode] = set(BRANCH_INVERSIONS)
 
 # All branch opcodes that have limited range (need fixup if too far)
 ALL_BRANCH_OPCODES: Set[Opcode] = CONDITIONAL_BRANCH_OPCODES | {Opcode.BRA}
@@ -247,129 +243,14 @@ class BranchFixup:
                 # Data directives (.db / .dw / .dl / .dsb / .dsw etc.).
                 # Mode directives go through `ModeChange` now and never
                 # reach this branch.
-                current_offset += self._directive_size(node)
+                current_offset += data_directive_size(node.name, node.args)
             elif isinstance(node, RawAsm):
-                current_offset += self._raw_asm_size(node)
+                current_offset += raw_asm_size(node.text, acc_16, idx_16)
 
         # Add final offset (end of code)
         offsets.append(current_offset)
 
         return offsets
-
-    def _directive_size(self, directive: Directive) -> int:
-        """Calculate size in bytes of a directive."""
-        name = directive.name.upper()
-        args = directive.args
-
-        if name in ('.DB', '.BYTE'):
-            return len(args)
-        elif name in ('.DW', '.WORD'):
-            return len(args) * 2
-        elif name in ('.DL', '.LONG', '.FARADDR'):
-            return len(args) * 3
-        elif name in ('.DD', '.DWORD'):
-            return len(args) * 4
-        elif name == '.DSB':
-            # .DSB count - reserve count bytes
-            if args:
-                try:
-                    return int(args[0], 0)
-                except (ValueError, IndexError):
-                    pass
-        elif name == '.DSW':
-            # .DSW count - reserve count words
-            if args:
-                try:
-                    return int(args[0], 0) * 2
-                except (ValueError, IndexError):
-                    pass
-
-        return 0
-
-    def _raw_asm_size(self, node: RawAsm) -> int:
-        """Estimate size of a RawAsm node by parsing addressing modes."""
-        size = 0
-        for line in node.text.strip().splitlines():
-            stripped = line.strip()
-            # Skip empty lines, comments, and labels
-            if not stripped or stripped.startswith(';'):
-                continue
-            # Strip inline comments
-            code = stripped.split(';')[0].strip()
-            if not code or code.endswith(':'):
-                continue
-            size += self._estimate_instruction_size(code)
-        return size
-
-    # Bytes per argument for the data directives that can appear in raw asm.
-    _DATA_DIRECTIVE_WIDTHS = {
-        '.DB': 1, '.BYTE': 1,
-        '.DW': 2, '.WORD': 2,
-        '.DL': 3, '.LONG': 3, '.FARADDR': 3,
-        '.DD': 4, '.DWORD': 4,
-    }
-
-    @staticmethod
-    def _data_directive_size(mnem: str, operand: str) -> int:
-        """Bytes emitted by a data directive written as raw asm text."""
-        width = BranchFixup._DATA_DIRECTIVE_WIDTHS.get(mnem)
-        if width is not None:
-            args = [a for a in operand.split(',') if a.strip()]
-            return len(args) * width
-        if mnem in ('.DSB', '.DSW'):
-            arg = operand.split(',')[0].strip()
-            try:
-                return int(arg, 0) * (2 if mnem == '.DSW' else 1)
-            except ValueError:
-                return 0
-        return 0
-
-    @staticmethod
-    def _estimate_instruction_size(code: str) -> int:
-        """Estimate byte size of a single raw asm instruction."""
-        parts = code.split(None, 1)
-        mnem = parts[0].upper()
-
-        # A data directive occupies real bytes. `.DW`/`.DB` reach here rather
-        # than `_directive_size` because `Emitter.emit_directive` builds a
-        # `RawAsm` node, and a match lowered to a lookup table emits its table
-        # that way — inline, right after the `BRA` that jumps over it. Sizing
-        # those at zero under-counts every branch that spans a table, which
-        # WLA-DX then rejects with "Too large distance for a relative 8-bit
-        # reference" at link time.
-        if mnem.startswith('.'):
-            return BranchFixup._data_directive_size(mnem, parts[1] if len(parts) > 1 else '')
-
-        if len(parts) < 2:
-            # Implied addressing (e.g., NOP, RTS, TAX, PHB, PLB)
-            return 1
-
-        operand = parts[1].strip().rstrip(',')
-
-        # Immediate: LDA #$xx or LDA #<label (2 bytes: opcode + imm8)
-        # In 8-bit mode most immediates are 1-byte operand
-        if operand.startswith('#'):
-            return 2
-
-        # Long addressing: LDA $7E2000 or STA $7E2000 (4 bytes) / LDA.l
-        if '.l' in mnem.lower():
-            return 4
-
-        # Check operand for addressing mode
-        # Direct page: $xx (2 bytes)
-        if operand.startswith('$') and not operand.startswith('$0'):
-            # Count hex digits after $
-            hex_part = operand[1:].split(',')[0].split('.')[0]
-            hex_digits = len(hex_part.lstrip('0')) or 1
-            if hex_digits <= 2:
-                return 2  # Direct page
-            elif hex_digits <= 4:
-                return 3  # Absolute
-            else:
-                return 4  # Long
-
-        # Default: assume 3 bytes (absolute addressing, most common in raw asm)
-        return 3
 
     def _apply_fixups(
         self,

@@ -9,7 +9,7 @@ from typing import Set
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, MIRInstruction, VirtualRegister, MemoryLocation,
     Move, Load, BinaryOp, UnaryOp, TypeConvert, ToBool, LoadIndirect, Rotate,
-    SaveRegister, OperandRole, iter_operands,
+    OperandRole, iter_operands,
 )
 
 
@@ -20,7 +20,7 @@ from r65.compiler.mir.nodes import (
 # Types that are safe to eliminate (no side effects beyond writing dest)
 _SIDE_EFFECT_FREE = frozenset({
     Move, Load, LoadIndirect, BinaryOp, UnaryOp,
-    TypeConvert, ToBool, Rotate, SaveRegister,
+    TypeConvert, ToBool, Rotate,
 })
 
 

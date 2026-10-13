@@ -23,6 +23,7 @@ from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.typeck import TypeChecker, TypeCheckError
 from r65.compiler.mir import MIRBuilder
 from r65.compiler.codegen import ProgramCodeGenerator
+from r65.compiler.codegen.abi_model import ABIKind
 from r65.compiler.errors import format_error, MIRError, CodegenError
 
 
@@ -130,14 +131,15 @@ def _inject_builtin_traits(program):
       - ToString: fn to_string(*self, buf: far *u8) -> u16
     """
     from r65.compiler.frontend.ast import (
-        TraitDecl, TraitMethod, Parameter, BasicType, PointerType,
+        TraitDecl, ImplMethod, Parameter, BasicType, PointerType,
     )
 
     # trait ToString { fn to_string(far *self, buf: far *u8) -> u16; }
     toString_trait = TraitDecl(
         name='ToString',
         methods=[
-            TraitMethod(
+            ImplMethod(
+                attributes=[],
                 is_far=True,
                 name='to_string',
                 self_is_far=True,
@@ -149,6 +151,7 @@ def _inject_builtin_traits(program):
                     ),
                 ],
                 return_type=BasicType('u16'),
+                body=None,
             ),
         ],
         constants=[],
@@ -303,7 +306,6 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Build MIR
         if verbose:
             log(f"  [6/9] Building MIR...")
-        from r65.compiler.codegen.abi_model import ABIKind
         mir_abi_kind = abi_model.kind if abi_model else ABIKind.DEFAULT
         mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
         mir_program = mir_builder.build_program(hir_program)
@@ -479,7 +481,6 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
         Generated assembly code as string
     """
     from r65.compiler.analysis import RecursionChecker
-    from r65.compiler.codegen.abi_model import ABIKind
 
     cfg_evaluator = None
     if cfg_options:
@@ -601,7 +602,7 @@ examples:
                        help='Disable promotion of stack parameters used in loops to local registers')
 
     parser.add_argument('--abi',
-                       choices=['Default', 'FixedStack', 'Pascal'],
+                       choices=[kind.value for kind in ABIKind],
                        default='Default',
                        dest='abi',
                        help='ABI model: Default (PHA args, caller PLX cleanup), FixedStack (hw regs + scratch only), or Pascal (all stack, callee cleanup)')

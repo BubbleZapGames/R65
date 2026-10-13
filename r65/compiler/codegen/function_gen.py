@@ -7,12 +7,10 @@ Generates complete function bodies with headers, labels, and instructions.
 
 from typing import List, Set
 from r65.compiler.mir.nodes import (
-    MIRFunction, Return, Call, TraitDispatch, VirtualRegister, MemoryLocation,
-    Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
-    Jump, JumpTable, LookupTable, CondBranch, TypeConvert, ToBool,
-    LoadIndirect, StoreIndirect, StatusFlagRead, StatusFlagSet, StatusFlagTest,
-    SaveRegister, RestoreRegister, SetMode, Push, Pull, ReturnFromInterrupt,
-    MemoryFill, BlockCopy, InlineAsm,
+    MIRFunction, Return, Call, TraitDispatch, VirtualRegister,
+    MemoryLocation, Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest,
+    Jump, CondBranch, TypeConvert, LoadIndirect, StoreIndirect, Push,
+    MemoryFill, BlockCopy, InlineAsm, iter_operands,
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -20,28 +18,14 @@ from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAll
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.type_utils import get_type_size, pointer_element_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
-from r65.compiler.codegen.opcodes import Opcode, PUSH_OPCODES, PULL_OPCODES, mnemonic, addressing_mode
+from r65.compiler.codegen.opcodes import (
+    Opcode, PUSH_OPCODES, PULL_OPCODES, mnemonic, addressing_mode,
+    ACCUMULATOR_OPCODES, REGISTER_WRITES,
+)
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction, RawAsm
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 from r65.compiler.errors import CodegenError
 
-
-
-# Registers each mnemonic writes, for the interrupt save check. The shifts and
-# INC/DEC write A only in accumulator mode; elsewhere they write memory.
-_REG_WRITES = {
-    'LDA': {'A'}, 'ADC': {'A'}, 'SBC': {'A'}, 'AND': {'A'}, 'ORA': {'A'},
-    'EOR': {'A'}, 'TXA': {'A'}, 'TYA': {'A'}, 'PLA': {'A'}, 'XBA': {'A'},
-    'TSC': {'A'}, 'TDC': {'A'},
-    'LDX': {'X'}, 'TAX': {'X'}, 'TSX': {'X'}, 'TYX': {'X'}, 'INX': {'X'},
-    'DEX': {'X'}, 'PLX': {'X'},
-    'LDY': {'Y'}, 'TAY': {'Y'}, 'TXY': {'Y'}, 'INY': {'Y'}, 'DEY': {'Y'},
-    'PLY': {'Y'},
-    'TCD': {'D'}, 'PLD': {'D'},
-    'PLB': {'DBR'},
-    'MVN': {'A', 'X', 'Y', 'DBR'}, 'MVP': {'A', 'X', 'Y', 'DBR'},
-}
-_ACCUMULATOR_RMW = frozenset({'INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR'})
 # Control leaves the handler: whatever runs there may write anything.
 _LEAVES = frozenset({'JSR', 'JSL', 'BRK', 'COP', 'WDM'})
 
@@ -67,8 +51,8 @@ def interrupt_body_written_regs(nodes) -> 'set | None':
             continue
         if mn in _LEAVES:
             return None
-        written |= _REG_WRITES.get(mn, set())
-        if mn in _ACCUMULATOR_RMW and accumulator:
+        written |= REGISTER_WRITES.get(mn, frozenset())
+        if accumulator and Opcode.__members__.get(mn) in ACCUMULATOR_OPCODES:
             written.add('A')
     return written
 
@@ -880,99 +864,11 @@ class FunctionCodeGenerator:
 
         for block in mir_func.blocks.values():
             for instr in block.instructions:
-                # Extract virtual registers from instruction
-                # This is simplified - actual implementation would use visitor pattern
-                vregs.update(self._extract_vregs_from_instruction(instr))
+                vregs.update(v for _, v in iter_operands(instr)
+                             if isinstance(v, VirtualRegister))
 
         # Allocate all at once
         reg_alloc.allocate_all(list(vregs))
-
-    # Static field-name table per instruction type for vreg extraction.
-    # Maps type → tuple of field names that may hold VirtualRegister values.
-    # None means special handling (variable-length lists).
-    _VREG_FIELDS = {
-        Load: ('dest',),
-        Store: ('source',),
-        Move: ('dest', 'source'),
-        BinaryOp: ('dest', 'left', 'right'),
-        UnaryOp: ('dest', 'operand'),
-        Compare: ('left', 'right'),
-        BitTest: ('value',),
-        Rotate: ('dest', 'source'),
-        TypeConvert: ('dest', 'source'),
-        ToBool: ('dest', 'source'),
-        LoadIndirect: ('dest', 'pointer'),
-        StoreIndirect: ('source', 'pointer'),
-        LookupTable: ('dest', 'scrutinee'),
-        JumpTable: ('scrutinee',),
-        CondBranch: ('condition',),
-        SaveRegister: ('save_location',),
-        RestoreRegister: ('save_location',),
-        StatusFlagRead: ('dest',),
-        # Types with no vreg fields
-        Jump: (),
-        SetMode: (),
-        Push: (),
-        Pull: (),
-        ReturnFromInterrupt: (),
-        MemoryFill: (),
-        BlockCopy: (),
-        InlineAsm: (),
-        StatusFlagSet: (),
-        StatusFlagTest: (),
-        # Special cases handled below
-        Return: None,
-        Call: None,
-        TraitDispatch: None,
-    }
-
-    def _extract_vregs_from_instruction(self, instr) -> Set:
-        """
-        Extract virtual registers from instruction.
-
-        Uses static field-name table for O(1) type lookup instead of dir() reflection.
-
-        Args:
-            instr: MIR instruction
-
-        Returns:
-            Set of VirtualRegister objects
-        """
-        vregs = set()
-        fields = self._VREG_FIELDS.get(type(instr))
-
-        if fields is None:
-            # Special cases: Return, Call, TraitDispatch
-            instr_type = type(instr)
-            if instr_type is Return:
-                for v in instr.values:
-                    if isinstance(v, VirtualRegister):
-                        vregs.add(v)
-            elif instr_type is Call:
-                if isinstance(instr.function, VirtualRegister):
-                    vregs.add(instr.function)
-                for arg in instr.args:
-                    if isinstance(arg.value, VirtualRegister):
-                        vregs.add(arg.value)
-                for ret in instr.returns:
-                    if isinstance(ret, VirtualRegister):
-                        vregs.add(ret)
-            elif instr_type is TraitDispatch:
-                if isinstance(instr.self_ptr, VirtualRegister):
-                    vregs.add(instr.self_ptr)
-                for arg in instr.args:
-                    if isinstance(arg.value, VirtualRegister):
-                        vregs.add(arg.value)
-                for ret in instr.returns:
-                    if isinstance(ret, VirtualRegister):
-                        vregs.add(ret)
-        elif fields:
-            for field_name in fields:
-                val = getattr(instr, field_name, None)
-                if isinstance(val, VirtualRegister):
-                    vregs.add(val)
-
-        return vregs
 
     # ========================================================================
     # Scratch Pool Creation
@@ -1360,7 +1256,7 @@ class FunctionCodeGenerator:
         """
         from r65.compiler.mir.nodes import (
             Move, Call, TraitDispatch, Load, Store, StoreIndirect,
-            SaveRegister, RestoreRegister, HardwareRegister, VirtualRegister,
+            HardwareRegister, VirtualRegister,
             InlineAsm, MemoryFill, BlockCopy,
         )
 
@@ -1448,12 +1344,6 @@ class FunctionCodeGenerator:
                         modified.add(dest.register_hint)
                     else:
                         modified.add('A')
-
-                # SaveRegister/RestoreRegister explicitly push/pull hw regs
-                if isinstance(instr, (SaveRegister, RestoreRegister)):
-                    reg = instr.register
-                    if isinstance(reg, HardwareRegister) and reg.name in ALL_REGS:
-                        modified.add(reg.name)
 
         return modified
 

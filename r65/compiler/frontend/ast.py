@@ -176,7 +176,7 @@ class CfgComparison(CfgCondition):
 class Parameter(ASTNode):
     """Function parameter."""
     name: str
-    binding: Optional[Union[str, 'Register']]  # Register name or variable name for aliasing
+    binding: Optional[Union['Register', 'Identifier']]  # register or static variable
     param_type: Type
 
 
@@ -284,25 +284,6 @@ class EnumDecl(Declaration):
 
 
 @dataclass
-class TraitMethod(ASTNode):
-    """Method signature in a trait declaration, with an optional default body.
-
-    Example:
-        fn draw(*self);                                 // far call (default)
-        near fn render(far *self, offset @ X: u16);     // near call, far self
-        fn hide(*self) { self.visible = false; }   // default implementation
-    """
-    is_far: bool  # False only when declared `near fn`; trait methods are far by default
-    name: str
-    self_is_far: bool  # True if self param is `far *self`
-    params: List[Parameter]  # Parameters after self
-    return_type: Optional[Union[Type, NeverType]]
-    default_body: Optional['Block'] = None  # Present when the trait supplies a body
-    self_by_value: bool = False  # Bare `self` — always rejected for traits, see HIR builder
-    has_self: bool = True  # False for an associated fn declaring no self at all
-
-
-@dataclass
 class TraitConst(ASTNode):
     """Associated constant declaration in a trait (no value — implementors provide it).
 
@@ -325,7 +306,7 @@ class TraitDecl(Declaration):
         }
     """
     name: str
-    methods: List[TraitMethod]
+    methods: List['ImplMethod']  # a body, if any, is the default
     constants: List[TraitConst]
     supertraits: List[str] = field(default_factory=list)  # Inherited trait names
     doc: Optional[str] = None
@@ -333,12 +314,15 @@ class TraitDecl(Declaration):
 
 @dataclass
 class ImplMethod(ASTNode):
-    """Method declaration in an impl block.
+    """Method declaration in an impl or trait block.
 
     Example:
         fn take_damage(*self, amount @ A: u8) {
             self.health -= amount;
         }
+
+    In a trait, `body` is the default implementation, or None when the trait
+    gives none (`fn draw(*self);`).
     """
     attributes: List[Attribute]
     is_far: bool  # False only when declared `near fn`; methods are far by default
@@ -346,7 +330,7 @@ class ImplMethod(ASTNode):
     self_is_far: bool  # True if self param is `far *self`
     params: List[Parameter]  # Parameters after self
     return_type: Optional[Union[Type, NeverType]]
-    body: 'Block'
+    body: Optional['Block']
     is_const: bool = False
     doc: Optional[str] = None
     self_by_value: bool = False  # True for bare `self` (newtypes only)
@@ -389,7 +373,7 @@ class ImplDecl(Declaration):
     methods: List[ImplMethod]
     constants: List[ImplConst]
     trait_name: Optional[str] = None  # Set for `impl TraitName for StructName`
-    macros: List['ImplMacro'] = field(default_factory=list)
+    macros: List['MacroDecl'] = field(default_factory=list)
     doc: Optional[str] = None
 
 
@@ -519,29 +503,13 @@ class MacroDecl(Declaration):
             ($name:ident)             => { $name = 0; };
             ($name:ident, $v:literal) => { $name = $v; };
         }
+
+    Inside an impl block it is stored with the type for scoped lookup
+    (`value.name!()`, `Type::name!()`), and its body names the receiver as
+    bare `self`.
     """
     name: str
     arms: List[MacroArm]  # One or more pattern/body arms (shorthand => single arm)
-    doc: Optional[str] = None
-
-
-@dataclass
-class ImplMacro(ASTNode):
-    """Macro defined inside an impl block.
-
-    Stored with the struct type for scoped lookup.
-    Body uses bare 'self' to reference the receiver.
-
-    Example:
-        impl Console {
-            macro_rules! cprint($fmt:literal, $($args:expr),*) {
-                format!(__buf, $fmt, $($args),*);
-                self.print(&__buf as far *u8);
-            }
-        }
-    """
-    name: str
-    arms: List[MacroArm]
     doc: Optional[str] = None
 
 
@@ -608,7 +576,7 @@ class LetStmt(Statement):
     """Let binding statement: let [mut] name [@ binding] [: type] [= expr];"""
     is_mut: bool
     name: Optional[str]
-    binding: Optional[Union[str, 'Register']]  # Register or variable for aliasing
+    binding: Optional[Union['Register', 'Identifier']]  # only a register is valid; HIR checks
     var_type: Optional[Type]
     initializer: Expression
 
@@ -796,13 +764,6 @@ class FunctionCall(Expression):
     """Function call."""
     func: Expression
     args: List[Expression]
-
-@dataclass
-class StringifyCall(Expression):
-    """Stringify built-in function call."""
-    func: Expression  # Should be 'stringify' identifier
-    args: List[Expression]
-
 
 @dataclass
 class CfgFunctionCall(Expression):

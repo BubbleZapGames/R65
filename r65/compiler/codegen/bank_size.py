@@ -18,6 +18,7 @@ from r65.compiler.codegen.asm_nodes import (
     RawAsm
 )
 from r65.compiler.errors import CompilerError
+from r65.compiler.codegen.asm_size import data_directive_size, raw_asm_size
 
 
 # Bank size constants
@@ -94,38 +95,15 @@ def calculate_bank_sizes(
                 if current_bank not in bank_sizes:
                     bank_sizes[current_bank] = 0
 
-            # Data directives
-            elif node.name == ".db":
-                # Count bytes in .db directive
-                # Each comma-separated value is one byte
-                if node.args:
-                    # Args are the individual bytes
-                    bank_sizes[current_bank] += len(node.args)
-
-            elif node.name == ".dw":
-                # Each word is 2 bytes
-                if node.args:
-                    bank_sizes[current_bank] += len(node.args) * 2
-
-            elif node.name == ".dl":
-                # Each long is 3 bytes
-                if node.args:
-                    bank_sizes[current_bank] += len(node.args) * 3
-
-            elif node.name == ".dd":
-                # Each double is 4 bytes
-                if node.args:
-                    bank_sizes[current_bank] += len(node.args) * 4
+            else:
+                bank_sizes[current_bank] += data_directive_size(node.name, node.args)
 
         elif isinstance(node, Instruction):
             # Add instruction size
             bank_sizes[current_bank] += node.size(m16=m16, x16=x16)
 
         elif isinstance(node, RawAsm):
-            # Estimate raw assembly size
-            # This is tricky - we'll estimate based on common patterns
-            size = _estimate_raw_asm_size(node.text)
-            bank_sizes[current_bank] += size
+            bank_sizes[current_bank] += raw_asm_size(node.text, m16, x16)
 
         # Labels, comments, blank lines don't consume space
 
@@ -146,68 +124,6 @@ def calculate_bank_sizes(
         )
 
     return result
-
-
-def _estimate_raw_asm_size(text: str) -> int:
-    """
-    Estimate the size of raw assembly text.
-
-    This is a best-effort estimate for inline asm! blocks.
-    Returns 0 for directives (can't reliably parse) and estimates
-    instruction sizes based on common patterns.
-    """
-    size = 0
-    lines = text.strip().split('\n')
-
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith(';'):
-            continue
-
-        # Remove comments
-        if ';' in line:
-            line = line[:line.index(';')].strip()
-
-        if not line:
-            continue
-
-        # Skip labels and directives (can't reliably estimate)
-        if line.endswith(':') or line.startswith('.'):
-            continue
-
-        # Estimate instruction size (most are 1-3 bytes)
-        # This is a rough estimate
-        parts = line.split()
-        if not parts:
-            continue
-
-        mnemonic = parts[0].upper()
-
-        # Implied/accumulator instructions (1 byte)
-        if mnemonic in ('NOP', 'RTS', 'RTI', 'RTL', 'PHA', 'PLA', 'PHX', 'PLX',
-                        'PHY', 'PLY', 'PHP', 'PLP', 'PHB', 'PLB', 'PHD', 'PLD',
-                        'PHK', 'TAX', 'TXA', 'TAY', 'TYA', 'TXY', 'TYX', 'TXS',
-                        'TSX', 'TCD', 'TDC', 'TCS', 'TSC', 'XBA', 'XCE', 'SEC',
-                        'CLC', 'SEI', 'CLI', 'SED', 'CLD', 'CLV', 'WAI', 'STP',
-                        'INX', 'DEX', 'INY', 'DEY', 'INC', 'DEC', 'ASL', 'LSR',
-                        'ROL', 'ROR'):
-            size += 1
-        # 2-byte instructions (immediate 8-bit, direct page, relative)
-        elif mnemonic in ('BEQ', 'BNE', 'BCC', 'BCS', 'BMI', 'BPL', 'BVC',
-                          'BVS', 'BRA', 'REP', 'SEP', 'COP', 'BRK'):
-            size += 2
-        # 3-byte instructions (absolute, immediate 16-bit, BRL)
-        elif mnemonic == 'BRL' or mnemonic == 'PER':
-            size += 3
-        elif mnemonic in ('JSR', 'JMP'):
-            size += 3
-        elif mnemonic == 'JSL' or mnemonic == 'JML':
-            size += 4
-        else:
-            # Default: assume 3 bytes (common for absolute addressing)
-            size += 3
-
-    return size
 
 
 def validate_bank_sizes(

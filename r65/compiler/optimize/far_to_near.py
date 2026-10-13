@@ -23,6 +23,7 @@ from typing import Dict, Set, List, Optional, Tuple
 from dataclasses import dataclass, field
 
 from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call, TraitDispatch, BasicBlock
+from r65.compiler.analysis.param_utils import find_address_taken_functions
 
 
 @dataclass
@@ -196,39 +197,10 @@ class FarToNearOptimizer:
                             # Record callee <- caller relationship
                             if callee_name in self.bank_info:
                                 self.bank_info[callee_name].callers.add(caller_name)
-                        else:
-                            # Indirect call through function pointer
-                            # We can't know what functions might be called
-                            pass
 
-                    # Check for address-taken operations
-                    # In MIR, this would be a Load of a function address or
-                    # Store of a function address to create a function pointer
-                    self._check_address_taken(instr)
-
-    def _check_address_taken(self, instr):
-        """
-        Check if an instruction takes the address of a function.
-
-        In MIR, function addresses can be taken via:
-        - Move with function name as immediate source
-        - Load of function address
-
-        Args:
-            instr: The MIR instruction to check
-        """
-        from r65.compiler.mir.nodes import Move, Immediate, Store, StoreIndirect
-
-        # Check Move instructions for function address immediates
-        if isinstance(instr, Move):
-            if isinstance(instr.source, Immediate):
-                # Check if the immediate is a function name (string label)
-                if isinstance(instr.source.value, str):
-                    func_name = instr.source.value
-                    if func_name in self.bank_info:
-                        self.bank_info[func_name].has_address_taken = True
-                        if self.verbose:
-                            print(f"  Address taken: {func_name}")
+        for name in find_address_taken_functions(mir_program):
+            if name in self.bank_info:
+                self.bank_info[name].has_address_taken = True
 
     def _find_convertible_functions(self) -> List[str]:
         """

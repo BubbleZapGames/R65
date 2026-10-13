@@ -39,7 +39,6 @@ from r65.compiler.hir.nodes import (
     HIRBlock,
     HIRLetStmt,
     HIRMultiLetStmt,
-    HIRTupleLetStmt,  # backward-compat alias for HIRMultiLetStmt
     HIRExprStmt,
     HIRReturnStmt,
     HIRBreakStmt,
@@ -89,12 +88,8 @@ from r65.compiler.hir.nodes import (
     HIRLoopExpression,
 
     # Bindings
-    ParameterBinding,
     RegisterBinding,
     VariableBinding,
-    LetBinding,
-    RegisterLetBinding,
-    VariableLetBinding,
 )
 from r65.compiler.hir.symbol_table import *
 from r65.compiler.hir.types import *
@@ -134,7 +129,6 @@ __all__ = [
     'HIRBlock',
     'HIRLetStmt',
     'HIRMultiLetStmt',
-    'HIRTupleLetStmt',
     'HIRExprStmt',
     'HIRReturnStmt',
     'HIRBreakStmt',
@@ -184,12 +178,8 @@ __all__ = [
     'HIRLoopExpression',
 
     # Bindings
-    'ParameterBinding',
     'RegisterBinding',
     'VariableBinding',
-    'LetBinding',
-    'RegisterLetBinding',
-    'VariableLetBinding',
 
 # Symbol table
     'Symbol',

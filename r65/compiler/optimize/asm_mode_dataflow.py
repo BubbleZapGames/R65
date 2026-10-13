@@ -48,32 +48,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+from r65.compiler.codegen.constants import M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import (
     Opcode,
     BRANCH_OPCODES,
     JUMP_OPCODES,
     RETURN_OPCODES,
+    M16_IMMEDIATE_OPCODES,
 )
 
 
-# Status-flag bits in the SEP/REP immediate operand.
-M_FLAG = 0x20  # accumulator width (1 = m8)
-X_FLAG = 0x10  # index-register width (1 = x8)
-
-# Accumulator-immediate opcodes whose encoded byte width depends on the
-# current m flag. If one of these has an immediate value > $FF, the
-# instruction can ONLY have been intended for m16 — that's evidence we
-# can use to fix mode-fix decisions at mixed-mode merge points.
-A_IMM_OPCODES = frozenset({
-    Opcode.LDA_IMMEDIATE,
-    Opcode.AND_IMMEDIATE,
-    Opcode.ORA_IMMEDIATE,
-    Opcode.EOR_IMMEDIATE,
-    Opcode.ADC_IMMEDIATE,
-    Opcode.SBC_IMMEDIATE,
-    Opcode.CMP_IMMEDIATE,
-    Opcode.BIT_IMMEDIATE,
-})
 
 
 # A mode is one of {8, 16, None}. None means "unknown" (entry point
@@ -205,7 +189,9 @@ def _required_mode_of(node) -> Mode:
 
     if not isinstance(node, Instruction):
         return None
-    if node.opcode not in A_IMM_OPCODES:
+    # An accumulator immediate (sized by the m flag) above $FF can only have
+    # been meant for m16 - evidence for mode-fix decisions at merge points.
+    if node.opcode not in M16_IMMEDIATE_OPCODES:
         return None
     if not isinstance(node.operand, Immediate):
         return None

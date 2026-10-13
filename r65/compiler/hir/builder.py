@@ -23,6 +23,7 @@ from r65.compiler.hir.ast_const_eval import *
 from r65.compiler.hir.cfg import CfgEvaluator
 from r65.compiler.hir.expression_builder import ExpressionBuilder
 from r65.compiler.hir.errors import *
+from r65.compiler.registers import REGISTERS
 from r65.compiler.hir.lang_items import (
     LANG_ITEM_TRAITS, CLONE_TRAIT, CLONE_METHOD, is_lang_item_trait,
 )
@@ -60,7 +61,6 @@ class HIRBuilder:
         self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
         self.current_bank = 0  # Current ROM bank for declarations (set by #[bank(n)])
         self.auto_bank_mode = False  # True when in #[bank(auto)] mode (NOT default for backward compatibility)
-        self._pending_snesrom_config = None  # Store snesrom config when parsed as attribute
         self.expression_builder = ExpressionBuilder(
             self.symbol_table, self.const_evaluator, self.type_resolver,
             self.cfg_evaluator, self.source_dir, self.include_paths
@@ -94,7 +94,6 @@ class HIRBuilder:
         # Filled by `_setup_tagged_enums` between the passes.
         self._enum_payloads: Dict[str, Dict[str, Any]] = {}  # enum -> variant -> StructTypeInfo
         self._enum_payload_unions: Dict[str, Any] = {}  # enum -> HIRStructDecl
-        self._enum_planes: Dict[str, Any] = {}  # enum -> (tag Symbol, data Symbol)
         # `#[soa]` struct name -> (enum name, variant name) for a struct that is
         # a payload. Such a struct's one storage is the enum's, so its methods
         # index the enum's pool and its fields are the variant's planes.
@@ -105,70 +104,24 @@ class HIRBuilder:
         self.expression_builder.enum_storage = self._enum_storage
         self.expression_builder.tagged_enums = self._tagged_enums
         self.expression_builder.enum_payloads = self._enum_payloads
-        self.expression_builder.payload_structs = self._payload_structs
         self._trait_impls: Dict[str, List[str]] = {}  # trait_name -> [struct_name, ...] ordered by TypeId
         self._trait_impl_locs: Dict[tuple, Any] = {}  # (trait_name, struct_name) -> source_loc
         self._struct_trait_kind: Dict[str, str] = {}  # struct_name -> 'near' or 'far'
         self._dyn_used_traits: Set[str] = set()  # trait names used with *dyn
         self._trait_supertraits: Dict[str, List[str]] = {}  # trait_name -> declared supertrait names
-        # Lang-item Clone impls: struct_name -> {'auto': bool, 'mangled': str|None}
-        self._clone_impls: Dict[str, Dict[str, Any]] = {}
 
-    def _process_snesrom_attribute(self, attr: ast.Attribute):
-        """Process snesrom attribute that was mistakenly attached to a function."""
-        # Extract values from attribute args
-        name = None
-        id = None
-        cartridge_type = None
-        sram_size = None
-        country = None
-        version = None
-        lorom = True  # default
-        hirom = False
-        fastrom = False
-        slowrom = True  # default
-
-        for arg in attr.args:
-            if arg.name == 'name' and isinstance(arg.value, ast.StringLiteral):
-                name = arg.value.value
-            elif arg.name == 'id' and isinstance(arg.value, ast.StringLiteral):
-                id = arg.value.value
-            elif arg.name == 'cartridge_type' and isinstance(arg.value, ast.IntegerLiteral):
-                cartridge_type = arg.value.value
-            elif arg.name == 'sram_size' and isinstance(arg.value, ast.IntegerLiteral):
-                sram_size = arg.value.value
-            elif arg.name == 'country' and isinstance(arg.value, ast.IntegerLiteral):
-                country = arg.value.value
-            elif arg.name == 'version' and isinstance(arg.value, ast.IntegerLiteral):
-                version = arg.value.value
-            elif arg.name is None and isinstance(arg.value, ast.Identifier):
-                # Flag arguments like fastrom, slowrom, lorom, hirom
-                flag = arg.value.name
-                if flag == 'fastrom':
-                    fastrom = True
-                    slowrom = False
-                elif flag == 'slowrom':
-                    slowrom = True
-                    fastrom = False
-                elif flag == 'lorom':
-                    lorom = True
-                    hirom = False
-                elif flag == 'hirom':
-                    hirom = True
-                    lorom = False
-
-        self._pending_snesrom_config = hir.SnesRomConfig(
-            name=name,
-            id=id,
-            cartridge_type=cartridge_type,
-            sram_size=sram_size,
-            country=country,
-            version=version,
-            lorom=lorom,
-            hirom=hirom,
-            fastrom=fastrom,
-            slowrom=slowrom
-        )
+    @staticmethod
+    def _stack_attribute(decl: ast.StackDirective) -> StackAttribute:
+        """The `#[stack(lower, upper)]` region, which must lie in low RAM."""
+        lower, upper = decl.lower, decl.upper
+        if lower > upper:
+            raise HIRError(f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}",
+                           source_loc=decl.source_loc)
+        if lower < 0x0000 or upper > 0x1FFF:
+            raise HIRError(
+                f"Stack region ${lower:04X}-${upper:04X} must be within low RAM ($0000-$1FFF)",
+                source_loc=decl.source_loc)
+        return StackAttribute(name='stack', lower=lower, upper=upper)
 
     def build_program(self, ast_program: ast.Program) -> hir.HIRProgram:
         """
@@ -209,12 +162,7 @@ class HIRBuilder:
         self.auto_bank_mode = False  # Default is explicit bank 0 for backward compatibility
         for decl in ast_program.items:
             if isinstance(decl, ast.StackDirective):
-                # Create stack attribute from directive
-                stack_attr = StackAttribute(
-                    name='stack',
-                    lower=decl.lower,
-                    upper=decl.upper
-                )
+                stack_attr = self._stack_attribute(decl)
             elif isinstance(decl, ast.BankDirective):
                 # Update current bank context
                 if decl.is_auto:
@@ -226,20 +174,7 @@ class HIRBuilder:
                     self.auto_bank_mode = False
                     self.current_bank = decl.bank_number
             elif isinstance(decl, ast.SnesRomDirective):
-                # Create SNES ROM config from directive
-                snesrom_config = hir.SnesRomConfig(
-                    name=decl.name,
-                    id=decl.id,
-                    cartridge_type=decl.cartridge_type,
-                    sram_size=decl.sram_size,
-                    country=decl.country,
-                    version=decl.version,
-                    lorom=decl.lorom,
-                    hirom=decl.hirom,
-                    exhirom=decl.exhirom,
-                    slowrom=decl.slowrom,
-                    fastrom=decl.fastrom
-                )
+                snesrom_config = decl
             else:
                 if self._should_include_declaration(decl):
                     self._declare_toplevel(decl)
@@ -302,9 +237,6 @@ class HIRBuilder:
         self._pad_enum_payloads()
         self._expand_soa_statics(hir_decls)
 
-        # Use pending snesrom config if it was set from an attribute
-        if snesrom_config is None and self._pending_snesrom_config is not None:
-            snesrom_config = self._pending_snesrom_config
 
         # Build trait dispatch info for codegen
         trait_dispatch_info = self._build_trait_dispatch_info()
@@ -844,7 +776,6 @@ class HIRBuilder:
             is_entry=False,
             allow_lints=attrs['allow'],
             symbol=func_symbol,
-            returns_status_flag=None,
             entry_m_mode=entry_m_mode,
             exit_m_mode=exit_m_mode,
             source_loc=func.source_loc,
@@ -854,19 +785,9 @@ class HIRBuilder:
         """Build HIR function from AST."""
         if func.is_extern:
             return self._build_extern_function(func)
-        # Filter out snesrom attributes (they're program-level, not function-level)
-        # This can happen due to parser ambiguity when #[snesrom(...)] is followed by function
-        func_attrs = []
-        for attr in func.attributes:
-            if attr.name == 'snesrom':
-                # Convert attribute back to directive and process at program level
-                self._process_snesrom_attribute(attr)
-            else:
-                func_attrs.append(attr)
-
         # Process attributes
         processed_attrs = self.attr_processor.process_attributes(
-            func_attrs,
+            func.attributes,
             context='function'
         )
 
@@ -910,9 +831,6 @@ class HIRBuilder:
         func_symbol = self.symbol_table.lookup(func.name)
         self._check_databank_far(func.name, mode_attr, func.is_far, func.source_loc)
 
-        # Detect STATUS flag return pattern for optimized branch generation at call sites
-        returns_status_flag = self._detect_status_flag_return(hir_body)
-
         # Auto-detect trivial getters/setters and mark for inlining
         # Only if not already marked and not a far/interrupt/entry function
         if (inline_attr is None and
@@ -942,42 +860,10 @@ class HIRBuilder:
             is_used=attrs['is_used'],
             allow_lints=attrs['allow'],
             symbol=func_symbol,
-            returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
             exit_m_mode=exit_m_mode,
             source_loc=func.source_loc  # Propagate source location from AST
         )
-
-    def _detect_status_flag_return(self, body: hir.HIRBlock) -> Optional[str]:
-        """
-        Detect if function directly returns a STATUS flag.
-
-        Checks if the last statement is `return STATUS.Flag` pattern.
-        Returns the flag name if found, None otherwise.
-
-        This enables call sites to use direct branch instructions instead of
-        materializing the boolean return value.
-        """
-        if not body or not body.statements:
-            return None
-
-        last_stmt = body.statements[-1]
-
-        # Check if last statement is a return
-        if not isinstance(last_stmt, hir.HIRReturnStmt):
-            return None
-
-        # Check if return has exactly one value
-        if len(last_stmt.values) != 1:
-            return None
-
-        return_value = last_stmt.values[0]
-
-        # Check if return value is a STATUS flag access
-        if isinstance(return_value, hir.HIRStatusFlagAccess):
-            return return_value.flag_name
-
-        return None
 
     def _is_simple_expression(self, expr: hir.HIRExpression, depth: int = 0) -> bool:
         """
@@ -1270,22 +1156,6 @@ class HIRBuilder:
                     )
                 else:
                     raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}", source_loc=getattr(param, 'source_loc', None))
-            elif isinstance(param.binding, str):
-                # Could be register or variable binding - resolve (legacy string support)
-                var_symbol = self.symbol_table.lookup(param.binding)
-                if not var_symbol:
-                    raise HIRError(f"Undefined variable: {param.binding}", source_loc=getattr(param, 'source_loc', None))
-                if var_symbol.kind == SymbolKind.REGISTER:
-                    # Register binding
-                    binding = hir.RegisterBinding(register_name=param.binding)
-                elif var_symbol.kind == SymbolKind.STATIC_VAR:
-                    # Variable binding
-                    binding = hir.VariableBinding(
-                        variable_name=param.binding,
-                        variable_symbol=var_symbol
-                    )
-                else:
-                    raise HIRError(f"Parameter binding must be register or static variable, got {var_symbol.kind.value}", source_loc=getattr(param, 'source_loc', None))
 
         # Validate register binding types
         if binding and isinstance(binding, hir.RegisterBinding):
@@ -1365,24 +1235,13 @@ class HIRBuilder:
         else:
             type_name = payload.name
 
-        # Define allowed types for each register
-        register_allowed_types = {
-            'A': ('u8', 'i8', 'u16', 'i16'),
-            'B': ('u8', 'i8'),
-            'X': ('u16', 'i16'),
-            'Y': ('u16', 'i16'),
-            'D': ('u16',),
-            'S': ('u16',),
-            'DBR': ('u8',),
-            'PBR': ('u8',),
-        }
-
-        allowed = register_allowed_types.get(register_name)
-        if allowed is None:
+        reg = REGISTERS.get(register_name)
+        if reg is None or not reg.bindable:
             raise HIRError(
                 f"{context.capitalize()} '{name}' bound to unknown register '{register_name}'",
                 source_loc=None
             )
+        allowed = reg.types
 
         if type_name not in allowed:
             # Provide helpful error messages based on register
@@ -2627,13 +2486,12 @@ class HIRBuilder:
         ast_enum = self.symbol_table.lookup(enum_name).definition
         tag_elem = self._discriminant_type(len(ast_enum.variants) - 1)
 
-        planes = {}
         for suffix, element_type in (
             ('tag', tag_elem),
             ('data', StructTypeInfo(name=union.name, definition=union,
                                     symbol=union.symbol)),
         ):
-            planes[suffix] = self._declare_plane_symbol(
+            self._declare_plane_symbol(
                 f"{pool_symbol.name}__{prefix}{suffix}", element_type, count)
 
         # An all-#[soa] enum also has one plane per variant field, laid over
@@ -2643,9 +2501,8 @@ class HIRBuilder:
         if self._tagged_enums.get(enum_name, False):
             for variant_name, field_name, field_type in self._soa_payload_fields(enum_name):
                 suffix = f"{variant_name}__{field_name}"
-                planes[suffix] = self._declare_plane_symbol(
+                self._declare_plane_symbol(
                     f"{pool_symbol.name}__{prefix}{suffix}", field_type, count)
-        self._enum_planes[enum_name] = planes
 
     def _build_newtype(self, decl: ast.NewtypeDecl) -> hir.HIRNewtypeDecl:
         """Build HIR newtype declaration from AST."""
@@ -3093,11 +2950,6 @@ class HIRBuilder:
                     source_loc=method.source_loc
                 )
         is_auto = len(impl.methods) == 0
-        info = {
-            'auto': is_auto,
-            'mangled': None if is_auto else f"{impl.struct_name}__{CLONE_METHOD}",
-        }
-        self._clone_impls[impl.struct_name] = info
 
         # Register a marker symbol so the type checker (which shares this symbol
         # table) can resolve "does T implement Clone, and is it auto or manual".
@@ -3108,10 +2960,7 @@ class HIRBuilder:
                 kind=SymbolKind.METHOD,
                 definition=None,
                 scope_id=0,
-                type_info={
-                    'clone_auto': is_auto,
-                    'clone_mangled': info['mangled'],
-                }
+                type_info={'clone_auto': is_auto}
             ))
 
     def _declare_trait_impl(self, impl: ast.ImplDecl):
@@ -3170,7 +3019,7 @@ class HIRBuilder:
         trait_method_names = {m.name for m in trait_ast.methods}
         impl_method_names = {m.name for m in impl.methods}
         for trait_method in trait_ast.methods:
-            if trait_method.name in impl_method_names or trait_method.default_body is None:
+            if trait_method.name in impl_method_names or trait_method.body is None:
                 continue
             impl.methods.append(self._instantiate_default_method(trait_method))
             impl_method_names.add(trait_method.name)
@@ -3272,22 +3121,13 @@ class HIRBuilder:
                      "variant in an inherent `impl` block instead"
             )
 
-    def _instantiate_default_method(self, trait_method: ast.TraitMethod) -> ast.ImplMethod:
-        """Build an ImplMethod from a trait method's default body.
+    def _instantiate_default_method(self, trait_method: ast.ImplMethod) -> ast.ImplMethod:
+        """An implementor's copy of a trait method's default.
 
-        The body is deep-copied because each implementor lowers its own instance
+        Deep-copied because each implementor lowers its own instance
         (mangled StructName__method) and the HIR/typeck passes annotate AST nodes.
         """
-        return ast.ImplMethod(
-            attributes=[],
-            is_far=trait_method.is_far,
-            name=trait_method.name,
-            self_is_far=trait_method.self_is_far,
-            params=copy.deepcopy(trait_method.params),
-            return_type=copy.deepcopy(trait_method.return_type),
-            body=copy.deepcopy(trait_method.default_body),
-            source_loc=trait_method.source_loc
-        )
+        return copy.deepcopy(trait_method)
 
     def _build_trait(self, trait: ast.TraitDecl) -> hir.HIRTraitDecl:
         """Build HIR trait declaration from AST."""
@@ -3531,9 +3371,6 @@ class HIRBuilder:
         # Get method symbol
         method_symbol = self.symbol_table.lookup(mangled_name)
 
-        # Detect STATUS flag return pattern
-        returns_status_flag = self._detect_status_flag_return(hir_body)
-
         # Auto-detect trivial getters/setters and mark for inlining
         # Only if not already marked and not an interrupt/entry method.
         # Far methods qualify too: the inliner decides per call site whether
@@ -3567,7 +3404,6 @@ class HIRBuilder:
             is_used=attrs['is_used'],
             allow_lints=attrs['allow'],
             symbol=method_symbol,
-            returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
             exit_m_mode=exit_m_mode,
             source_loc=method.source_loc
@@ -3733,20 +3569,14 @@ class HIRBuilder:
         # Process binding
         binding = None
         if let.binding:
-            if isinstance(let.binding, ast.Register):
-                binding = hir.RegisterLetBinding(register_name=let.binding.name)
-            elif isinstance(let.binding, str):
-                # Variable binding
-                var_symbol = self.symbol_table.lookup(let.binding)
-                if not var_symbol:
-                    raise HIRError(f"Undefined variable: {let.binding}", source_loc=let.source_loc)
-                binding = hir.VariableLetBinding(
-                    variable_name=let.binding,
-                    variable_symbol=var_symbol
-                )
+            if not isinstance(let.binding, ast.Register):
+                raise HIRError(
+                    f"`let {let.name} @ {let.binding.name}`: a let binds only a register",
+                    source_loc=let.source_loc)
+            binding = hir.RegisterBinding(register_name=let.binding.name)
 
         # Validate register binding types (only if type is explicitly specified)
-        if binding and isinstance(binding, hir.RegisterLetBinding) and var_type:
+        if binding and var_type:
             self._validate_register_binding_type(
                 binding.register_name,
                 var_type,

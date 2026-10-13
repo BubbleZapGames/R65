@@ -8,7 +8,7 @@ and fixedstack_params.py (FixedStack ABI).
 
 from typing import Dict, Set, List, Optional, Tuple, Sequence
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, Call, FunctionPointer, Move, TraitDispatch,
+    MIRProgram, MIRFunction, Call, FunctionPointer, Move, SymbolByte, TraitDispatch,
 )
 from r65.compiler.codegen.type_utils import get_type_size
 
@@ -37,12 +37,21 @@ def find_address_taken_functions(mir_program: MIRProgram) -> Set[str]:
     Find all functions whose address is taken (used as function pointer).
 
     These cannot have their calling convention changed because unknown
-    callers may call them via the original stack-based ABI.
+    callers may call them via the original stack-based ABI: a pointer call
+    pushes stack arguments, and a `far fn()` pointer call expects RTL.
+
+    An address is taken by a `FunctionPointer` moved or passed as an
+    argument, or by a `fn` static in ROM.
 
     Returns:
         Set of function names whose address is taken
     """
     address_taken: Set[str] = set()
+    names = {func.name for func in mir_program.functions}
+    for rom_data in mir_program.rom_data_sections:
+        for byte in rom_data.data:
+            if isinstance(byte, SymbolByte) and byte.label in names:
+                address_taken.add(byte.label)
 
     for func in mir_program.functions:
         for block in func.blocks.values():

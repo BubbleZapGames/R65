@@ -13,6 +13,7 @@ from r65.compiler.frontend import ast
 from r65.compiler.frontend.ast import CfgCondition
 from r65.compiler.frontend.derive_compat import derive_hint, derive_trait_names
 from r65.compiler.hir.errors import *
+from r65.compiler.registers import PRESERVABLE_REGISTERS
 
 
 # =============================================================================
@@ -67,6 +68,10 @@ class StorageKind(Enum):
     RAM = "ram"            # Main RAM ($7E2000-$7FFFFF)
     # ROM removed - immutable statics are implicitly ROM
     HW = "hw"              # Hardware-mapped I/O (automatically volatile)
+
+
+# The storage attribute names: #[zeropage], #[lowram], #[ram], #[hw].
+_STORAGE_KINDS = frozenset(kind.value for kind in StorageKind)
 
 
 @dataclass
@@ -236,12 +241,10 @@ class AttributeProcessor:
                 processed.append(self._process_mode(attr, context))
             elif attr.name == 'preserves':
                 processed.append(self._process_preserves(attr, context))
-            elif attr.name in ['zeropage', 'lowram', 'ram', 'hw']:
+            elif attr.name in _STORAGE_KINDS:
                 processed.append(self._process_storage(attr, context))
             elif attr.name == 'soa':
                 processed.append(self._process_soa(attr, context))
-            elif attr.name == 'stack':
-                processed.append(self._process_stack(attr, context))
             elif attr.name == 'cfg':
                 processed.append(self._process_cfg(attr, context))
             elif attr.name == 'bank':
@@ -335,7 +338,6 @@ class AttributeProcessor:
             raise HIRError(f"#[preserves] attribute only valid on functions", source_loc=attr.source_loc)
 
         registers = []
-        valid_registers = {'A', 'X', 'Y', 'STATUS', 'D', 'DBR', 'S'}
 
         for arg in attr.args:
             if arg.name is not None:
@@ -357,11 +359,11 @@ class AttributeProcessor:
                     source_loc=attr.source_loc
                 )
 
-            if reg_name not in valid_registers:
-                raise HIRError(f"Invalid register in #[preserves]: {reg_name}", source_loc=attr.source_loc)
-
             if reg_name == 'PBR':
                 raise HIRError(f"PBR cannot be in #[preserves] (it's read-only)", source_loc=attr.source_loc)
+
+            if reg_name not in PRESERVABLE_REGISTERS:
+                raise HIRError(f"Invalid register in #[preserves]: {reg_name}", source_loc=attr.source_loc)
 
             registers.append(reg_name)
 
@@ -392,14 +394,7 @@ class AttributeProcessor:
         if context not in ['static']:
             raise HIRError(f"#{attr.name} attribute only valid on static variables", source_loc=attr.source_loc)
 
-        # Map attribute name to storage kind
-        storage_map = {
-            'zeropage': StorageKind.ZEROPAGE,
-            'lowram': StorageKind.LOWRAM,
-            'ram': StorageKind.RAM,
-            'hw': StorageKind.HW,
-        }
-        storage_kind = storage_map[attr.name]
+        storage_kind = StorageKind(attr.name)
 
         # Parse arguments: address (positional) and register (named or flag)
         address = None
@@ -581,47 +576,6 @@ class AttributeProcessor:
             code = self._get_arg_identifier(arg.value)
             codes.add(ALLOW_ALL if code == 'all' else code)
         return AllowAttribute(name='allow', codes=frozenset(codes))
-
-    def _process_stack(self, attr: ast.Attribute, context: str) -> StackAttribute:
-        """Process #[stack(lower, upper)] attribute."""
-        if context not in ['static']:
-            raise HIRError(f"#[stack] attribute only valid on static declarations", source_loc=attr.source_loc)
-
-        lower = None
-        upper = None
-
-        for i, arg in enumerate(attr.args):
-            if arg.name is not None:
-                raise HIRError(f"#[stack] only accepts positional arguments", source_loc=attr.source_loc)
-
-            if not isinstance(arg.value, ast.IntegerLiteral):
-                raise HIRError(f"#[stack] arguments must be integer literals", source_loc=attr.source_loc)
-
-            if i == 0:
-                lower = arg.value.value
-            elif i == 1:
-                upper = arg.value.value
-            else:
-                raise HIRError(f"#[stack] accepts exactly 2 arguments (lower, upper)", source_loc=attr.source_loc)
-
-        if lower is None or upper is None:
-            raise HIRError(f"#[stack] requires both lower and upper bounds: #[stack(lower, upper)]", source_loc=attr.source_loc)
-
-        if lower > upper:
-            raise HIRError(f"Stack lower bound ${lower:04X} must be <= upper bound ${upper:04X}", source_loc=attr.source_loc)
-
-        if lower < 0x0000 or upper > 0x1FFF:
-            raise HIRError(
-                f"Stack region ${lower:04X}-${upper:04X} must be within "
-                f"low RAM ($0000-$1FFF)",
-                source_loc=attr.source_loc
-            )
-
-        return StackAttribute(
-            name='stack',
-            lower=lower,
-            upper=upper
-        )
 
     def _process_cfg(self, attr: ast.Attribute, context: str) -> CfgAttribute:
         """Process #[cfg(condition)] attribute."""

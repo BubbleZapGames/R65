@@ -52,31 +52,6 @@ class HIRIncludeAsm(HIRDeclaration):
 
 
 # =============================================================================
-# Program Configuration
-# =============================================================================
-
-@dataclass
-class SnesRomConfig:
-    """
-    SNES ROM header configuration from #[snesrom(...)] directive.
-
-    Configures the WLA-DX .SNESHEADER directive output.
-    """
-    name: str  # ROM name (max 21 characters)
-    id: str = "SNES"  # Cartridge ID
-    cartridge_type: int = 0x00  # Cartridge type
-    sram_size: int = 0x00  # SRAM size
-    country: int = 0x01  # Country code (USA)
-    version: int = 0x00  # ROM version
-    # ROM type flags
-    lorom: bool = True
-    hirom: bool = False
-    exhirom: bool = False
-    slowrom: bool = True
-    fastrom: bool = False
-
-
-# =============================================================================
 # Program
 # =============================================================================
 
@@ -86,7 +61,7 @@ class HIRProgram(HIRNode):
     declarations: List[HIRDeclaration] = field(default_factory=list)
     symbol_table: Any = None  # Will be SymbolTable
     stack_attr: Any = None  # StackAttribute from #[stack(...)]
-    snesrom_config: Optional[SnesRomConfig] = None  # SNES ROM header config from #[snesrom(...)]
+    snesrom_config: Optional[Any] = None  # the ast.SnesRomDirective from #[snesrom(...)]
     trait_dispatch_info: Optional[dict] = None  # Trait dispatch tables for codegen
 
     def get_declarations_by_type(self, decl_type: type) -> List[HIRDeclaration]:
@@ -141,41 +116,16 @@ class HIRProgram(HIRNode):
 # =============================================================================
 
 @dataclass
-class ParameterBinding:
-    """Base class for parameter binding information."""
-    pass
-
-
-@dataclass
-class RegisterBinding(ParameterBinding):
-    """Parameter bound to hardware register (e.g., param @ A)."""
+class RegisterBinding:
+    """A parameter or let bound to a hardware register (`x @ A`)."""
     register_name: str  # "A", "X", "Y", "B"
 
 
 @dataclass
-class VariableBinding(ParameterBinding):
-    """Parameter bound to static variable (e.g., param @ TEMP)."""
+class VariableBinding:
+    """A parameter bound to a static variable (`param @ TEMP`)."""
     variable_name: str
     variable_symbol: Any  # Will be Symbol (resolved reference)
-
-
-@dataclass
-class LetBinding:
-    """Base class for let statement binding information."""
-    pass
-
-
-@dataclass
-class RegisterLetBinding(LetBinding):
-    """Let bound to register (e.g., let x @ A = expr)."""
-    register_name: str
-
-
-@dataclass
-class VariableLetBinding(LetBinding):
-    """Let bound to variable (e.g., let x @ VAR = expr)."""
-    variable_name: str
-    variable_symbol: Any  # Will be Symbol
 
 
 # =============================================================================
@@ -187,7 +137,7 @@ class HIRParameter(HIRNode):
     """Function parameter."""
     name: str = ""
     param_type: Any = None  # Will be TypeInfo
-    binding: Optional[ParameterBinding] = None
+    binding: Optional[Union[RegisterBinding, VariableBinding]] = None
 
     # Symbol reference (resolved during HIR construction)
     symbol: Optional[Any] = None  # Will be Symbol
@@ -221,7 +171,6 @@ class HIRFunctionDecl(HIRDeclaration):
     symbol: Optional[Any] = None  # Will be Symbol
 
     # STATUS flag return tracking (for optimized branch generation at call sites)
-    returns_status_flag: Optional[str] = None  # Flag name if function directly returns STATUS.Flag
 
     # Inferred processor mode (populated by HIR builder)
     # - entry_m_mode: m8 if no u16 A parameter, m16 if u16 @ A parameter
@@ -434,7 +383,7 @@ class HIRLetStmt(HIRStatement):
     is_mutable: bool = False
     var_type: Optional[Any] = None  # Will be TypeInfo (may be inferred)
     initializer: Optional[HIRExpression] = None
-    binding: Optional[LetBinding] = None
+    binding: Optional[RegisterBinding] = None
 
     # Symbol reference
     symbol: Optional[Any] = None  # Will be Symbol
@@ -455,9 +404,6 @@ class HIRMultiLetStmt(HIRStatement):
     # Symbol references for each binding
     symbols: List[Any] = field(default_factory=list)  # Will be List[Symbol]
 
-
-# Backward-compat alias — remove once all call sites are updated
-HIRTupleLetStmt = HIRMultiLetStmt
 
 
 @dataclass
@@ -574,8 +520,6 @@ class HIRStatusFlagAccess(HIRExpression):
     Flags: Carry, Zero, Irq, Decimal, Index, Accumulator, Overflow, Negative
     """
     flag_name: str = ""       # "Carry", "Zero", "Irq", "Decimal", "Index", "Accumulator", "Overflow", "Negative"
-    bit_position: int = 0     # 0-7
-    bit_mask: int = 0x01      # 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80
 
 
 @dataclass
@@ -710,7 +654,6 @@ class HIRFieldAccess(HIRExpression):
     """Struct field access."""
     base: Optional[HIRExpression] = None
     field_name: str = ""
-    field_index: Optional[int] = None  # Resolved during HIR construction
     field_offset: Optional[int] = None  # Computed during HIR construction
     auto_deref: bool = False  # True if base is a pointer that gets auto-dereferenced
 

@@ -43,7 +43,6 @@ from r65.compiler.hir import (
     HIRStatement,
     HIRStructLiteralExpr,
     HIRMultiLetStmt,
-    HIRTupleLetStmt,
     HIRTypeCast,
     HIRUnaryOp,
     HIRWhileStmt,

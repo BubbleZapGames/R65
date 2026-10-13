@@ -6,7 +6,7 @@ Handles macro definition collection and invocation expansion.
 Works at the AST level, expanding macro invocations into AST nodes.
 """
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Dict, List, Optional, Set, Tuple, Callable, TypeVar
 
 T = TypeVar('T')
@@ -14,21 +14,7 @@ T = TypeVar('T')
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.parser import parse
 from r65.compiler.errors import MacroError, SourceLocation
-
-
-@dataclass
-class MacroArmDef:
-    """One pattern/body arm of a stored macro definition."""
-    params: List[ast.MacroParam]
-    body_tokens: List[str]
-
-
-@dataclass
-class MacroDefinition:
-    """Stored macro definition (one or more arms; shorthand => single arm)."""
-    name: str
-    arms: List[MacroArmDef]
-    source_loc: Optional[SourceLocation] = None
+from r65.compiler.registers import REGISTER_NAMES
 
 
 class MacroExpander:
@@ -65,8 +51,8 @@ class MacroExpander:
     }
 
     def __init__(self):
-        self.macros: Dict[str, MacroDefinition] = {}
-        self._impl_macros: Dict[str, Dict[str, MacroDefinition]] = {}  # struct_name → {macro_name → MacroDef}
+        self.macros: Dict[str, ast.MacroDecl] = {}
+        self._impl_macros: Dict[str, Dict[str, ast.MacroDecl]] = {}  # struct_name → {macro_name → MacroDef}
         self.warnings: List[str] = []
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
@@ -175,11 +161,11 @@ class MacroExpander:
             return body[1:-1]
         return body
 
-    def _make_definition(self, name, arms, source_loc) -> MacroDefinition:
-        """Build a MacroDefinition from a list of ast.MacroArm (body braces stripped)."""
-        return MacroDefinition(
+    def _make_definition(self, name, arms, source_loc) -> ast.MacroDecl:
+        """Build a stored ast.MacroDecl from a list of ast.MacroArm (body braces stripped)."""
+        return ast.MacroDecl(
             name=name,
-            arms=[MacroArmDef(params=a.params, body_tokens=self._strip_arm_braces(a.body_tokens))
+            arms=[ast.MacroArm(params=a.params, body_tokens=self._strip_arm_braces(a.body_tokens))
                   for a in arms],
             source_loc=source_loc,
         )
@@ -512,7 +498,7 @@ class MacroExpander:
     # Impl (Method) Macros
     # =========================================================================
 
-    def _register_impl_macro(self, struct_name: str, macro: 'ast.ImplMacro'):
+    def _register_impl_macro(self, struct_name: str, macro: ast.MacroDecl):
         """Register a macro defined inside an impl block."""
         if struct_name not in self._impl_macros:
             self._impl_macros[struct_name] = {}
@@ -536,7 +522,7 @@ class MacroExpander:
         name: str,
         source_loc: Optional[SourceLocation],
         type_name: Optional[str] = None
-    ) -> MacroDefinition:
+    ) -> ast.MacroDecl:
         """Find the right impl macro for a method macro invocation.
 
         `type_name` is set when the invocation named the impl block itself
@@ -621,7 +607,7 @@ class MacroExpander:
             return f"[{self._type_to_source(t.element_type)}; {self._ast_to_source(t.size)}]"
         return str(t)
 
-    def _assoc_macro_definition(self, mm: ast.MethodMacro) -> MacroDefinition:
+    def _assoc_macro_definition(self, mm: ast.MethodMacro) -> ast.MacroDecl:
         """The impl macro for an associated invocation, `Type::name!(args)`.
 
         Nothing is substituted: the invocation named the impl block, not a
@@ -642,7 +628,7 @@ class MacroExpander:
             )
         return macro
 
-    def _method_macro_as_plain(self, mm: ast.MethodMacro) -> MacroDefinition:
+    def _method_macro_as_plain(self, mm: ast.MethodMacro) -> ast.MacroDecl:
         """The impl macro for `mm`, with `self` replaced by the receiver text.
 
         Substitution is textual, so a body naming `self` more than once evaluates
@@ -654,10 +640,10 @@ class MacroExpander:
 
         receiver_text = self._ast_to_source(mm.receiver)
         macro = self._resolve_impl_macro(mm.receiver, mm.name, mm.source_loc)
-        return MacroDefinition(
+        return ast.MacroDecl(
             name=mm.name,
             arms=[
-                MacroArmDef(
+                ast.MacroArm(
                     params=arm.params,
                     body_tokens=[receiver_text if t == 'self' else t
                                  for t in arm.body_tokens],
@@ -797,7 +783,7 @@ class MacroExpander:
         return self._invoke_macro(name, args, source_loc, parse_as_statements)
 
     # Fragment-type classification sets (faithful to the lexer terminals).
-    _REG_NAMES = frozenset({'STATUS', 'DBR', 'PBR', 'A', 'B', 'X', 'Y', 'D', 'S'})
+    _REG_NAMES = REGISTER_NAMES
     _TYPE_NAMES = frozenset({'bool', 'u16', 'i16', 'u8', 'i8'})
     _BOOL_LITERALS = frozenset({'true', 'false'})
     _TY_PREFIXES = frozenset({'*', 'far', 'near', '[', 'fn'})
@@ -856,7 +842,7 @@ class MacroExpander:
         # Unknown fragment type — be permissive rather than silently rejecting.
         return True
 
-    def _arm_signature(self, arm: MacroArmDef) -> str:
+    def _arm_signature(self, arm: ast.MacroArm) -> str:
         """Render an arm's parameter pattern for diagnostics, e.g. ($x:ident, $($y:expr),*)."""
         parts = []
         for p in arm.params:
@@ -869,7 +855,7 @@ class MacroExpander:
     def _match_arm(
         self,
         macro_name: str,
-        arm: MacroArmDef,
+        arm: ast.MacroArm,
         args: List[str],
         source_loc: Optional[SourceLocation],
         check_fragments: bool
@@ -925,10 +911,10 @@ class MacroExpander:
 
     def _select_arm(
         self,
-        macro: MacroDefinition,
+        macro: ast.MacroDecl,
         args: List[str],
         source_loc: Optional[SourceLocation]
-    ) -> Tuple[MacroArmDef, Dict[str, List[str]]]:
+    ) -> Tuple[ast.MacroArm, Dict[str, List[str]]]:
         """
         Pick the first arm whose arity (and, for multi-arm macros, fragment
         types) match the arguments.
@@ -939,7 +925,7 @@ class MacroExpander:
         # between; single-arm macros match on arity alone (backward compatible).
         check_fragments = len(macro.arms) > 1
 
-        reasons: List[Tuple[MacroArmDef, str]] = []
+        reasons: List[Tuple[ast.MacroArm, str]] = []
         for arm in macro.arms:
             bindings, reason = self._match_arm(
                 macro.name, arm, args, source_loc, check_fragments

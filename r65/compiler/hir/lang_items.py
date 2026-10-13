@@ -17,21 +17,6 @@ CLONE_TRAIT = "Clone"
 CLONE_METHOD = "clone_from"
 
 # --- Tier A: compound-assignment operators ---------------------------------
-# operator -> (trait name, method name)
-COMPOUND_ASSIGN_OPS = {
-    "+=":  ("AddAssign",    "add_assign"),
-    "-=":  ("SubAssign",    "sub_assign"),
-    "*=":  ("MulAssign",    "mul_assign"),
-    "/=":  ("DivAssign",    "div_assign"),
-    "%=":  ("RemAssign",    "rem_assign"),
-    "&=":  ("BitAndAssign", "bitand_assign"),
-    "|=":  ("BitOrAssign",  "bitor_assign"),
-    "^=":  ("BitXorAssign", "bitxor_assign"),
-    "<<=": ("ShlAssign",    "shl_assign"),
-    ">>=": ("ShrAssign",    "shr_assign"),
-}
-
-# --- Tier B: comparison operators ------------------------------------------
 # Base binary operator -> (trait, method), used to desugar `a OP= b` on aggregates.
 # Keyed by the base operator (CompoundAssignment.operator), not the `OP=` spelling.
 BINOP_ASSIGN = {
@@ -47,13 +32,14 @@ BINOP_ASSIGN = {
     ">>": ("ShrAssign",    "shr_assign"),
 }
 
+# --- Tier B: comparison operators ------------------------------------------
 EQ_TRAIT = "PartialEq"
 EQ_METHOD = "eq"      # eq(*self, rhs) -> bool        ; powers ==, !=
 ORD_TRAIT = "PartialOrd"
 ORD_METHOD = "cmp"    # cmp(*self, rhs) -> i8 (sign)  ; powers <, <=, >, >=
 
 OPERATOR_TRAITS = (
-    frozenset(trait for trait, _ in COMPOUND_ASSIGN_OPS.values())
+    frozenset(trait for trait, _ in BINOP_ASSIGN.values())
     | {EQ_TRAIT, ORD_TRAIT}
 )
 

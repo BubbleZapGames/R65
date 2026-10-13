@@ -14,7 +14,6 @@ from r65.compiler.mir.nodes import (
     BinaryOp, UnaryOp,
     Jump, CondBranch, Return,
     SetMode,
-    SaveRegister, RestoreRegister,
     VirtualRegister, HardwareRegister,
     Immediate,
     MemoryLocation,
@@ -245,47 +244,6 @@ def test_mode_control():
 
 
 
-def test_register_save_restore():
-    """Test register save/restore instruction selection."""
-    print("=" * 80)
-    print("Test 5: Register Save/Restore (Push/Pull)")
-    print("=" * 80)
-    print()
-
-    # Setup
-    emitter = AssemblyEmitter()
-    mem_alloc = MemoryAllocator()
-    reg_alloc = RegisterAllocator()
-    selector = InstructionSelector(emitter, reg_alloc, mem_alloc)
-
-    # Test save registers
-    print("Save A, X, Y:")
-    save_a = SaveRegister(register=HardwareRegister('A'), save_location=None)
-    save_x = SaveRegister(register=HardwareRegister('X'), save_location=None)
-    save_y = SaveRegister(register=HardwareRegister('Y'), save_location=None)
-
-    selector.select_instruction(save_a)
-    selector.select_instruction(save_x)
-    selector.select_instruction(save_y)
-    print(emitter.to_string())
-    emitter.clear()
-    print()
-
-    # Test restore registers
-    print("Restore Y, X, A (reverse order):")
-    restore_y = RestoreRegister(register=HardwareRegister('Y'), save_location=None)
-    restore_x = RestoreRegister(register=HardwareRegister('X'), save_location=None)
-    restore_a = RestoreRegister(register=HardwareRegister('A'), save_location=None)
-
-    selector.select_instruction(restore_y)
-    selector.select_instruction(restore_x)
-    selector.select_instruction(restore_a)
-    print(emitter.to_string())
-    emitter.clear()
-    print()
-
-
-
 def test_16bit_operations():
     """Test 16-bit operations."""
     print("=" * 80)
@@ -346,7 +304,6 @@ if __name__ == "__main__":
     test_arithmetic_operations()
     test_control_flow()
     test_mode_control()
-    test_register_save_restore()
     test_16bit_operations()
 
     print("🎉 All tests passed!")

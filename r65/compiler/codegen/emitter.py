@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from r65.compiler.errors import SourceLocation
 
 from r65.compiler.codegen.opcodes import (
-    Opcode, mnemonic, addressing_mode, BRANCH_OPCODES,
+    Opcode, mnemonic, addressing_mode, BRANCH_OPCODES, MEMORY_WRITE_OPCODES,
+    ACCUMULATOR_OPCODES, NZ_PRESERVING_MNEMONICS, nz_register, registers_written,
 )
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Comment, Directive, ModeChange, BlankLine,
@@ -175,7 +176,6 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
         return "JML"
 
     # Accumulator mode instructions (need explicit 'A' operand in WLA-DX)
-    ACCUMULATOR_OPCODES = {Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR, Opcode.INC, Opcode.DEC}
     if opcode in ACCUMULATOR_OPCODES:
         return f"{mnem} A"
 
@@ -670,45 +670,10 @@ class AssemblyEmitter:
     # N/Z Flag Tracking
     # ========================================================================
 
-    # Mnemonics that always set N/Z for A (all addressing modes)
-    _NZ_A_MNEMONICS = frozenset({'LDA', 'AND', 'ORA', 'EOR', 'ADC', 'SBC'})
-    # Mnemonics that always set N/Z for X
-    _NZ_X_MNEMONICS = frozenset({'LDX'})
-    # Mnemonics that always set N/Z for Y
-    _NZ_Y_MNEMONICS = frozenset({'LDY'})
-    # Accumulator-form implied instructions that set N/Z for A
-    _NZ_A_OPCODES = frozenset({
-        Opcode.TXA, Opcode.TYA, Opcode.PLA, Opcode.XBA, Opcode.TSC,
-        Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,  # Accumulator shifts
-        Opcode.INC, Opcode.DEC,  # Accumulator inc/dec
-    })
-    # Implied instructions that set N/Z for X
-    _NZ_X_OPCODES = frozenset({
-        Opcode.TAX, Opcode.PLX, Opcode.INX, Opcode.DEX, Opcode.TSX,
-    })
-    # Implied instructions that set N/Z for Y
-    _NZ_Y_OPCODES = frozenset({
-        Opcode.TAY, Opcode.PLY, Opcode.INY, Opcode.DEY,
-    })
-    # Instructions that do NOT affect N/Z flags (tracking preserved)
-    _NZ_PRESERVE_MNEMONICS = frozenset({
-        'STA', 'STX', 'STY', 'STZ',
-        'PHA', 'PHX', 'PHY', 'PHB', 'PHD', 'PHK',
-        'TXS', 'TCS', 'TCD',  # Transfers to S/SP/D don't affect N/Z
-        'NOP', 'WDM',
-        'BRA', 'BRL', 'BEQ', 'BNE', 'BCC', 'BCS', 'BMI', 'BPL', 'BVC', 'BVS',
-        'JMP',
-        'CLC', 'SEC', 'CLI', 'SEI', 'CLD', 'SED', 'CLV',
-        'REP', 'SEP',  # Only affect M/X bits (#$20/#$10) in compiler usage
-    })
-
-    # Mnemonics that write X or Y (or may, as a call or a bank move does).
-    _XY_WRITE_MNEMONICS = frozenset({
-        'LDX', 'LDY', 'TAX', 'TAY', 'TSX', 'PLX', 'PLY',
-        'INX', 'DEX', 'INY', 'DEY',
-        'JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP',
-        'MVN', 'MVP', 'XCE', 'PLP',
-    })
+    # Beyond what `registers_written` lists: control leaving for code that
+    # may write anything, and the width changes that truncate X and Y.
+    _MAY_WRITE_XY = frozenset({'JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP',
+                               'XCE', 'PLP'})
 
     def _update_xy_copy_tracking(self, opcode: Opcode, operand):
         """Track whether X and Y hold the same value after *opcode*.
@@ -721,7 +686,7 @@ class AssemblyEmitter:
             self.x_equals_y = True
             return
         mn = mnemonic(opcode)
-        if mn in self._XY_WRITE_MNEMONICS:
+        if registers_written(opcode) & {'X', 'Y'} or mn in self._MAY_WRITE_XY:
             self.x_equals_y = False
         elif mn == 'SEP':
             value = getattr(operand, 'value', None)
@@ -737,13 +702,6 @@ class AssemblyEmitter:
                    'PHK': 1, 'PHD': 2, 'PEA': 2, 'PEI': 2, 'PER': 2}
     _PULL_BYTES = {'PLA': None, 'PLX': 'x', 'PLY': 'x', 'PLP': 1, 'PLB': 1,
                    'PLD': 2}
-    # Instructions that write memory.
-    _STORE_MNEMONICS = frozenset({'STA', 'STX', 'STY', 'STZ', 'INC', 'DEC',
-                                  'ASL', 'LSR', 'ROL', 'ROR', 'TSB', 'TRB'})
-    # Instructions that change A (beyond loads, handled first).
-    _A_WRITE_MNEMONICS = frozenset({'LDA', 'ADC', 'SBC', 'AND', 'ORA', 'EOR',
-                                    'TXA', 'TYA', 'PLA', 'XBA', 'TSC', 'TDC',
-                                    'INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR'})
 
     def forget_slots(self):
         """Nothing is known about what A or X hold."""
@@ -790,7 +748,7 @@ class AssemblyEmitter:
             return
 
         # Stores that may reach a tracked slot.
-        if mn in self._STORE_MNEMONICS and mode not in (None, 'ACCUMULATOR'):
+        if opcode in MEMORY_WRITE_OPCODES:
             if mode == 'STACK':
                 key = self.slot_key(operand.offset)
                 for attr in ('a_slot', 'x_slot'):
@@ -808,9 +766,7 @@ class AssemblyEmitter:
         elif opcode == Opcode.TAX:
             # x16 TAX copies all of C; only a 16-bit load filled it.
             self.x_slot = self.a_slot if self._current_index_mode == 16 else None
-        elif mn in self._A_WRITE_MNEMONICS and (mode in (None, 'ACCUMULATOR')
-                                                 or mn not in ('INC', 'DEC', 'ASL',
-                                                               'LSR', 'ROL', 'ROR')):
+        elif 'A' in registers_written(opcode):
             self.a_slot = None
         elif mn == 'SEP':
             value = getattr(operand, 'value', None)
@@ -818,10 +774,8 @@ class AssemblyEmitter:
                 self.x_slot = None   # x8 truncates X
 
         # X written by anything but TAX.
-        if mn in self._XY_WRITE_MNEMONICS and opcode != Opcode.TAX and \
-                mn not in ('LDY', 'TAY', 'PLY', 'INY', 'DEY'):
-            self.x_slot = None
-        if opcode == Opcode.TYX:
+        if (('X' in registers_written(opcode) and opcode != Opcode.TAX)
+                or mn in self._MAY_WRITE_XY):
             self.x_slot = None
 
     def _update_nz_tracking(self, opcode: Opcode):
@@ -832,28 +786,11 @@ class AssemblyEmitter:
         reflect. Used to elide redundant CMP/CPX/CPY #0 instructions when
         the flags are already valid from a prior load, transfer, or ALU op.
         """
-        mn = mnemonic(opcode)
-
-        # Check mnemonic-based sets first (covers all addressing modes)
-        if mn in self._NZ_A_MNEMONICS:
-            self.nz_valid_for = 'A'
-        elif mn in self._NZ_X_MNEMONICS:
-            self.nz_valid_for = 'X'
-        elif mn in self._NZ_Y_MNEMONICS:
-            self.nz_valid_for = 'Y'
-        # Check specific opcodes (implied/accumulator forms)
-        elif opcode in self._NZ_A_OPCODES:
-            self.nz_valid_for = 'A'
-        elif opcode in self._NZ_X_OPCODES:
-            self.nz_valid_for = 'X'
-        elif opcode in self._NZ_Y_OPCODES:
-            self.nz_valid_for = 'Y'
-        # Instructions that don't touch N/Z — preserve tracking
-        elif mn in self._NZ_PRESERVE_MNEMONICS:
-            pass
-        else:
-            # Everything else (CMP, CPX, CPY, BIT, PLP, JSR, JSL, RTI,
-            # memory-form INC/DEC/ASL/LSR/ROL/ROR, etc.) — clear tracking
+        reg = nz_register(opcode, {16: True, 8: False}.get(self._current_accu_mode))
+        if reg is not None:
+            self.nz_valid_for = reg
+        elif mnemonic(opcode) not in NZ_PRESERVING_MNEMONICS:
+            # CMP/CPX/CPY, BIT, PLP, a call, a memory read-modify-write...
             self.nz_valid_for = None
 
     # ========================================================================
@@ -977,7 +914,7 @@ class AssemblyEmitter:
         Emit SNES ROM header using .SNESHEADER directive.
 
         Args:
-            snesrom_config: SnesRomConfig from #[snesrom(...)] directive, or None for defaults
+            snesrom_config: the #[snesrom(...)] ast.SnesRomDirective, or None for defaults
             romsize_value: SNES header ROMSIZE value ($08=256KB, $09=512KB, etc.)
 
         Generated:

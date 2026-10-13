@@ -8,6 +8,7 @@ These types are attached to HIR nodes but not fully checked until the type check
 from dataclasses import dataclass
 from typing import Optional, List, Any
 from r65.compiler.frontend import ast
+from r65.compiler.hir.symbol_table import SymbolKind
 from r65.compiler.hir.errors import *
 
 
@@ -20,6 +21,9 @@ _TYPE_SIZES = {
     'u16': 2, 'i16': 2,
     'u24': 3,
 }
+
+# The integer types a program can name.
+INTEGER_TYPE_NAMES = frozenset({'u8', 'i8', 'u16', 'i16'})
 
 
 # =============================================================================
@@ -390,16 +394,16 @@ class TypeResolver:
                 error.hint = hint
             raise error
 
-        if symbol.kind.value == "struct":
+        if symbol.kind is SymbolKind.STRUCT:
             return StructTypeInfo(name=name, definition=symbol.definition, symbol=symbol)
-        elif symbol.kind.value == "newtype":
+        elif symbol.kind is SymbolKind.NEWTYPE:
             return NewtypeTypeInfo(newtype_name=name, inner=symbol.type_info,
                                    definition=symbol.definition)
-        elif symbol.kind.value == "enum":
+        elif symbol.kind is SymbolKind.ENUM:
             return EnumTypeInfo(name=name, definition=symbol.definition, symbol=symbol)
-        elif symbol.kind.value == "trait":
+        elif symbol.kind is SymbolKind.TRAIT:
             return TraitTypeInfo(name=name, definition=symbol.definition)
-        elif symbol.kind.value == "type_alias":
+        elif symbol.kind is SymbolKind.TYPE_ALIAS:
             # Type aliases are resolved to their underlying type
             return symbol.type_info
         else:

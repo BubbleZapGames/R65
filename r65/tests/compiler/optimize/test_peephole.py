@@ -453,3 +453,79 @@ class TestLoopInvariantLoadHoistGuards:
         opt = PeepholeOptimizer()
         opt._hoist_loop_invariant_loads(loop)
         assert opt.stats.loop_invariant_loads_hoisted == 0
+
+
+class TestRedundantCmpZeroNeedsAFlags:
+    """`CMP #0` tests A, so it is redundant only after an instruction whose
+    N/Z come from A at A's width."""
+
+    @staticmethod
+    def _run(prev):
+        nodes = [
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            prev,
+            Instruction(opcode=Opcode.CMP_IMMEDIATE, operand=Immediate(0)),
+            Instruction(opcode=Opcode.BEQ, operand=Address(0x20)),
+        ]
+        return PeepholeOptimizer()._eliminate_redundant_cmp_zero(nodes)
+
+    @pytest.mark.parametrize("prev", [
+        Instruction(opcode=Opcode.LDX_DP, operand=Address(0x12)),
+        Instruction(opcode=Opcode.INY),
+        Instruction(opcode=Opcode.TAX),
+        Instruction(opcode=Opcode.XBA),
+        Instruction(opcode=Opcode.BIT_DP, operand=Address(0x12)),
+    ], ids=lambda i: i.opcode.name)
+    def test_kept_after_flags_from_elsewhere(self, prev):
+        assert any(n.opcode == Opcode.CMP_IMMEDIATE for n in self._run(prev))
+
+    def test_removed_after_an_a_result(self):
+        prev = Instruction(opcode=Opcode.AND_ABSOLUTE_X, operand=Address(0x1234))
+        assert not any(n.opcode == Opcode.CMP_IMMEDIATE for n in self._run(prev))
+
+
+class TestTrackedLoadForgetsWrittenMemory:
+    """A remembered `LDA addr` is stale once anything else writes `addr`."""
+
+    @pytest.mark.parametrize("write", [
+        Instruction(opcode=Opcode.INC_DP, operand=Address(0x10)),
+        Instruction(opcode=Opcode.STZ_DP, operand=Address(0x10)),
+        Instruction(opcode=Opcode.TSB_DP, operand=Address(0x10)),
+        Instruction(opcode=Opcode.STZ_DP_X, operand=Address(0x0F)),
+    ], ids=lambda i: i.opcode.name)
+    def test_reload_kept(self, write):
+        nodes = [
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            write,
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        result = PeepholeOptimizer()._eliminate_redundant_loads_tracked(nodes)
+        assert len(result) == 3
+
+    def test_write_elsewhere_keeps_tracking(self):
+        nodes = [
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.STZ_DP, operand=Address(0x12)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        result = PeepholeOptimizer()._eliminate_redundant_loads_tracked(nodes)
+        assert len(result) == 2
+
+
+class TestIncFoldKeepsCarryForIndexedRotate:
+    """`CLC; ADC #1` folds to `INC A` only when nothing reads its carry-out.
+    The carry readers were listed by opcode, and `ROL dp,X` was missing."""
+
+    @pytest.mark.parametrize("reader", [
+        Instruction(opcode=Opcode.ROL_DP_X, operand=Address(0x10)),
+        Instruction(opcode=Opcode.ROR_ABSOLUTE_X, operand=Address(0x1234)),
+    ], ids=lambda i: i.opcode.name)
+    def test_not_folded(self, reader):
+        nodes = [
+            Instruction(opcode=Opcode.CLC),
+            Instruction(opcode=Opcode.ADC_IMMEDIATE, operand=Immediate(1)),
+            reader,
+            Instruction(opcode=Opcode.CLC),
+        ]
+        result = PeepholeOptimizer()._fold_inc_dec_accumulator(nodes)
+        assert result[0].opcode == Opcode.CLC

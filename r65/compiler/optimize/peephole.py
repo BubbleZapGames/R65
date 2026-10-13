@@ -16,7 +16,11 @@ from r65.compiler.codegen.opcodes import (
     BRANCH_OPCODES, JUMP_OPCODES, CALL_OPCODES,
     LOAD_A_OPCODES, LOAD_X_OPCODES, LOAD_Y_OPCODES,
     STORE_A_OPCODES, STORE_X_OPCODES, STORE_Y_OPCODES,
+    MEMORY_WRITE_OPCODES, NZ_OF_A_OPCODES, RETURN_OPCODES, MODIFIES_A_OPCODES,
+    CARRY_READ_OPCODES, CARRY_WRITE_OPCODES,
+    PUSH_OPCODES, PULL_OPCODES,
 )
+from r65.compiler.codegen.constants import M_FLAG
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.asm_nodes import AsmNode, Instruction
@@ -51,66 +55,20 @@ INDIRECT_ADDRESSING_OPCODES: Set[Opcode] = {
     Opcode.SBC_DP_INDIRECT_LONG, Opcode.SBC_DP_INDIRECT_LONG_Y, Opcode.SBC_STACK_INDIRECT_Y,
 }
 
-# Instructions that read A (for dead store analysis)
-READS_A_OPCODES: Set[Opcode] = STORE_A_OPCODES | {
-    Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE, Opcode.ADC_STACK,
-    Opcode.SBC_IMMEDIATE, Opcode.SBC_DP, Opcode.SBC_ABSOLUTE, Opcode.SBC_STACK,
-    Opcode.AND_IMMEDIATE, Opcode.AND_DP, Opcode.AND_ABSOLUTE, Opcode.AND_STACK,
-    Opcode.ORA_IMMEDIATE, Opcode.ORA_DP, Opcode.ORA_ABSOLUTE, Opcode.ORA_STACK,
-    Opcode.EOR_IMMEDIATE, Opcode.EOR_DP, Opcode.EOR_ABSOLUTE, Opcode.EOR_STACK,
-    Opcode.CMP_IMMEDIATE, Opcode.CMP_DP, Opcode.CMP_ABSOLUTE, Opcode.CMP_STACK,
-    Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,
-    Opcode.TAX, Opcode.TAY, Opcode.PHA,
-    Opcode.XBA,  # Exchanges A and B
-}
-
-# Instructions that modify A
-MODIFIES_A_OPCODES: Set[Opcode] = LOAD_A_OPCODES | {
-    Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE, Opcode.ADC_STACK,
-    Opcode.ADC_DP_X, Opcode.ADC_ABSOLUTE_X, Opcode.ADC_ABSOLUTE_Y,
-    Opcode.SBC_IMMEDIATE, Opcode.SBC_DP, Opcode.SBC_ABSOLUTE, Opcode.SBC_STACK,
-    Opcode.SBC_DP_X, Opcode.SBC_ABSOLUTE_X, Opcode.SBC_ABSOLUTE_Y,
-    Opcode.AND_IMMEDIATE, Opcode.AND_DP, Opcode.AND_ABSOLUTE, Opcode.AND_STACK,
-    Opcode.AND_DP_X, Opcode.AND_ABSOLUTE_X, Opcode.AND_ABSOLUTE_Y,
-    Opcode.ORA_IMMEDIATE, Opcode.ORA_DP, Opcode.ORA_ABSOLUTE, Opcode.ORA_STACK,
-    Opcode.ORA_DP_X, Opcode.ORA_ABSOLUTE_X, Opcode.ORA_ABSOLUTE_Y,
-    Opcode.EOR_IMMEDIATE, Opcode.EOR_DP, Opcode.EOR_ABSOLUTE, Opcode.EOR_STACK,
-    Opcode.EOR_DP_X, Opcode.EOR_ABSOLUTE_X, Opcode.EOR_ABSOLUTE_Y,
-    Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,
-    Opcode.INC, Opcode.DEC,
-    Opcode.TXA, Opcode.TYA, Opcode.PLA,
-    Opcode.XBA,  # Exchanges A and B
-    # Block moves run A down to $FFFF and walk X/Y across the region —
-    # every register they touch comes out clobbered.
-    Opcode.MVN, Opcode.MVP,
-}
-
 # What _hoist_loop_invariant_loads also has to treat as writing A: a call
-# returns its value in A (and its body may use A), and TSC/TDC load it. And
-# the width changes it may not hoist across - the immediate is sized for the
-# width where it stood, not where it would land.
+# returns its value in A (and its body may use A). And the width changes it
+# may not hoist across - the immediate is sized for the width where it
+# stood, not where it would land.
 _HOIST_CLOBBERS_A: Set[Opcode] = {
-    Opcode.JSR, Opcode.JSR_INDIRECT_X, Opcode.JSL, Opcode.TSC, Opcode.TDC,
+    Opcode.JSR, Opcode.JSR_INDIRECT_X, Opcode.JSL,
 }
 _HOIST_CHANGES_WIDTH: Set[Opcode] = {
     Opcode.REP_IMMEDIATE, Opcode.SEP_IMMEDIATE, Opcode.PLP, Opcode.XCE,
 }
 
-# Transfer instructions (for redundant transfer elimination)
-TRANSFER_OPCODES: Set[Opcode] = {
-    Opcode.TAX, Opcode.TAY, Opcode.TXA, Opcode.TYA,
-    Opcode.TXY, Opcode.TYX,
-}
-
 # Push/pull pairs for redundant stack operation elimination
-PUSH_PULL_PAIRS = {
-    Opcode.PHA: Opcode.PLA,
-    Opcode.PHX: Opcode.PLX,
-    Opcode.PHY: Opcode.PLY,
-    Opcode.PHP: Opcode.PLP,
-    Opcode.PHD: Opcode.PLD,
-    Opcode.PHB: Opcode.PLB,
-}
+PUSH_PULL_PAIRS = {PUSH_OPCODES[reg]: PULL_OPCODES[reg]
+                   for reg in ('A', 'X', 'Y', 'STATUS', 'D', 'DBR')}
 
 # Map store opcode sets to corresponding load opcode sets (for redundant load elimination)
 STORE_TO_LOAD_MAP = {
@@ -788,7 +746,7 @@ class PeepholeOptimizer:
         to bookkeep the pairing.
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Immediate, Directive
-        from r65.compiler.optimize.asm_mode_dataflow import compute_modes, M_FLAG as _M_FLAG
+        from r65.compiler.optimize.asm_mode_dataflow import compute_modes
 
         info = compute_modes(nodes)
 
@@ -806,12 +764,12 @@ class PeepholeOptimizer:
             if (node.opcode == Opcode.SEP_IMMEDIATE
                     and isinstance(node.operand, Immediate)
                     and isinstance(node.operand.value, int)
-                    and node.operand.value & _M_FLAG):
+                    and node.operand.value & M_FLAG):
                 target_mode = 8
             elif (node.opcode == Opcode.REP_IMMEDIATE
                     and isinstance(node.operand, Immediate)
                     and isinstance(node.operand.value, int)
-                    and node.operand.value & _M_FLAG):
+                    and node.operand.value & M_FLAG):
                 target_mode = 16
 
             if target_mode is not None and info.unique_mode_at(i) == target_mode:
@@ -1039,7 +997,7 @@ class PeepholeOptimizer:
             Instruction, Immediate, Directive, Label, ModeChange,
         )
         from r65.compiler.optimize.asm_mode_dataflow import (
-            compute_modes, first_constraining_mode_after, M_FLAG as _M_FLAG,
+            compute_modes, first_constraining_mode_after,
         )
 
         # Loop until no more rewrites apply. Each rewrite changes the
@@ -1083,7 +1041,7 @@ class PeepholeOptimizer:
                         if (op in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE)
                                 and isinstance(nj.operand, Immediate)
                                 and isinstance(nj.operand.value, int)
-                                and nj.operand.value & _M_FLAG):
+                                and nj.operand.value & M_FLAG):
                             sep_rep_idx = j
                     break
 
@@ -1148,7 +1106,7 @@ class PeepholeOptimizer:
                               else Opcode.REP_IMMEDIATE)
                     fix = Instruction(
                         opcode,
-                        Immediate(_M_FLAG),
+                        Immediate(M_FLAG),
                         "Mode fix: predecessors disagree on A size",
                     )
 
@@ -1180,7 +1138,6 @@ class PeepholeOptimizer:
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Directive, Immediate
 
-        M_FLAG = 0x20
         optimized = []
         i = 0
 
@@ -1903,7 +1860,6 @@ class PeepholeOptimizer:
             BlankLine, Comment,
         )
 
-        M_FLAG = 0x20
         BACK_EDGE_OPCODES = {Opcode.BCC, Opcode.BNE, Opcode.BRA, Opcode.BCS, Opcode.BEQ,
                              Opcode.BPL, Opcode.BMI}
 
@@ -2146,8 +2102,6 @@ class PeepholeOptimizer:
         """
         from r65.compiler.codegen.asm_nodes import Instruction, Label, RawAsm
 
-        RETURN_OPCODES = {Opcode.RTS, Opcode.RTI, Opcode.RTL}
-
         # Build label -> return opcode map
         label_to_return: dict[str, Opcode] = {}
         for i, node in enumerate(nodes):
@@ -2262,10 +2216,15 @@ class PeepholeOptimizer:
                 optimized.append(node)
                 continue
 
-            # STX/STY to the tracked address invalidates tracking
-            # (STA to same address is fine — writes A back)
-            if opcode in (STORE_X_OPCODES | STORE_Y_OPCODES):
-                if known_a is not None and node.operand == known_a[1]:
+            # Any other write to the tracked address invalidates tracking
+            # (STA to same address is fine — writes A back). An indexed
+            # write may land on it.
+            if opcode in MEMORY_WRITE_OPCODES and opcode not in STORE_A_OPCODES:
+                if known_a is not None and (
+                        node.operand == known_a[1]
+                        or opcode.name.endswith(('_X', '_Y'))
+                        or (known_a[0] != Opcode.LDA_IMMEDIATE
+                            and self._is_hardware_register(node.operand))):
                     known_a = None
                 optimized.append(node)
                 continue
@@ -2288,7 +2247,7 @@ class PeepholeOptimizer:
             # the value at the tracked address (e.g., STA WRMPYB triggers
             # a multiply, changing RDMPYL/RDMPYH). But immediate loads are
             # unaffected — the constant value doesn't depend on memory.
-            if opcode in (STORE_A_OPCODES | STORE_X_OPCODES | STORE_Y_OPCODES):
+            if opcode in STORE_A_OPCODES:
                 if (known_a is not None and
                         known_a[0] not in (Opcode.LDA_IMMEDIATE,) and
                         self._is_hardware_register(node.operand)):
@@ -2306,47 +2265,18 @@ class PeepholeOptimizer:
     # INC/DEC Accumulator Folding
     # ========================================================================
 
-    # Instructions that use the carry flag as input
-    _CARRY_INPUT_OPCODES = frozenset({
-        Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE, Opcode.ADC_STACK,
-        Opcode.ADC_DP_X, Opcode.ADC_ABSOLUTE_X, Opcode.ADC_ABSOLUTE_Y,
-        Opcode.ADC_DP_INDIRECT, Opcode.ADC_DP_INDIRECT_X, Opcode.ADC_DP_INDIRECT_Y,
-        Opcode.ADC_DP_INDIRECT_LONG, Opcode.ADC_DP_INDIRECT_LONG_Y, Opcode.ADC_STACK_INDIRECT_Y,
-        Opcode.SBC_IMMEDIATE, Opcode.SBC_DP, Opcode.SBC_ABSOLUTE, Opcode.SBC_STACK,
-        Opcode.SBC_DP_X, Opcode.SBC_ABSOLUTE_X, Opcode.SBC_ABSOLUTE_Y,
-        Opcode.SBC_DP_INDIRECT, Opcode.SBC_DP_INDIRECT_X, Opcode.SBC_DP_INDIRECT_Y,
-        Opcode.SBC_DP_INDIRECT_LONG, Opcode.SBC_DP_INDIRECT_LONG_Y, Opcode.SBC_STACK_INDIRECT_Y,
-        Opcode.ROL, Opcode.ROR,
-        Opcode.ROL_DP, Opcode.ROR_DP,
-        Opcode.ROL_ABSOLUTE, Opcode.ROR_ABSOLUTE,
-        Opcode.BCC, Opcode.BCS,
-    })
-
-    # Instructions that set the carry flag (overwriting previous carry)
-    _CARRY_SETTING_OPCODES = frozenset({
-        Opcode.CLC, Opcode.SEC,
-        Opcode.CMP_IMMEDIATE, Opcode.CMP_DP, Opcode.CMP_ABSOLUTE, Opcode.CMP_STACK,
-        Opcode.CMP_DP_X, Opcode.CMP_ABSOLUTE_X,
-        Opcode.CPX_IMMEDIATE, Opcode.CPX_DP, Opcode.CPX_ABSOLUTE,
-        Opcode.CPY_IMMEDIATE, Opcode.CPY_DP, Opcode.CPY_ABSOLUTE,
-        Opcode.ASL, Opcode.LSR, Opcode.ASL_DP, Opcode.LSR_DP,
-        Opcode.ASL_ABSOLUTE, Opcode.LSR_ABSOLUTE,
-        Opcode.PLP,  # Restores all flags from stack
-    }) | _CARRY_INPUT_OPCODES  # ADC/SBC/ROL/ROR also set carry
-
     def _carry_dead_after(self, nodes: List['AsmNode'], start: int) -> bool:
         """Check if the carry flag is dead (not used) after position start."""
         from r65.compiler.codegen.asm_nodes import Instruction, Label
-        from r65.compiler.codegen.opcodes import RETURN_OPCODES
         for j in range(start, min(start + 30, len(nodes))):
             n = nodes[j]
             if isinstance(n, Label):
                 return False  # Conservative: unknown predecessors could use carry
             if not isinstance(n, Instruction):
                 continue
-            if n.opcode in self._CARRY_INPUT_OPCODES:
+            if n.opcode in CARRY_READ_OPCODES:
                 return False  # Carry is used
-            if n.opcode in self._CARRY_SETTING_OPCODES:
+            if n.opcode in CARRY_WRITE_OPCODES:
                 return True  # Carry is overwritten before use
             if n.opcode in RETURN_OPCODES or n.opcode in JUMP_OPCODES or n.opcode == Opcode.BRA:
                 return True  # Control flow exit, carry not used on this path
@@ -2402,25 +2332,6 @@ class PeepholeOptimizer:
     # Redundant CMP #$00 Elimination
     # ========================================================================
 
-    # Instructions that set the Z and N flags based on their result
-    _Z_N_SETTING_OPCODES = (
-        LOAD_A_OPCODES | LOAD_X_OPCODES | LOAD_Y_OPCODES | {
-        Opcode.AND_IMMEDIATE, Opcode.AND_DP, Opcode.AND_ABSOLUTE, Opcode.AND_STACK,
-        Opcode.AND_DP_X, Opcode.AND_ABSOLUTE_X, Opcode.AND_ABSOLUTE_Y,
-        Opcode.ORA_IMMEDIATE, Opcode.ORA_DP, Opcode.ORA_ABSOLUTE, Opcode.ORA_STACK,
-        Opcode.ORA_DP_X, Opcode.ORA_ABSOLUTE_X, Opcode.ORA_ABSOLUTE_Y,
-        Opcode.EOR_IMMEDIATE, Opcode.EOR_DP, Opcode.EOR_ABSOLUTE, Opcode.EOR_STACK,
-        Opcode.EOR_DP_X, Opcode.EOR_ABSOLUTE_X, Opcode.EOR_ABSOLUTE_Y,
-        Opcode.ADC_IMMEDIATE, Opcode.ADC_DP, Opcode.ADC_ABSOLUTE, Opcode.ADC_STACK,
-        Opcode.SBC_IMMEDIATE, Opcode.SBC_DP, Opcode.SBC_ABSOLUTE, Opcode.SBC_STACK,
-        Opcode.ASL, Opcode.LSR, Opcode.ROL, Opcode.ROR,
-        Opcode.INC, Opcode.DEC,
-        Opcode.INX, Opcode.DEX, Opcode.INY, Opcode.DEY,
-        Opcode.TXA, Opcode.TYA, Opcode.PLA, Opcode.TAX, Opcode.TAY,
-        Opcode.XBA,
-        Opcode.BIT_IMMEDIATE, Opcode.BIT_DP, Opcode.BIT_ABSOLUTE,
-    })
-
     # Branches that only check Z or N flags (not carry or overflow)
     _Z_N_BRANCH_OPCODES = frozenset({
         Opcode.BEQ, Opcode.BNE, Opcode.BMI, Opcode.BPL,
@@ -2454,7 +2365,7 @@ class PeepholeOptimizer:
                     if isinstance(prev, Label):
                         break
                     if isinstance(prev, Instruction):
-                        prev_sets_zn = prev.opcode in self._Z_N_SETTING_OPCODES
+                        prev_sets_zn = prev.opcode in NZ_OF_A_OPCODES
                         break
                     break
 

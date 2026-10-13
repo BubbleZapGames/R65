@@ -9,6 +9,7 @@ from lark import Lark, Transformer, Token as LarkToken, v_args
 from lark.exceptions import UnexpectedToken, UnexpectedCharacters, UnexpectedEOF, VisitError
 from r65.compiler.frontend import ast
 from r65.compiler.frontend.derive_compat import derive_hint, derive_trait_names
+from r65.compiler.frontend.tokens import INTEGER_SUFFIXES
 from r65.compiler.errors import ParseError, SourceLocation, get_source_line
 from typing import List
 
@@ -123,11 +124,9 @@ class ASTBuilder(Transformer):
             included_from=self.included_from,
         )
 
-    _SUFFIXES = ('u16', 'i16', 'u8', 'i8')
-
     def _strip_integer_suffix(self, raw: str):
         """Strip type suffix from integer literal string. Returns (digits, suffix)."""
-        for s in self._SUFFIXES:
+        for s in INTEGER_SUFFIXES:
             if raw.endswith(s):
                 return raw[:-len(s)], s
         return raw, None
@@ -383,12 +382,7 @@ class ASTBuilder(Transformer):
         binding = None
         if idx < len(items) - 1:  # There's something between name and type
             binding_node = items[idx]
-            if isinstance(binding_node, ast.Register):
-                binding = binding_node
-            elif isinstance(binding_node, ast.Identifier):
-                binding = binding_node
-            else:
-                binding = _tok(binding_node)
+            binding = binding_node
             idx += 1
 
         # Type is always last (this is the pointee type if is_pointer is True)
@@ -729,7 +723,7 @@ class ASTBuilder(Transformer):
                 methods.append(item)
             elif isinstance(item, ast.ImplConst):
                 constants.append(item)
-            elif isinstance(item, ast.ImplMacro):
+            elif isinstance(item, ast.MacroDecl):
                 macros.append(item)
 
         return ast.ImplDecl(
@@ -880,7 +874,7 @@ class ASTBuilder(Transformer):
             elif isinstance(item, tuple) and item[0] == 'macro_body':
                 body_tokens = item[1]
 
-        return ast.ImplMacro(
+        return ast.MacroDecl(
             name=name,
             arms=[ast.MacroArm(params=params, body_tokens=body_tokens)],
             doc=doc,
@@ -901,7 +895,7 @@ class ASTBuilder(Transformer):
             elif isinstance(item, ast.MacroArm):
                 arms.append(item)
 
-        return ast.ImplMacro(
+        return ast.MacroDecl(
             name=name,
             arms=arms,
             doc=doc,
@@ -961,7 +955,7 @@ class ASTBuilder(Transformer):
         for item in items[idx:]:
             if isinstance(item, tuple) and item and item[0] == 'trait_bounds':
                 supertraits = item[1]
-            elif isinstance(item, ast.TraitMethod):
+            elif isinstance(item, ast.ImplMethod):
                 methods.append(item)
             elif isinstance(item, ast.TraitConst):
                 constants.append(item)
@@ -1025,13 +1019,14 @@ class ASTBuilder(Transformer):
             default_body = items[idx]
             idx += 1
 
-        return ast.TraitMethod(
+        return ast.ImplMethod(
+            attributes=[],
             is_far=is_far,
             name=name,
             self_is_far=self_is_far,
             params=params,
             return_type=return_type,
-            default_body=default_body,
+            body=default_body,
             self_by_value=self_by_value,
             has_self=has_self,
             source_loc=self._make_source_loc(tree.meta)
@@ -2520,17 +2515,6 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         func = items[0]
         args = items[1] if len(items) > 1 and isinstance(items[1], list) else []
-        
-        # Check for built-in stringify function
-        if (isinstance(func, LarkToken) and func.type == 'IDENT' and func.value == 'stringify'):
-            # Handle stringify! as special built-in function
-            return ast.StringifyCall(func=func, args=args)
-        
-        # Check for built-in cfg function
-        if (isinstance(func, LarkToken) and func.type == 'CFG_FUNCTION'):
-            # Handle cfg! as special built-in function
-            return ast.FunctionCall(func=ast.Identifier(name='cfg'), args=args)
-        
         return ast.FunctionCall(func=func, args=args)
 
     def arg_list(self, items):

@@ -174,6 +174,35 @@ class TestFarSelfChainCoalescing:
         assert phb >= 2, f"Expected >= 2 PHB (uncoalesced), got {phb}"
         assert plb >= 2, f"Expected >= 2 PLB (uncoalesced), got {plb}"
 
+    def test_chain_broken_by_ram_increment(self):
+        """`TMP++` folds into a read-modify-write of RAM, as DBR-relative as
+        the store above; the chain check only looked at Load and Store."""
+        source = _PREAMBLE + '''
+            #[lowram]
+            static mut TMP: u8;
+
+            struct Player { x: u8 }
+
+            trait HasX { far fn get_x(far *self) -> u8; }
+            impl HasX for Player {
+                far fn get_x(far *self) -> u8 { return self.x; }
+            }
+
+            #[ram]
+            static mut PLAYER: Player = Player { x: 9 };
+
+            #[entry]
+            fn main() {
+                let p: far *dyn HasX = &PLAYER;
+                let a: u8 = p.get_x();
+                TMP++;
+                let b: u8 = p.get_x();
+                RESULT = a + b + TMP;
+            }
+        '''
+        asm = _compile_snes(source)
+        assert _count_in_function(asm, 'main', 'PHB') >= 2
+
     def test_chain_broken_by_other_self(self):
         """Three dispatches on different selves never coalesce."""
         source = _PREAMBLE + '''

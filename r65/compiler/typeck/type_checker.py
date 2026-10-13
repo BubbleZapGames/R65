@@ -14,15 +14,17 @@ from r65.compiler.hir import (
     HIRStructFieldInit, HIRStructLiteralExpr,
     HIRTypeCast, HIRFunctionCall,
     HIRMethodCall, HIRArrayIndex, HIRFieldAccess, HIRDereference, HIRAddressOf, HIRAssignment, HIRMultiAssignment,
-    HIRLetStmt, HIRMultiLetStmt, HIRTupleLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRBlock,
+    HIRLetStmt, HIRMultiLetStmt, HIRExprStmt, HIRReturnStmt, HIRIfStmt, HIRWhileStmt, HIRBreakStmt, HIRBlock,
     HIRStaticDecl, HIRConstDecl, HIRTypeAlias,
     HIRMatchExpression, HIRPattern, HIRLiteralPattern, HIREnumPattern, HIRWildcardPattern, HIRIdentifierPattern, HIROrPattern,
     HIRBlockExpression, HIRIfExpression, HIRLoopExpression,
     BasicTypeInfo, TypeInfo, SymbolKind, NeverTypeInfo, MultiReturnTypeInfo,
-    RegisterLetBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
+    RegisterBinding, ArrayTypeInfo, StructTypeInfo, EnumTypeInfo,
     HIRError,
 )
+from r65.compiler.registers import REGISTERS
 from r65.compiler.hir.types import (
+    INTEGER_TYPE_NAMES,
     FunctionTypeInfo, PointerTypeInfo, NewtypeTypeInfo, strip_newtype
 )
 from r65.compiler.hir.nodes import walk_hir
@@ -139,19 +141,6 @@ class TypeChecker:
     # Helper Methods
     # ========================================================================
 
-    # Register type validation - maps register names to allowed types
-    _REGISTER_ALLOWED_TYPES = {
-        'A': ('u8', 'i8', 'u16', 'i16'),
-        'B': ('u8', 'i8'),
-        'X': ('u16', 'i16'),
-        'Y': ('u16', 'i16'),
-        'D': ('u16',),
-        'S': ('u16',),
-        'DBR': ('u8',),
-        'PBR': ('u8',),
-        'STATUS': ('u8',),
-    }
-
     def _is_valid_register_type(self, register_name: str, type_name: str) -> bool:
         """
         Check if a type is valid for a given register.
@@ -163,8 +152,8 @@ class TypeChecker:
         Returns:
             True if the type is valid for the register
         """
-        allowed = self._REGISTER_ALLOWED_TYPES.get(register_name, ())
-        return type_name in allowed
+        reg = REGISTERS.get(register_name)
+        return reg is not None and type_name in reg.types
 
     def _lookup_function_decl(self, func_name: str, source_loc=None) -> HIRFunctionDecl:
         """
@@ -536,14 +525,13 @@ class TypeChecker:
             actual_name = actual_type.name
 
             # Integer type mismatches
-            int_types = {'u8', 'i8', 'u16', 'i16'}
-            if expected_name in int_types and actual_name in int_types:
+            if expected_name in INTEGER_TYPE_NAMES and actual_name in INTEGER_TYPE_NAMES:
                 return f"use explicit cast: (value as {expected_name})"
 
             # Bool to integer or vice versa
-            if expected_name == 'bool' and actual_name in int_types:
+            if expected_name == 'bool' and actual_name in INTEGER_TYPE_NAMES:
                 return "use comparison to convert integer to bool: (value != 0)"
-            if expected_name in int_types and actual_name == 'bool':
+            if expected_name in INTEGER_TYPE_NAMES and actual_name == 'bool':
                 return f"use cast to convert bool to integer: (value as {expected_name})"
 
         # Pointer type hints
@@ -605,8 +593,7 @@ class TypeChecker:
         # Mixed signed/unsigned of different sizes: promote to larger signed type
         # u8 + i16 -> i16 (u8 zero-extended to i16)
         # i8 + u16 -> i16 (both promoted to signed 16-bit)
-        int_types = {'u8', 'i8', 'u16', 'i16'}
-        if left_name in int_types and right_name in int_types:
+        if left_name in INTEGER_TYPE_NAMES and right_name in INTEGER_TYPE_NAMES:
             # Return the 16-bit type, preferring signed for mixed operations
             left_bits = 16 if left_name in ['u16', 'i16'] else 8
             right_bits = 16 if right_name in ['u16', 'i16'] else 8
@@ -1016,7 +1003,7 @@ class TypeChecker:
         if stmt.var_type:
             # Explicit type provided
             var_type = stmt.var_type
-        elif isinstance(stmt.binding, RegisterLetBinding):
+        elif isinstance(stmt.binding, RegisterBinding):
             # For register bindings without explicit type:
             # 1. Get the register's canonical type (e.g., u16 for X/Y, u8 for DBR)
             # 2. Use that as context when type-checking the initializer
@@ -1074,7 +1061,7 @@ class TypeChecker:
             stmt.symbol.var_type = var_type
 
         # Track register alias if this is a register-bound let
-        if isinstance(stmt.binding, RegisterLetBinding) and stmt.symbol:
+        if isinstance(stmt.binding, RegisterBinding) and stmt.symbol:
             self._register_aliases[id(stmt.symbol)] = stmt.binding.register_name
 
         # Check initializer type matches (skip if already checked during type inference)
@@ -2077,13 +2064,7 @@ class TypeChecker:
                 hint="ensure the struct is defined before use"
             )
 
-        field = None
-        field_index = None
-        for i, f in enumerate(struct_def.fields):
-            if f.name == expr.field_name:
-                field = f
-                field_index = i
-                break
+        field = next((f for f in struct_def.fields if f.name == expr.field_name), None)
 
         if field is None:
             # Get available field names for hint (exclude synthetic __type_id)
@@ -2096,7 +2077,6 @@ class TypeChecker:
             )
 
         expr.expr_type = field.field_type
-        expr.field_index = field_index
         expr.field_offset = field.offset
         return expr.expr_type
 

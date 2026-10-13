@@ -47,7 +47,6 @@ from r65.compiler.hir import (
     HIRStatement,
     HIRStatusFlagAccess,
     HIRMultiLetStmt,
-    HIRTupleLetStmt,
     HIRTypeCast,
     HIRUnaryOp,
     HIRWhileStmt,

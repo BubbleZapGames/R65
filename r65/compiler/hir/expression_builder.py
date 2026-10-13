@@ -56,7 +56,6 @@ class ExpressionBuilder:
         self.enum_storage = {}    # enum name -> (pool Symbol, source_loc, prefix)
         self.tagged_enums = {}    # tagged enum name -> all payloads are #[soa]
         self.enum_payloads = {}   # enum name -> variant name -> StructTypeInfo
-        self.payload_structs = {} # #[soa] struct name -> (enum name, variant name)
         # Set around the body of a method on an `#[soa]` payload struct:
         # `(enum name, variant name)`. `self` is then the pool index, and
         # `self.field` reaches the variant's plane at that index.
@@ -479,7 +478,7 @@ class ExpressionBuilder:
                                    newtype_field=expr.index, source_loc=src_loc)
 
         elif isinstance(expr, ast.FunctionCall):
-            from r65.compiler.builtins import BuiltinRegistry
+            from r65.compiler.builtins import BuiltinRegistry, BuiltinKind
 
             # Associated function: `Q10::from_int(5)`. Parses as a call on a
             # `Name::member` path, and resolves to the same mangled symbol an
@@ -592,7 +591,7 @@ class ExpressionBuilder:
                     builtin = BuiltinRegistry.get_builtin(func_name)
 
                     # Special handling for type_info builtins - const evaluate at HIR build time
-                    if builtin and builtin.kind.value == "type_info" and func_name in ("size_of", "offset_of"):
+                    if builtin and builtin.kind is BuiltinKind.TYPE_INFO and func_name in ("size_of", "offset_of"):
                         try:
                             # Try to evaluate at compile time using const evaluator
                             const_value = self.const_evaluator.eval(expr)
@@ -605,7 +604,7 @@ class ExpressionBuilder:
                             pass
 
                     # Const math builtins - try to fold if all args are const
-                    if builtin and builtin.kind.value == "const_math":
+                    if builtin and builtin.kind is BuiltinKind.CONST_MATH:
                         # Args may be runtime vars inside a const fn.
                         folded = self._fold_to_literal(expr, src_loc)
                         if folded is not None:
@@ -695,8 +694,6 @@ class ExpressionBuilder:
                 if flag:
                     return hir.HIRStatusFlagAccess(
                         flag_name=flag.name,
-                        bit_position=flag.bit_position,
-                        bit_mask=flag.bit_mask,
                         source_loc=src_loc
                     )
                 else:

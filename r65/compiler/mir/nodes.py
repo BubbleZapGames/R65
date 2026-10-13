@@ -6,8 +6,9 @@ Provides a 3-address-code style IR for code generation.
 """
 
 from dataclasses import dataclass, field, fields as dataclass_fields
-from typing import Optional, List, Dict, Set, Any, Union, Tuple, NamedTuple
+from typing import Optional, List, Dict, Set, Any, Union, Tuple, NamedTuple, FrozenSet
 from enum import Enum
+from r65.compiler.hir.status_flags import STATUS_FLAGS
 
 
 # ============================================================================
@@ -114,9 +115,13 @@ class MemoryLocation:
     storage_type: str  # 'zeropage', 'ram', 'rom', 'hw'
     address: Optional[int]  # Explicit address or None (auto-allocated)
     symbol: Any  # Symbol from symbol table
-    is_volatile: bool = False  # True for #[hw] variables
     index_register: Optional[str] = None  # 'X' or 'Y' for indexed addressing (e.g., LDA $20,X)
     offset: int = 0  # Byte offset from base (for array/struct element access when address is None)
+
+    @property
+    def is_volatile(self) -> bool:
+        """A #[hw] variable: every access goes to the hardware."""
+        return self.storage_type == 'hw'
 
     def __repr__(self):
         if self.address is not None:
@@ -200,6 +205,14 @@ class IncDecMemory(MIRInstruction):
         return f"{self.location} {op} 1 : {self.type_info}"
 
 
+def _indirect_target(instr) -> str:
+    """`(ptr+offset),Y` / `[ptr+offset],Y` for a LoadIndirect or StoreIndirect."""
+    open_, close = ("[", "]") if instr.is_far else ("(", ")")
+    offset = f"+{instr.offset}" if instr.offset else ""
+    index = f",{instr.index_register}" if instr.index_register else ""
+    return f"{open_}{instr.pointer}{offset}{close}{index}"
+
+
 @dataclass
 class LoadIndirect(MIRInstruction):
     """
@@ -220,11 +233,7 @@ class LoadIndirect(MIRInstruction):
     offset: int = 0  # Constant offset for field access (ptr->field)
 
     def __repr__(self):
-        far_str = "[" if self.is_far else "("
-        close_str = "]" if self.is_far else ")"
-        index_str = f",{self.index_register}" if self.index_register else ""
-        offset_str = f"+{self.offset}" if self.offset else ""
-        return f"{self.dest} = LoadIndirect {far_str}{self.pointer}{offset_str}{close_str}{index_str} : {self.type_info}"
+        return f"{self.dest} = LoadIndirect {_indirect_target(self)} : {self.type_info}"
 
 
 @dataclass
@@ -247,10 +256,7 @@ class StoreIndirect(MIRInstruction):
     offset: int = 0  # Constant offset for field access (ptr->field)
 
     def __repr__(self):
-        far_str = "[" if self.is_far else "("
-        close_str = "]" if self.is_far else ")"
-        index_str = f",{self.index_register}" if self.index_register else ""
-        return f"StoreIndirect {self.source} -> {far_str}{self.pointer}{close_str}{index_str} : {self.type_info}"
+        return f"StoreIndirect {self.source} -> {_indirect_target(self)} : {self.type_info}"
 
 
 @dataclass
@@ -583,8 +589,10 @@ class StatusFlagTest(MIRInstruction):
     PHP; PLA; AND #mask to prepare for the branch.
     """
     flag_name: str        # "Carry", "Zero", etc.
-    bit_position: int     # 0-7
-    bit_mask: int         # 0x01, 0x02, etc.
+
+    @property
+    def bit_mask(self) -> int:
+        return STATUS_FLAGS[self.flag_name].bit_mask
 
     def __repr__(self):
         return f"StatusFlagTest {self.flag_name}"
@@ -615,7 +623,10 @@ class StatusFlagRead(MIRInstruction):
     """
     dest: VirtualRegister
     flag_name: str
-    bit_mask: int
+
+    @property
+    def bit_mask(self) -> int:
+        return STATUS_FLAGS[self.flag_name].bit_mask
 
     def __repr__(self):
         return f"{self.dest} = StatusFlagRead {self.flag_name}"
@@ -895,34 +906,6 @@ class Pull(MIRInstruction):
 
 
 @dataclass
-class SaveRegister(MIRInstruction):
-    """
-    Save hardware register to virtual register.
-
-    save_location = register (for preservation)
-    """
-    register: HardwareRegister
-    save_location: VirtualRegister
-
-    def __repr__(self):
-        return f"{self.save_location} = Save {self.register}"
-
-
-@dataclass
-class RestoreRegister(MIRInstruction):
-    """
-    Restore hardware register from virtual register.
-
-    register = save_location (for preservation)
-    """
-    register: HardwareRegister
-    save_location: VirtualRegister
-
-    def __repr__(self):
-        return f"{self.register} = Restore {self.save_location}"
-
-
-@dataclass
 class InlineAsm(MIRInstruction):
     """
     Inline assembly instruction(s).
@@ -1009,8 +992,6 @@ OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     JumpTable:      (_read_rr('scrutinee'),),
     LookupTable:    (_write_vr('dest'), _read_rr('scrutinee')),
     StatusFlagRead: (_write_rr('dest'),),
-    SaveRegister:   (_write_vr('save_location'),),
-    RestoreRegister: (_read_vr('save_location'),),
     Return:         (OperandSpec('values', _R, OperandContainer.LIST, True),),
     Call:           (OperandSpec('returns', _W, OperandContainer.LIST, False),
                      OperandSpec('function', _R, _SCALAR, False),
@@ -1172,6 +1153,34 @@ def count_vreg_reads(func) -> Dict[int, int]:
     return counts
 
 
+# Nodes whose codegen may overwrite every register: a call (the ABI's
+# volatile registers) and inline asm (a black box).
+CLOBBERS_ALL = (Call, TraitDispatch, InlineAsm)
+
+
+def fixed_clobbers(instr) -> FrozenSet[str]:
+    """The registers *instr*'s fixed expansion overwrites, beyond any `dest`.
+
+    Block moves and fills run MVN or a loop over A, X and Y; a clone up to
+    AGGREGATE_COPY_UNROLL_MAX bytes is unrolled LDA/STA and touches only A;
+    table dispatch indexes with `TAX`. A pointer access may load Y with its
+    offset, which depends on where the pointer lands - each caller judges
+    that itself. CLOBBERS_ALL nodes are the caller's to check.
+    """
+    if isinstance(instr, (BlockCopy, MemoryFill)):
+        return _AXY
+    if isinstance(instr, AggregateCopy):
+        return _AXY if instr.count > AGGREGATE_COPY_UNROLL_MAX else _A
+    if isinstance(instr, (JumpTable, LookupTable)):
+        return _AX
+    return frozenset()
+
+
+_A = frozenset('A')
+_AX = frozenset('AX')
+_AXY = frozenset('AXY')
+
+
 # ============================================================================
 # CFG Structures
 # ============================================================================
@@ -1194,10 +1203,6 @@ class BasicBlock:
     # Mode tracking (for processor mode analysis)
     entry_mode: Optional[Any] = None  # ProcessorMode
     exit_mode: Optional[Any] = None   # ProcessorMode
-
-    # Live register analysis (for optimization)
-    live_in: Set[Union[VirtualRegister, HardwareRegister]] = field(default_factory=set)
-    live_out: Set[Union[VirtualRegister, HardwareRegister]] = field(default_factory=set)
 
     def __repr__(self):
         return f"Block {self.block_id} (preds: {self.predecessors}, succs: {self.successors})"
@@ -1353,11 +1358,9 @@ class MIRProgram:
     functions: List[MIRFunction] = field(default_factory=list)
     statics: List[Any] = field(default_factory=list)    # HIRStaticDecl list
     constants: List[Any] = field(default_factory=list)  # HIRConstDecl list
-    structs: List[Any] = field(default_factory=list)    # HIRStructDecl list
-    enums: List[Any] = field(default_factory=list)      # HIREnumDecl list
     symbol_table: Optional[Any] = None  # SymbolTable from HIR
     stack_attr: Optional[Any] = None    # StackAttribute from #[stack(...)]
-    snesrom_config: Optional[Any] = None  # SnesRomConfig from #[snesrom(...)]
+    snesrom_config: Optional[Any] = None  # ast.SnesRomDirective from #[snesrom(...)]
     rom_data_sections: List['ROMDataRef'] = field(default_factory=list)  # Array literal data
     trait_dispatch_info: Optional[dict] = None  # Trait dispatch tables from HIR
     asm_includes: List[Any] = field(default_factory=list)  # HIRIncludeAsm list — emitted as .INCLUDE per bank

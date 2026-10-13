@@ -1,268 +1,50 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-Hardware register state tracker for optimized instruction selection.
+Liveness of register-bound parameters during instruction selection.
 
-Tracks the contents and liveness of A, X, Y registers during code generation
-to enable optimizations like:
-- Avoiding redundant loads when a value is already in a register
-- Using X/Y as scratch storage when their aliased values are dead
-- Register-to-register transfers instead of memory loads
+A parameter bound to a register (`idx @ X`, `v @ A`) occupies it until its
+last use; after that the register is free for scratch. Instruction selection
+asks `is_free('A')` before borrowing A for a temporary.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
-from enum import Enum
+from typing import Dict
 
-
-class RegisterContents(Enum):
-    """What kind of value a register contains."""
-    UNKNOWN = "unknown"       # Contents unknown or clobbered
-    VREG = "vreg"            # Contains a virtual register value
-    IMMEDIATE = "immediate"   # Contains an immediate value
-    PARAMETER = "parameter"   # Contains a function parameter (aliased)
-
-
-@dataclass
-class RegisterState:
-    """
-    State of a single hardware register.
-
-    Tracks what value the register contains and whether that value
-    is still needed (live).
-    """
-    # What kind of value is in this register
-    contents: RegisterContents = RegisterContents.UNKNOWN
-
-    # The actual value (VirtualRegister, int, or HIR Symbol)
-    value: Optional[Any] = None
-
-    # Is this value still live (needed for future instructions)?
-    is_live: bool = False
-
-    # Instruction index of last use (-1 if not tracked)
-    last_use_index: int = -1
-
-    def clear(self):
-        """Mark register as clobbered/unknown."""
-        self.contents = RegisterContents.UNKNOWN
-        self.value = None
-        self.is_live = False
-        self.last_use_index = -1
-
-    def set_vreg(self, vreg, last_use: int = -1):
-        """Set register to contain a virtual register value."""
-        self.contents = RegisterContents.VREG
-        self.value = vreg
-        self.is_live = last_use >= 0
-        self.last_use_index = last_use
-
-    def set_immediate(self, value: int):
-        """Set register to contain an immediate value."""
-        self.contents = RegisterContents.IMMEDIATE
-        self.value = value
-        self.is_live = False  # Immediates don't have liveness
-        self.last_use_index = -1
-
-    def set_parameter(self, symbol, last_use: int = -1):
-        """Set register to contain a parameter value."""
-        self.contents = RegisterContents.PARAMETER
-        self.value = symbol
-        self.is_live = last_use >= 0
-        self.last_use_index = last_use
-
-    def is_free(self) -> bool:
-        """Check if register is available for scratch use."""
-        return not self.is_live or self.contents == RegisterContents.UNKNOWN
+from r65.compiler.mir.liveness import liveness_uses
+from r65.compiler.mir.nodes import HardwareRegister
 
 
 @dataclass
 class HardwareRegisterTracker:
-    """
-    Tracks hardware register state during instruction selection.
+    """Which registers still hold a parameter some later instruction reads."""
 
-    Enables optimizations by knowing:
-    - What value each register currently holds
-    - Whether that value is still needed
-    - When registers become free for scratch use
+    # Register name -> index of the last instruction reading its parameter
+    # (-1 when nothing does).
+    _last_use: Dict[str, int] = field(default_factory=dict)
 
-    Usage:
-        tracker = HardwareRegisterTracker()
-        tracker.initialize_from_parameters(mir_func)
-
-        # During instruction selection:
-        if tracker.contains_vreg('X', some_vreg):
-            emit TXA instead of loading from memory
-
-        if tracker.is_free('X'):
-            use X as scratch register
-    """
-
-    # State for each hardware register
-    a: RegisterState = field(default_factory=RegisterState)
-    x: RegisterState = field(default_factory=RegisterState)
-    y: RegisterState = field(default_factory=RegisterState)
-
-    # Maps register name to state for convenient access
-    _states: Dict[str, RegisterState] = field(default_factory=dict, init=False)
-
-    # Current instruction index (for liveness tracking)
+    # Index of the instruction being generated, in block-id order.
     current_index: int = 0
 
-    def __post_init__(self):
-        """Initialize register state mapping."""
-        self._states = {
-            'A': self.a,
-            'X': self.x,
-            'Y': self.y,
-        }
-
-    def get_state(self, reg_name: str) -> Optional[RegisterState]:
-        """Get state for a register by name."""
-        return self._states.get(reg_name.upper())
-
-    def initialize_from_parameters(self, mir_func, vreg_last_uses: Dict[Any, int] = None):
-        """
-        Initialize register state from function parameters.
-
-        For parameters with register aliases (e.g., `idx @ X`), marks
-        the register as containing that parameter value.
-
-        Args:
-            mir_func: MIR function being generated
-            vreg_last_uses: Map from VirtualRegister/Symbol to last use instruction index
-        """
-        vreg_last_uses = vreg_last_uses or {}
-
-        # Reset all registers
-        self.a.clear()
-        self.x.clear()
-        self.y.clear()
+    def initialize_from_parameters(self, mir_func):
+        """Find the last read of each register a parameter is bound to."""
         self.current_index = 0
-
-        # Check alias tracker for parameter bindings
-        if hasattr(mir_func, 'alias_tracker') and mir_func.alias_tracker:
-            for symbol_id, alias in mir_func.alias_tracker.aliases.items():
-                reg_name = alias.hardware_reg.name.upper()
-                state = self.get_state(reg_name)
-                if state:
-                    # Find last use for this parameter
-                    # Use id() since Symbol is not hashable
-                    last_use = vreg_last_uses.get(id(alias.symbol), -1)
-                    state.set_parameter(alias.symbol, last_use)
+        aliases = mir_func.alias_tracker.aliases if getattr(mir_func, 'alias_tracker', None) else {}
+        self._last_use = {alias.hardware_reg.name: -1 for alias in aliases.values()}
+        if not self._last_use:
+            return
+        index = 0
+        for block_id in sorted(mir_func.blocks):
+            for instr in mir_func.blocks[block_id].instructions:
+                for use in liveness_uses(instr):
+                    if isinstance(use, HardwareRegister) and use.name in self._last_use:
+                        self._last_use[use.name] = index
+                index += 1
 
     def advance_to(self, instruction_index: int):
-        """
-        Advance to a new instruction index.
-
-        Updates liveness - registers become free after their last use.
-
-        Args:
-            instruction_index: Current instruction being generated
-        """
+        """Move to the instruction at *instruction_index*."""
         self.current_index = instruction_index
 
-        # Update liveness for each register
-        for state in self._states.values():
-            if state.is_live and state.last_use_index >= 0:
-                if instruction_index > state.last_use_index:
-                    state.is_live = False
-
-
     def is_free(self, reg_name: str) -> bool:
-        """
-        Check if a register is free for scratch use.
-
-        A register is free if:
-        - Its contents are unknown, OR
-        - Its value is no longer live (past last use)
-
-        Args:
-            reg_name: Register name to check
-
-        Returns:
-            True if register can be used as scratch
-        """
-        state = self.get_state(reg_name)
-        return state.is_free() if state else True
-
-    def find_register_containing(self, vreg) -> Optional[str]:
-        """
-        Find which register (if any) contains a virtual register.
-
-        Args:
-            vreg: VirtualRegister to look for
-
-        Returns:
-            Register name ('A', 'X', 'Y') or None
-        """
-        for reg_name, state in self._states.items():
-            if state.contents == RegisterContents.VREG:
-                if hasattr(vreg, 'id') and hasattr(state.value, 'id'):
-                    if vreg.id == state.value.id:
-                        return reg_name
-                elif state.value == vreg:
-                    return reg_name
-        return None
-
-
-def compute_vreg_last_uses(mir_func) -> Dict[int, int]:
-    """
-    Compute the last use instruction index for each virtual register.
-
-    Scans all blocks and instructions to find where each vreg is last used.
-
-    Args:
-        mir_func: MIR function to analyze
-
-    Returns:
-        Dictionary mapping id(VirtualRegister) or id(Symbol) to last use instruction index
-    """
-    from r65.compiler.mir.nodes import VirtualRegister, HardwareRegister
-    from r65.compiler.mir.liveness import LivenessAnalyzer
-
-    last_uses: Dict[int, int] = {}  # id -> last instruction index
-
-    # Create a single analyzer for the function
-    analyzer = LivenessAnalyzer(mir_func)
-
-    # Linear scan to find last use of each vreg
-    instr_index = 0
-
-    for block_id in sorted(mir_func.blocks.keys()):
-        block = mir_func.blocks[block_id]
-        for instr in block.instructions:
-            # Get uses from this instruction
-            uses = analyzer._get_uses(instr)
-
-            for use in uses:
-                if isinstance(use, VirtualRegister):
-                    # Use vreg.id as key since VirtualRegister has __hash__
-                    last_uses[use.id] = instr_index
-                elif isinstance(use, HardwareRegister):
-                    # Hardware registers might be aliased to symbols
-                    # Track by register name
-                    pass
-
-            instr_index += 1
-
-    # Also track hardware register aliases (parameters like `idx @ X`)
-    # These need to be tracked by the symbol they're aliased to
-    if hasattr(mir_func, 'alias_tracker') and mir_func.alias_tracker:
-        # For each aliased parameter, find its last use
-        # by scanning instructions that use the hardware register
-        instr_index = 0
-        for block_id in sorted(mir_func.blocks.keys()):
-            block = mir_func.blocks[block_id]
-            for instr in block.instructions:
-                uses = analyzer._get_uses(instr)
-                for use in uses:
-                    if isinstance(use, HardwareRegister):
-                        # Check if this hw reg is aliased
-                        for symbol_id, alias in mir_func.alias_tracker.aliases.items():
-                            if alias.hardware_reg.name == use.name:
-                                # This instruction uses the aliased parameter
-                                last_uses[id(alias.symbol)] = instr_index
-
-                instr_index += 1
-
-    return last_uses
+        """True unless *reg_name* holds a parameter still to be read."""
+        last = self._last_use.get(reg_name.upper(), -1)
+        return self.current_index > last

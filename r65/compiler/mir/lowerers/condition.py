@@ -292,11 +292,7 @@ class ConditionLowerer:
         # Emit StatusFlagTest instruction
         # For branchable flags, this is a no-op (codegen handles it)
         # For non-branchable flags, this emits PHP; PLA; AND #mask
-        self.emit(StatusFlagTest(
-            flag_name=flag_name,
-            bit_position=flag_expr.bit_position,
-            bit_mask=flag_expr.bit_mask
-        ))
+        self.emit(StatusFlagTest(flag_name=flag_name))
 
         # Determine comparison string for code generation
         if is_branchable_flag(flag_name):

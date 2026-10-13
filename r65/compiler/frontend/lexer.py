@@ -121,7 +121,6 @@ class Lexer:
 
         # Identifiers
         'IDENT': TokenType.IDENTIFIER,
-        'STRINGIFY': TokenType.IDENTIFIER,  # Built-in stringify function
 
         # Registers
         'REGISTER': TokenType.REGISTER,
@@ -182,12 +181,10 @@ class Lexer:
         self.lark = Lexer._lark_cache
         self.tokens: List[Token] = []
 
-    _SUFFIXES = ('u16', 'i16', 'u8', 'i8')
-
     def _parse_integer(self, value: str, line: int, column: int) -> int:
         """Parse an integer literal (decimal, hex, or binary)."""
         # Strip type suffix before parsing
-        for s in self._SUFFIXES:
+        for s in INTEGER_SUFFIXES:
             if value.endswith(s):
                 value = value[:-len(s)]
                 break

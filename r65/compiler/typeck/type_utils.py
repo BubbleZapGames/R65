@@ -7,7 +7,7 @@ from r65.compiler.hir import (
     FunctionTypeInfo, StructTypeInfo, EnumTypeInfo,
     NeverTypeInfo, RegisterTypeInfo
 )
-from r65.compiler.hir.types import TraitTypeInfo, NewtypeTypeInfo, strip_newtype
+from r65.compiler.hir.types import TraitTypeInfo, NewtypeTypeInfo, strip_newtype, INTEGER_TYPE_NAMES
 
 
 # Valid ranges for integer types
@@ -217,7 +217,7 @@ class TypeUtils:
     def is_integer_type(t: TypeInfo) -> bool:
         """Check if type is an integer type."""
         return (isinstance(t, BasicTypeInfo) and
-                t.name in ['u8', 'u16', 'i8', 'i16'])
+                t.name in INTEGER_TYPE_NAMES)
 
     @staticmethod
     def types_compatible(t1: TypeInfo, t2: TypeInfo) -> bool:
@@ -257,18 +257,16 @@ class TypeUtils:
         # Allow comparing different-size integers (e.g., u16 vs u8)
         # This is common in 65816 code and safe for comparisons
         if isinstance(t1, BasicTypeInfo) and isinstance(t2, BasicTypeInfo):
-            int_types = {'u8', 'i8', 'u16', 'i16'}
-            if t1.name in int_types and t2.name in int_types:
+            if t1.name in INTEGER_TYPE_NAMES and t2.name in INTEGER_TYPE_NAMES:
                 return True
 
         # Enum to/from integer compatibility. An enum is an integer of its own
         # width, so it pairs with the integer type that matches — u8 for the
         # common case, u16 once a variant exceeds 255. Hardcoding 'u8' here left
         # a wide enum incompatible with the only type that can hold it.
-        int_types = {'u8', 'i8', 'u16', 'i16'}
         for enum_t, other in ((t1, t2), (t2, t1)):
             if isinstance(enum_t, EnumTypeInfo) and isinstance(other, BasicTypeInfo):
-                if other.name in int_types:
+                if other.name in INTEGER_TYPE_NAMES:
                     return True
 
         return False

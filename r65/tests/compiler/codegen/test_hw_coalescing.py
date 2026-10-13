@@ -504,7 +504,7 @@ class TestReturnSinkable:
                 dest=vreg_low,
                 source=MemoryLocation(
                     storage_type='hw', address=0x4216,
-                    symbol=sym_low, is_volatile=True
+                    symbol=sym_low
                 ),
                 type_info=BasicTypeInfo('u8')
             ),
@@ -512,7 +512,7 @@ class TestReturnSinkable:
                 dest=vreg_high,
                 source=MemoryLocation(
                     storage_type='hw', address=0x4217,
-                    symbol=sym_high, is_volatile=True
+                    symbol=sym_high
                 ),
                 type_info=BasicTypeInfo('u8')
             ),
@@ -556,7 +556,7 @@ class TestReturnSinkable:
                 dest=vreg_val,
                 source=MemoryLocation(
                     storage_type='hw', address=0x4216,
-                    symbol=sym, is_volatile=True
+                    symbol=sym
                 ),
                 type_info=BasicTypeInfo('u8')
             ),

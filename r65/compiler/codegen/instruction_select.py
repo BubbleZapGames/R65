@@ -16,7 +16,7 @@ from r65.compiler.mir.nodes import (
     Move, Return, Jump, JumpTable, LookupTable, CondBranch, Call,
     BinaryOp, UnaryOp, Compare, BitTest, Rotate, SetMode, TypeConvert, ToBool,
     BankByte,
-    Push, Pull, SaveRegister, RestoreRegister, ReturnFromInterrupt,
+    Push, Pull, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     MemoryFill, BlockCopy, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX, InlineAsm, TraitDispatch,
     VirtualRegister, HardwareRegister, Immediate as MIRImmediate, MemoryLocation
@@ -36,7 +36,7 @@ from r65.compiler.codegen.instruction_select_helpers import (
     XBAState, XBAStateManager
 )
 from r65.compiler.codegen.hw_register_tracker import (
-    HardwareRegisterTracker, compute_vreg_last_uses
+    HardwareRegisterTracker
 )
 from r65.compiler.codegen.control_flow_select import ControlFlowInstructionSelector
 from r65.compiler.codegen.call_select import CallInstructionSelector
@@ -172,8 +172,6 @@ class InstructionSelector:
             Call: self.call_selector.select_call,
             TraitDispatch: self.call_selector.select_trait_dispatch,
             SetMode: self.select_set_mode,
-            SaveRegister: self.select_save_register,
-            RestoreRegister: self.select_restore_register,
             Push: self.select_push,
             Pull: self.select_pull,
             ReturnFromInterrupt: self.select_return_from_interrupt,
@@ -338,67 +336,35 @@ class InstructionSelector:
         if (self.current_function and
             self.current_function.has_far_ptr_stack_params and
             self.current_function.far_ptr_strategy != FarPtrStrategy.SET_DBR):
+            # Both name a direct page byte, which D = S no longer reaches.
             if location.kind == LocationKind.SCRATCH:
-                # Convert scratch to memory location with absolute addressing
-                abs_location = PhysicalLocation(
-                    kind=LocationKind.MEMORY,
-                    memory_addr=location.scratch_addr,
-                    size=location.size,
-                    index_register=location.index_register
-                )
-                return self._resolver.resolve_and_get_opcode(mnemonic, abs_location)
-            elif location.kind == LocationKind.MEMORY and location.memory_addr is not None and location.memory_addr < 0x100:
-                # Zeropage memory location - force absolute addressing
-                # by using a resolver that treats it as non-DP
-                from r65.compiler.codegen.location_resolver import ResolvedLocation
-                resolved = ResolvedLocation(
-                    mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False),
-                    operand=Address(location.memory_addr),
-                    address=location.memory_addr,
-                    is_dp=False
-                )
-                opcode = self._resolver.get_opcode(mnemonic, resolved)
-                return opcode, resolved.operand
+                operand = Address(location.scratch_addr)
+            elif (location.kind == LocationKind.MEMORY
+                  and location.memory_addr is not None and location.memory_addr < 0x100):
+                operand = Address(location.memory_addr)
+            else:
+                operand = None
+            if operand is not None:
+                return self._resolver.forced_opcode(
+                    mnemonic, operand, location.index_register, is_long=False), operand
 
         # When SET_DBR is active, DBR is set to the far pointer's bank.
         # The far pointer may point to ROM or WRAM, so DBR is not guaranteed
         # to be any particular bank. All non-DBR-bank accesses need LONG addressing:
-        # ROM labels, HW registers, AND RAM ($7E) all need LONG.
+        # ROM labels (in the code bank), HW registers (bank $00), AND RAM ($7E).
         if (self.current_function and
-            self.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR):
-            if location.kind == LocationKind.MEMORY:
-                from r65.compiler.codegen.location_resolver import ResolvedLocation
-                if location.memory_label and location.storage_type == 'rom':
-                    # ROM label: force LONG addressing (label is in code bank, not DBR bank)
-                    resolved = ResolvedLocation(
-                        mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=True),
-                        operand=Address(location.memory_label),
-                        label=location.memory_label,
-                        is_dp=False
-                    )
-                    opcode = self._resolver.get_opcode(mnemonic, resolved)
-                    return opcode, resolved.operand
-                elif location.memory_addr is not None:
-                    if location.storage_type == 'hw':
-                        # HW register (bank $00): force LONG addressing
-                        resolved = ResolvedLocation(
-                            mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=True),
-                            operand=Address(location.memory_addr),
-                            address=location.memory_addr,
-                            is_dp=False
-                        )
-                        opcode = self._resolver.get_opcode(mnemonic, resolved)
-                        return opcode, resolved.operand
-                    elif location.memory_addr > 0xFFFF:
-                        # RAM in $7E bank: force LONG addressing (DBR may not be $7E)
-                        resolved = ResolvedLocation(
-                            mode=self._resolver._get_indexed_mode(location.index_register, is_dp=False, is_long=True),
-                            operand=Address(location.memory_addr),
-                            address=location.memory_addr,
-                            is_dp=False
-                        )
-                        opcode = self._resolver.get_opcode(mnemonic, resolved)
-                        return opcode, resolved.operand
+            self.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR
+                and location.kind == LocationKind.MEMORY):
+            if location.memory_label and location.storage_type == 'rom':
+                operand = Address(location.memory_label)
+            elif location.memory_addr is not None and (
+                    location.storage_type == 'hw' or location.memory_addr > 0xFFFF):
+                operand = Address(location.memory_addr)
+            else:
+                operand = None
+            if operand is not None:
+                return self._resolver.forced_opcode(
+                    mnemonic, operand, location.index_register, is_long=True), operand
 
         return self._resolver.resolve_and_get_opcode(mnemonic, location)
 
@@ -503,28 +469,8 @@ class InstructionSelector:
     # ========================================================================
 
     def _init_hw_tracker(self, mir_func: 'MIRFunction'):
-        """
-        Initialize hardware register tracker from function parameters.
-
-        For parameters with register aliases (e.g., `idx @ X`), marks
-        the register as containing that parameter value and computes
-        when that value is last used.
-
-        Args:
-            mir_func: MIR function being generated
-        """
-        # Compute last use for each virtual register
-        vreg_last_uses = compute_vreg_last_uses(mir_func)
-
-        # Also track parameter symbols' last use
-        # This requires scanning the alias tracker
-        if hasattr(mir_func, 'alias_tracker') and mir_func.alias_tracker:
-            # For now, we'll compute liveness for aliased parameters
-            # by treating them similarly to vregs
-            pass
-
-        # Initialize tracker
-        self.hw_tracker.initialize_from_parameters(mir_func, vreg_last_uses)
+        """Find where each register-bound parameter (`idx @ X`) is last read."""
+        self.hw_tracker.initialize_from_parameters(mir_func)
 
     def _advance_instruction(self):
         """
@@ -548,18 +494,6 @@ class InstructionSelector:
             True if register can be used as scratch
         """
         return self.hw_tracker.is_free(reg_name)
-
-    def _find_vreg_in_hw_reg(self, vreg) -> str:
-        """
-        Find which hardware register (if any) contains a virtual register.
-
-        Args:
-            vreg: VirtualRegister to look for
-
-        Returns:
-            Register name ('A', 'X', 'Y') or None if not in any register
-        """
-        return self.hw_tracker.find_register_containing(vreg)
 
     # ========================================================================
     # Main Dispatch
@@ -929,17 +863,8 @@ class InstructionSelector:
         elif left_loc.kind == LocationKind.IMMEDIATE:
             self._emit_load('LDA', left_loc)
         else:
-            # OPTIMIZATION: Check if vreg value is already in X or Y
-            # If so, use TXA/TYA instead of loading from memory
-            hw_reg = None
-            if isinstance(instr.left, VirtualRegister):
-                hw_reg = self._find_vreg_in_hw_reg(instr.left)
-
-            if hw_reg and hw_reg in ('X', 'Y'):
-                self._emit_register_transfer(hw_reg, 'A')
-            else:
-                # Load left operand from memory/stack into A
-                self._emit_load('LDA', left_loc)
+            # Load left operand from memory/stack into A
+            self._emit_load('LDA', left_loc)
 
         # Perform operation (use right_operand which may be scaled for pointer arithmetic)
         if op == '+':
@@ -1234,14 +1159,6 @@ class InstructionSelector:
             self._emit_implied(pull_opcode)
         else:
             raise InstructionSelectionError(f"Cannot pull register: {reg_name}", source_loc=self._current_source_loc)
-
-    def select_save_register(self, instr: SaveRegister):
-        """Generate code for SaveRegister instruction."""
-        self._emit_push_register(instr.register.name)
-
-    def select_restore_register(self, instr: RestoreRegister):
-        """Generate code for RestoreRegister instruction."""
-        self._emit_pull_register(instr.register.name)
 
     # ========================================================================
     # Interrupt Handler Instructions
@@ -2266,7 +2183,7 @@ class InstructionSelector:
             self.emitter.emit_instr(Opcode.PHP, comment="Push STATUS to stack")
             self.emitter.emit_instr(Opcode.PLA, comment="Pull STATUS into A")
             self.emitter.emit_instr(Opcode.AND_IMMEDIATE, instr.bit_mask,
-                                    comment=f"Test {instr.flag_name} flag (bit {instr.bit_position})")
+                                    comment=f"Test {instr.flag_name} flag")
 
     def select_status_flag_set(self, instr: StatusFlagSet):
         """

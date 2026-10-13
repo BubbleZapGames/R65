@@ -14,14 +14,10 @@ from r65.compiler.errors import (
     CompilerError,
 )
 
-# Backwards compatibility alias
-AttributeError = AttributeValidationError
-
 __all__ = [
     'SourceLocation',
     'HIRError',
     'SymbolError',
     'AttributeValidationError',
-    'AttributeError',
     'CompilerError',
 ]

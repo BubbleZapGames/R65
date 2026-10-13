@@ -284,53 +284,6 @@ class ScratchRegisterPool:
         self.allocated.clear()
 
 
-class StackAllocator:
-    """
-    Allocates stack slots for spilled virtual registers.
-
-    Stack grows downward on 65816. Stack layout:
-    - Return address (2 or 3 bytes)
-    - Saved registers (if any)
-    - Local variables / spilled registers
-    """
-
-    def __init__(self, initial_offset: int = 0):
-        """
-        Initialize stack allocator.
-
-        Args:
-            initial_offset: Starting offset (accounts for return address, etc.)
-        """
-        self.current_offset = initial_offset
-        self.allocated: Dict[int, int] = {}  # vreg.id → stack offset
-
-    def allocate(self, vreg: VirtualRegister) -> int:
-        """
-        Allocate stack slot for virtual register.
-
-        Args:
-            vreg: Virtual register to allocate
-
-        Returns:
-            Stack offset for the register
-        """
-        # Check if already allocated
-        if vreg.id in self.allocated:
-            return self.allocated[vreg.id]
-
-        # Allocate new slot
-        offset = self.current_offset
-        vreg_size = get_vreg_size(vreg)
-        self.current_offset += vreg_size
-        self.allocated[vreg.id] = offset
-
-        return offset
-
-    def get_frame_size(self) -> int:
-        """Get total stack frame size."""
-        return self.current_offset
-
-
 class RegisterAllocator:
     """
     Main register allocator for virtual registers.

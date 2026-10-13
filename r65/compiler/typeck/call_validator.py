@@ -15,6 +15,7 @@ from r65.compiler.hir import (
     HIRError,
 )
 from r65.compiler.hir.types import (
+    INTEGER_TYPE_NAMES,
     TypeInfo, FunctionTypeInfo, ArrayTypeInfo, PointerTypeInfo, TraitTypeInfo,
     NewtypeTypeInfo, EnumTypeInfo,
 )
@@ -718,7 +719,7 @@ class CallValidator:
 
     def _check_builtin_call(self, expr: HIRFunctionCall) -> TypeInfo:
         """Type check built-in function call."""
-        from r65.compiler.builtins import BuiltinRegistry
+        from r65.compiler.builtins import BuiltinRegistry, BuiltinKind
 
         builtin = BuiltinRegistry.get_builtin(expr.builtin_name)
         if not builtin:
@@ -727,16 +728,25 @@ class CallValidator:
                 source_loc=expr.source_loc
             )
 
+        most = builtin.max_param_count if builtin.max_param_count is not None else builtin.param_count
+        if not builtin.param_count <= len(expr.args) <= most:
+            expected = (f"{most}" if most == builtin.param_count
+                        else f"{builtin.param_count} to {most}")
+            raise TypeCheckError(
+                f"{expr.builtin_name}() takes {expected} argument(s), got {len(expr.args)}",
+                source_loc=expr.source_loc
+            )
+
         # Type check arguments
         for arg in expr.args:
             # For size_of, don't type-check type identifiers
-            if builtin.kind.value == "type_info" and expr.builtin_name == "size_of":
+            if expr.builtin_name == "size_of":
                 if isinstance(arg, (HIRIdentifier, HIRArrayIndex)):
                     continue
             self.check_expression(arg)
 
         # Handle const built-ins (like size_of)
-        if builtin.kind.value == "type_info":
+        if builtin.kind is BuiltinKind.TYPE_INFO:
             if expr.builtin_name == "size_of":
                 return self._check_size_of_builtin(expr)
             else:
@@ -746,18 +756,15 @@ class CallValidator:
                 )
 
         # Const math builtins - should be folded away, but set types for safety
-        if builtin.kind.value == "const_math":
-            if expr.builtin_name in ('fixed_sin', 'fixed_cos', 'fixed_log2', 'fixed_lerp', 'fixed_clamp'):
-                expr.expr_type = BasicTypeInfo('i16')
-            else:
-                expr.expr_type = BasicTypeInfo('u16')
+        if builtin.kind is BuiltinKind.CONST_MATH:
+            expr.expr_type = BasicTypeInfo(builtin.return_type)
             return expr.expr_type
 
         # Set return type
         if builtin.returns_value:
             if expr.args:
                 first_arg_type = expr.args[0].expr_type
-                if isinstance(first_arg_type, BasicTypeInfo) and first_arg_type.name in ('u8', 'i8', 'u16', 'i16'):
+                if isinstance(first_arg_type, BasicTypeInfo) and first_arg_type.name in INTEGER_TYPE_NAMES:
                     expr.expr_type = first_arg_type
                 else:
                     expr.expr_type = BasicTypeInfo('u8')
@@ -829,7 +836,7 @@ class CallValidator:
 
         # Handle rotate methods on integers
         # Validate receiver is an integer type
-        if not isinstance(receiver_type, BasicTypeInfo) or receiver_type.name not in ['u8', 'i8', 'u16', 'i16']:
+        if not isinstance(receiver_type, BasicTypeInfo) or receiver_type.name not in INTEGER_TYPE_NAMES:
             raise TypeCheckError(
                 f"method '{expr.method_name}' requires integer type, found {receiver_type}",
                 source_loc=expr.source_loc,
@@ -976,7 +983,7 @@ class CallValidator:
                     source_loc=expr.source_loc
                 )
 
-            if symbol.kind.value == "struct":
+            if symbol.kind is SymbolKind.STRUCT:
                 struct_type = StructTypeInfo(name=type_name, definition=symbol.definition)
                 try:
                     from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -990,7 +997,7 @@ class CallValidator:
                         source_loc=expr.source_loc
                     )
 
-            elif symbol.kind.value == "enum":
+            elif symbol.kind is SymbolKind.ENUM:
                 expr.evaluated_size = 1
                 expr.expr_type = BasicTypeInfo('u8')
                 return expr.expr_type

@@ -2,6 +2,7 @@
 """Tests for branch fixup pass using typed Instruction nodes."""
 
 import pytest
+from r65.compiler.codegen.asm_size import asm_line_size
 from r65.compiler.codegen.branch_fixup import (
     fixup_nodes,
     BranchFixup,
@@ -529,7 +530,7 @@ class TestRawAsmDataDirectives:
 
     `Emitter.emit_directive` builds a `RawAsm` node, not a `Directive`, so the
     inline lookup table a `match` emits — `.DW` entries placed right after the
-    `BRA` that jumps over them — is sized by `_raw_asm_size`. That treated
+    `BRA` that jumps over them — is sized as raw asm text. That treated
     anything starting with `.` as zero bytes, so a branch spanning a table was
     measured short and left as an 8-bit relative. WLA-DX then refused the
     whole build:
@@ -552,7 +553,41 @@ class TestRawAsmDataDirectives:
         ("    .INDEX 16", 0),
     ])
     def test_data_directive_sizes(self, text, expected):
-        assert BranchFixup._estimate_instruction_size(text.strip()) == expected
+        assert asm_line_size(text) == expected
+
+
+class TestRawAsmInstructionSizes:
+    """Branch fixup, address calculation and bank sizing size asm text with
+    one function. Their three copies disagreed: WDM was 1 byte in one, `ASL
+    $1234` 1 byte in another, and a branch 3 bytes in two."""
+
+    @pytest.mark.parametrize("text,m16,expected", [
+        ("NOP", False, 1),
+        ("ASL A", False, 1),
+        ("WDM $01", False, 2),
+        ("ASL $1234", False, 3),
+        ("LDA $10", False, 2),
+        ("LDA $0010", False, 3),
+        ("LDA $7E2000", False, 4),
+        ("LDA.l SOMEWHERE", False, 4),
+        ("LDA ($10),Y", False, 2),
+        ("LDA $03,S", False, 2),
+        ("STA label,X", False, 3),
+        ("BNE label", False, 2),
+        ("BRL label", False, 3),
+        ("JSL far_fn", False, 4),
+        ("JML [$0010]", False, 3),
+        ("LDA #$12", False, 2),
+        ("LDA #$1234", True, 3),
+        ("LDX #$0000", False, 3),
+        ("REP #$20", True, 2),
+        ("MVN $00, $7E", False, 3),
+        ("label:", False, 0),
+        ("; comment", False, 0),
+        ("LOROM", False, 0),
+    ])
+    def test_line_sizes(self, text, m16, expected):
+        assert asm_line_size(text, m16=m16) == expected
 
     def test_branch_over_an_inline_table_is_made_long(self):
         """A five-entry word table plus a little code is past the 127-byte

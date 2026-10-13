@@ -16,9 +16,8 @@ from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate,
     Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, Call,
-    TraitDispatch, TypeConvert, ToBool, Rotate, JumpTable, LookupTable,
-    iter_operands, map_operands, BlockCopy, MemoryFill, AggregateCopy,
-    AGGREGATE_COPY_UNROLL_MAX,
+    TraitDispatch, TypeConvert, ToBool, Rotate,
+    iter_operands, map_operands, fixed_clobbers,
 )
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
@@ -364,38 +363,19 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
     if not loops:
         return 0
 
-    def clobbers_xy(instr) -> bool:
-        if isinstance(instr, (BlockCopy, MemoryFill)):
-            return True
-        if isinstance(instr, AggregateCopy):
-            return instr.count > AGGREGATE_COPY_UNROLL_MAX
-        return False
-
-    def clobbers_y(instr) -> bool:
-        """True for an indirect access that loads Y with its own offset.
-
-        `(zp),Y` and `[zp],Y` put the field offset in Y — codegen emits
-        `LDY #offset` right before the access — so a counter pinned to Y does
-        not survive it. `index_register` marks the other shape, `PTR[i]`, where
-        the index the access wants in Y *is* a value the allocator places
-        there; that is the case the module docstring keeps, and pinning the
-        counter to Y is right for it.
-        """
-        return (isinstance(instr, (LoadIndirect, StoreIndirect))
-                and instr.index_register is None)
-
     x_only_blocks: Set[int] = set()   # tables: X clobbered, Y safe
     y_only_blocks: Set[int] = set()   # pointer field access: Y clobbered, X safe
     xy_blocks: Set[int] = set()       # block moves / fills: X and Y clobbered
     for _header, body in loops:
-        instrs = [instr for bid in body for instr in func.blocks[bid].instructions]
-        has_table = any(isinstance(instr, (JumpTable, LookupTable)) for instr in instrs)
-        has_ptr_field = any(clobbers_y(instr) for instr in instrs)
-        if any(clobbers_xy(instr) for instr in instrs) or (has_table and has_ptr_field):
+        clobbered: Set[str] = set()
+        for bid in body:
+            for instr in func.blocks[bid].instructions:
+                clobbered |= _index_clobbers(instr)
+        if clobbered == {'X', 'Y'}:
             xy_blocks |= body          # subsumes any table in the same loop
-        elif has_table:
+        elif clobbered == {'X'}:
             x_only_blocks |= body
-        elif has_ptr_field:
+        elif clobbered == {'Y'}:
             y_only_blocks |= body
     if not x_only_blocks and not y_only_blocks and not xy_blocks:
         return 0
@@ -506,16 +486,21 @@ def _enforce_alias_register_safety(func: MIRFunction) -> int:
 
 def _index_clobbers(instr) -> Set[str]:
     """The index registers *instr*'s codegen overwrites: see
-    `_enforce_index_clobber_safety` for each case."""
-    if isinstance(instr, (BlockCopy, MemoryFill)):
-        return {'X', 'Y'}
-    if isinstance(instr, AggregateCopy) and instr.count > AGGREGATE_COPY_UNROLL_MAX:
-        return {'X', 'Y'}
-    if isinstance(instr, (JumpTable, LookupTable)):
-        return {'X'}
+    `_enforce_index_clobber_safety` for each case.
+
+    Beyond `fixed_clobbers`, an indirect access with no index register loads
+    Y with its own offset (`LDY #offset` before `(zp),Y` / `[zp],Y`), so a
+    counter pinned to Y does not survive it. `index_register` marks the other
+    shape, `PTR[i]`, where the index the access wants in Y *is* a value the
+    allocator places there, and pinning the counter to Y is right.
+    """
+    regs = set(fixed_clobbers(instr) & _XY)
     if isinstance(instr, (LoadIndirect, StoreIndirect)) and instr.index_register is None:
-        return {'Y'}
-    return set()
+        regs.add('Y')
+    return regs
+
+
+_XY = frozenset('XY')
 
 
 def _enforce_live_range_clobber_safety(func: MIRFunction) -> int:

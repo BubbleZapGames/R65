@@ -49,3 +49,14 @@ class TestAliasHIR:
         """)
         func = hir_prog.functions[0]
         assert len(func.body.statements) >= 2
+
+    def test_let_bound_to_a_static_is_rejected(self):
+        """Only a register can be aliased. `let x @ V` used to build and
+        then drop the binding, leaving `x` an ordinary local."""
+        import pytest
+        with pytest.raises(Exception) as exc:
+            build_hir("""
+                #[zeropage(0x10)] static mut V: u8;
+                fn test() { let x @ V = 5; }
+            """)
+        assert "register" in str(exc.value)

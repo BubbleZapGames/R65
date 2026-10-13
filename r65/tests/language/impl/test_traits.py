@@ -908,8 +908,26 @@ class TestTraitDefaultMethods:
             }
         """
         trait = parse(source, "test.r65").items[0]
-        assert trait.methods[0].default_body is None
-        assert trait.methods[1].default_body is not None
+        assert trait.methods[0].body is None
+        assert trait.methods[1].body is not None
+
+    def test_default_keeps_a_by_value_self(self):
+        """The copy for an implementor keeps how the default wrote `self`:
+        a newtype takes it by value, and a struct may not."""
+        trait = """
+            trait Raw { fn raw(self) -> u8 { return 5; } }
+        """
+        hir = build_and_check(trait + """
+            struct Tile(u8);
+            impl Raw for Tile {}
+        """)
+        assert hir.symbol_table.lookup("Tile__raw") is not None
+        with pytest.raises(Exception) as exc:
+            build_and_check(trait + """
+                struct Player { x: u8 }
+                impl Raw for Player {}
+            """)
+        assert "by value" in str(exc.value)
 
     def test_default_used_when_impl_omits_method(self):
         """An impl that omits a defaulted method still type checks."""

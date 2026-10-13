@@ -17,7 +17,7 @@ from r65.compiler.mir.nodes import (
     Load, Store, LoadIndirect, StoreIndirect, MemoryLocation,
     VirtualRegister, HardwareRegister, Immediate,
     InlineAsm, Argument, ArgumentMechanism, SetMode,
-    BitTest, Rotate, Push, Pull, SaveRegister, RestoreRegister,
+    BitTest, Rotate, Push, Pull,
     TraitDispatch, FarPtrStrategy,
 )
 from r65.compiler.hir.types import BasicTypeInfo
@@ -1259,7 +1259,7 @@ class TestCanInlineRejections:
     def test_rejects_preserves_attr(self):
         """#[preserves(...)] contract is enforced at the call boundary; the
         inliner removes the boundary without emitting equivalent
-        SaveRegister/RestoreRegister, so this is unsound today."""
+        save/restore, so this is unsound today."""
         callee = create_simple_callee()
         callee.preserves_attr = PreservesAttribute(name='preserves',
                                                    registers=['X'])
@@ -1444,22 +1444,6 @@ class TestCloneInstructionCoverage:
         assert cloned.source is not src
         assert cloned.direction == 'left'
         assert cloned.count == 1
-
-    def test_clone_saverestore_remaps_save_location(self):
-        cloner, _, _ = self._make_cloner()
-        slot = VirtualRegister(id=20, type_info=BasicTypeInfo('u8'),
-                               hint='slot')
-        save = SaveRegister(register=HardwareRegister('X'), save_location=slot)
-        restore = RestoreRegister(register=HardwareRegister('X'),
-                                  save_location=slot)
-        cs = cloner._clone_instruction(save)
-        cr = cloner._clone_instruction(restore)
-        assert isinstance(cs, SaveRegister)
-        assert isinstance(cr, RestoreRegister)
-        assert cs.save_location is not slot
-        # Same callee vreg referenced twice must remap to the same caller
-        # vreg (cloner uses an id-keyed cache).
-        assert cs.save_location is cr.save_location
 
     def test_clone_push_pull_preserve_register(self):
         cloner, _, _ = self._make_cloner()

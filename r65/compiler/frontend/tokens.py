@@ -69,32 +69,8 @@ class TokenType(Enum):
     NEWLINE = auto()
 
 
-# Keywords in R65
-    KEYWORDS = {
-        'fn', 'far', 'let', 'mut', 'const', 'static', 'if', 'else', 'loop',
-        'while', 'break', 'continue', 'return', 'struct', 'enum', 'type',
-        'include', 'asm', 'as', 'stringify',  # Built-in stringification function
-    }
-
-# Built-in function names (recognized by BuiltinRegistry, not grammar keywords)
-BUILTIN_FUNCTIONS = {
-    'mul', 'div', 'mod', 'shl', 'shr', 'NOP',
-}
-
-# Hardware register names (special global variables)
-REGISTERS = {
-    'A', 'X', 'Y', 'B', 'Status', 'D', 'DBR', 'PBR', 'S',
-}
-
-# Type names (note: 'near' and 'far' are also keywords when used as function modifiers)
-TYPES = {
-    'u8', 'u16', 'i8', 'i16', 'bool', 'near',
-}
-
-# Boolean literals
-BOOLEANS = {
-    'true', 'false',
-}
+# Integer literal type suffixes (`5u16`).
+INTEGER_SUFFIXES = ('u16', 'i16', 'u8', 'i8')
 
 
 @dataclass

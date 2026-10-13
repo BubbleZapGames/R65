@@ -20,12 +20,12 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
-    TraitDispatch, RestoreRegister, BankByte, Immediate, map_operands,
+    TraitDispatch, BankByte, Immediate, map_operands,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.codegen.type_utils import (
-    get_vreg_size, is_a_resident_convert, convert_operand_widths)
+    get_vreg_size, is_a_resident_convert, convert_operand_widths, defines_in_a)
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
@@ -94,21 +94,6 @@ class SlotAllocation:
         """Get slot offset for any vreg (local only - params use param_offsets)."""
         return self.register_to_slot.get(vreg)
 
-    def get_param_offset(self, vreg: VirtualRegister) -> Optional[int]:
-        """Get final stack offset for a parameter vreg."""
-        return self.param_offsets.get(vreg)
-
-    def get_size(self, vreg: VirtualRegister) -> Optional[int]:
-        """Get size for any vreg."""
-        if vreg in self.register_to_size:
-            return self.register_to_size[vreg]
-        if vreg in self.param_sizes:
-            return self.param_sizes[vreg]
-        return None
-
-    def is_param(self, vreg: VirtualRegister) -> bool:
-        """Check if vreg is a stack parameter."""
-        return vreg in self.param_offsets
 
 
 class StackSlotAllocator:
@@ -764,10 +749,6 @@ class StackSlotAllocator:
         # For ALU-def vregs (BinaryOp/UnaryOp/LoadIndirect), restrict to cases
         # where all uses are Return, Move, Compare, Store (as source), or as
         # the LEFT operand of a BinaryOp (chained arithmetic).
-        # TypeConvert appears here as a type, but only one `is_a_resident_convert`
-        # accepts ever reaches this list — the def-collection loop above decides.
-        _alu_def_types = frozenset({BinaryOp, UnaryOp, LoadIndirect, Load, BankByte,
-                                    TypeConvert})
         candidates = []
         for vreg_id, defs in vreg_defs.items():
             if len(defs) != 1:
@@ -789,7 +770,7 @@ class StackSlotAllocator:
             #   (the BinaryOp at max_use_idx is not scanned for clobbers).
             # - Call arg: codegen reads A for PHA/STA; emit_call_args ensures
             #   A-resident args are processed before other args clobber A.
-            if type(def_instr) in _alu_def_types:
+            if defines_in_a(def_instr):
                 if not all(self._use_reads_a_in_place(use, vreg_id) for use in uses):
                     continue
 
@@ -1053,8 +1034,6 @@ class StackSlotAllocator:
         self, vreg_id: int, hw_reg: str, coalesceable: Dict[VirtualRegister, str]
     ):
         """Mark a vreg as hw-coalesceable by finding its def instruction."""
-        _def_types = frozenset({Move, BinaryOp, UnaryOp, LoadIndirect, Load, BankByte,
-                                TypeConvert})
         for block in self.func.blocks.values():
             for instr in block.instructions:
                 instr_type = type(instr)
@@ -1063,13 +1042,8 @@ class StackSlotAllocator:
                         if instr.returns[0].id == vreg_id:
                             coalesceable[instr.returns[0]] = hw_reg
                             return
-                elif instr_type in _def_types and type(instr.dest) is VirtualRegister:
-                    # Only a convert `is_a_resident_convert` accepts leaves its
-                    # result in A. Any other never reaches here — it is not
-                    # registered as an A-def above — but the test is repeated
-                    # rather than left to hold at a distance.
-                    if instr_type is TypeConvert and not is_a_resident_convert(instr):
-                        continue
+                elif ((instr_type is Move or defines_in_a(instr))
+                      and type(instr.dest) is VirtualRegister):
                     if instr.dest.id == vreg_id:
                         coalesceable[instr.dest] = hw_reg
                         return
@@ -1335,9 +1309,7 @@ class StackSlotAllocator:
             # ALU ops route through A, clobbering it — UNLESS the dest is our vreg,
             # in which case the op re-defines our vreg and leaves its new value in A
             # (analogous to Store exception: our vreg's value stays in A).
-            if ((instr_type is BinaryOp or instr_type is UnaryOp
-                 or instr_type is BankByte
-                 or (instr_type is TypeConvert and is_a_resident_convert(instr))) and
+            if (defines_in_a(instr) and
                 type(instr.dest) is VirtualRegister and
                 instr.dest.id == vreg_id):
                 return False
@@ -1430,7 +1402,6 @@ class StackSlotAllocator:
         X/Y are only modified by:
         - Move to X/Y (LDX, LDY, TAX, TAY, TXY, TYX)
         - BinaryOp with dest=HardwareRegister X/Y (INX, DEX, INY, DEY)
-        - RestoreRegister for X/Y (PLX, PLY)
         - Calls that don't preserve X/Y (handled in caller)
         """
         instr_type = type(instr)
@@ -1446,12 +1417,6 @@ class StackSlotAllocator:
         if instr_type is BinaryOp:
             # INX/DEX/INY/DEY patterns: BinaryOp dest=HardwareRegister
             if type(instr.dest) is HardwareRegister and instr.dest.name == hw_reg:
-                return True
-            return False
-
-        if instr_type is RestoreRegister:
-            # PLX/PLY restores clobber the register
-            if instr.register.name == hw_reg:
                 return True
             return False
 

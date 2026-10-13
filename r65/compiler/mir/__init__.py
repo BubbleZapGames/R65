@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, JumpTable, LookupTable, Return, ReturnFromInterrupt,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     Call, Argument, ArgumentMechanism,
-    SetMode, Push, Pull, SaveRegister, RestoreRegister,
+    SetMode, Push, Pull,
     InlineAsm,
     # Operands
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
@@ -34,7 +34,7 @@ __all__ = [
     'Jump', 'CondBranch', 'JumpTable', 'LookupTable', 'Return', 'ReturnFromInterrupt',
     'StatusFlagTest', 'StatusFlagSet', 'StatusFlagRead',
     'Call', 'Argument', 'ArgumentMechanism',
-    'SetMode', 'Push', 'Pull', 'SaveRegister', 'RestoreRegister',
+    'SetMode', 'Push', 'Pull',
     'InlineAsm',
     # Operands
     'VirtualRegister', 'HardwareRegister', 'Immediate', 'MemoryLocation',

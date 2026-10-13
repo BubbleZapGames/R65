@@ -935,11 +935,7 @@ ABI_PASCAL = ABIPascal()
 ABI_DEFAULT = ABIDefault()
 
 
-_ABI_BY_NAME = {
-    "Default": ABI_DEFAULT,
-    "FixedStack": ABI_FIXED_STACK,
-    "Pascal": ABI_PASCAL,
-}
+_ABI_BY_NAME = {abi.kind.value: abi for abi in (ABI_DEFAULT, ABI_FIXED_STACK, ABI_PASCAL)}
 
 
 def abi_model_from_string(name: str) -> ABIModel:

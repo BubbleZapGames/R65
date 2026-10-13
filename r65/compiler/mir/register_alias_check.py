@@ -30,8 +30,7 @@ from typing import Dict, Optional
 from r65.compiler.errors import MIRLoweringError
 from r65.compiler.mir.nodes import (
     MIRFunction, HardwareRegister, VirtualRegister, Immediate,
-    Call, TraitDispatch, JumpTable, LookupTable, MemoryFill, BlockCopy,
-    AggregateCopy, InlineAsm, Pull, RestoreRegister, SaveRegister, Push,
+    CLOBBERS_ALL, fixed_clobbers, Pull, Push,
     StatusFlagRead, Store, StoreIndirect, LoadIndirect, Compare, BitTest,
     CondBranch, Move, BinaryOp, UnaryOp, IncDecMemory, SetMode,
     OperandRole, iter_operands,
@@ -40,11 +39,6 @@ from r65.compiler.codegen.type_utils import get_type_size
 
 CHECKED = ('A', 'X', 'Y')
 
-# Nodes whose codegen may overwrite A, X and Y alike (calls: the ABI's
-# volatile registers; table dispatch: TAX; block moves: MVN's A/X/Y; asm: a
-# black box).
-_ALL_CLOBBER = (Call, TraitDispatch, JumpTable, LookupTable, MemoryFill,
-                BlockCopy, AggregateCopy, InlineAsm)
 
 
 def _hw(v, name=None) -> bool:
@@ -61,9 +55,9 @@ def _size(type_info) -> int:
 def _implicit_clobbers(instr, reg: str) -> bool:
     """True if codegen for *instr* may overwrite *reg* in a way its explicit
     hardware-register dest (handled by the caller) does not show."""
-    if isinstance(instr, _ALL_CLOBBER):
+    if isinstance(instr, CLOBBERS_ALL) or reg in fixed_clobbers(instr):
         return True
-    if isinstance(instr, (Pull, RestoreRegister)):
+    if isinstance(instr, Pull):
         return _hw(instr.register, reg)
 
     if reg == 'Y':
@@ -76,7 +70,7 @@ def _implicit_clobbers(instr, reg: str) -> bool:
         return False
 
     # A.
-    if isinstance(instr, (SaveRegister, Push, SetMode, IncDecMemory)):
+    if isinstance(instr, (Push, SetMode, IncDecMemory)):
         return False
     if isinstance(instr, StatusFlagRead):
         return True

@@ -30,6 +30,7 @@ class BuiltinSignature:
     description: str
     instruction: Optional[str] = None  # Direct 65816 instruction if applicable
     max_param_count: Optional[int] = None  # Maximum params (if different from param_count)
+    return_type: Optional[str] = None  # Fixed result type, when it is not the first argument's
 
 
 class BuiltinRegistry:
@@ -131,6 +132,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=3,
             returns_value=True,
+            return_type='i16',
             description='Const-only: round(sin(2*pi*index/table_size) * amplitude) -> i16'
         ),
         'fixed_cos': BuiltinSignature(
@@ -138,6 +140,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=3,
             returns_value=True,
+            return_type='i16',
             description='Const-only: round(cos(2*pi*index/table_size) * amplitude) -> i16'
         ),
         'fixed_atan2': BuiltinSignature(
@@ -145,6 +148,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=3,
             returns_value=True,
+            return_type='u16',
             description='Const-only: atan2(y, x) mapped to 0..table_size -> u16'
         ),
         'fixed_sqrt': BuiltinSignature(
@@ -152,6 +156,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=2,
             returns_value=True,
+            return_type='u16',
             description='Const-only: round(sqrt(value) * scale) -> u16'
         ),
         'fixed_log2': BuiltinSignature(
@@ -159,6 +164,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=2,
             returns_value=True,
+            return_type='i16',
             description='Const-only: round(log2(value) * scale) -> i16'
         ),
         'fixed_exp2': BuiltinSignature(
@@ -166,6 +172,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=3,
             returns_value=True,
+            return_type='u16',
             description='Const-only: round(2^(value/in_scale) * out_scale) -> u16'
         ),
         'fixed_lerp': BuiltinSignature(
@@ -173,6 +180,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=4,
             returns_value=True,
+            return_type='i16',
             description='Const-only: a + (b-a)*t/t_max -> i16'
         ),
         'fixed_clamp': BuiltinSignature(
@@ -180,6 +188,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=3,
             returns_value=True,
+            return_type='i16',
             description='Const-only: clamp value to [min, max] -> i16'
         ),
         'fixed_color_bgr': BuiltinSignature(
@@ -187,6 +196,7 @@ class BuiltinRegistry:
             kind=BuiltinKind.CONST_MATH,
             param_count=3,
             returns_value=True,
+            return_type='u16',
             description='Const-only: convert RGB888 to SNES BGR555 -> u16'
         ),
 
@@ -209,9 +219,3 @@ class BuiltinRegistry:
     def get_builtin(cls, name: str) -> Optional[BuiltinSignature]:
         """Get built-in signature by name."""
         return cls.BUILTINS.get(name)
-
-    @classmethod
-    def get_all_names(cls) -> List[str]:
-        """Get list of all built-in function names."""
-        return list(cls.BUILTINS.keys())
-

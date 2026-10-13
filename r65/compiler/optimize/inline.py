@@ -12,6 +12,7 @@ import copy
 from dataclasses import replace
 from typing import Dict, List, Set, Optional, Tuple
 
+from r65.compiler.codegen.type_utils import defines_in_a
 from r65.compiler.mir.nodes import (
     MIRProgram, MIRFunction, BasicBlock,
     MIRInstruction, VirtualRegister, HardwareRegister, Immediate,
@@ -21,17 +22,13 @@ from r65.compiler.mir.nodes import (
     InlineAsm, ReturnFromInterrupt, TraitDispatch,
     MemoryFill, BlockCopy, BankByte, BitTest, Rotate,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
-    SetMode, Push, Pull, SaveRegister, RestoreRegister,
+    SetMode, Push, Pull,
     OPERAND_SPECS, OperandContainer, map_operands, map_block_targets, IMMEDIATE_SAFE_SLOTS, iter_memory_operands,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
 from r65.compiler.analysis.loop_analysis import compute_block_nesting
 from r65.compiler.optimize.far_to_near import compute_auto_bank_num, effective_bank
-
-
-# Where an Immediate may replace a vreg read: see mir/nodes.py.
-_IMMEDIATE_SAFE_SLOTS = IMMEDIATE_SAFE_SLOTS
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +65,6 @@ _MIR_CYCLE_COSTS: Dict[type, int] = {
     SetMode:          2,
     Push:             3,
     Pull:             4,
-    SaveRegister:     2,
-    RestoreRegister:  2,
     MemoryFill:      20,
     BlockCopy:       20,
     Return:           0,   # eliminated by inlining
@@ -118,10 +113,7 @@ def _value_is_in_a_at_end_of(instrs: List[MIRInstruction],
     # The producing instruction must directly target the return-value
     # vreg, and must be one of the instruction kinds whose codegen
     # leaves the result in A en route to the destination slot.
-    if not isinstance(last, (BinaryOp, UnaryOp, Load, LoadIndirect,
-                              TypeConvert)):
-        return False
-    return getattr(last, 'dest', None) is vreg
+    return defines_in_a(last) and last.dest is vreg
 
 
 class InlinabilityChecker:
@@ -457,8 +449,8 @@ class InlinabilityChecker:
         # by codegen (save/restore around the JSR). Inlining removes the
         # boundary; any caller continuation that observed the preserved
         # registers across the call is now broken. The fix requires
-        # emitting equivalent SaveRegister/RestoreRegister around the
-        # inlined body — until that's implemented, refuse to inline.
+        # emitting an equivalent push/pull around the inlined body —
+        # until that's implemented, refuse to inline.
         if func.preserves_attr is not None:
             return False
 
@@ -1474,7 +1466,7 @@ class FunctionInliner:
     def _param_vreg_use_slots(self, callee: MIRFunction, vreg_id: int) -> Set[Tuple[type, str]]:
         """Return the `(instr_type, field)` READ slots in which the given callee
         vreg is used. An Immediate may be substituted for the vreg only if every
-        slot is in `_IMMEDIATE_SAFE_SLOTS`."""
+        slot is in `IMMEDIATE_SAFE_SLOTS`."""
         from r65.compiler.mir.nodes import iter_operands, OperandRole
         slots: Set[Tuple[type, str]] = set()
         for block in callee.blocks.values():
@@ -1555,7 +1547,7 @@ class FunctionInliner:
             # Condition 2 (immediates only): all use slots must accept an immediate.
             if is_imm:
                 slots = self._param_vreg_use_slots(callee, cv.id)
-                if any(slot not in _IMMEDIATE_SAFE_SLOTS for slot in slots):
+                if any(slot not in IMMEDIATE_SAFE_SLOTS for slot in slots):
                     continue
 
             substitution_map[cv.id] = a
