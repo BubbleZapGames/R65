@@ -123,7 +123,7 @@ class TestAggregateReturnRestriction:
             y: u8,
         }
 
-        #[ram]
+        #[lowram]
         static mut PLAYER: Player = Player { x: 0, y: 0 };
 
                 fn good_func() -> *Player {

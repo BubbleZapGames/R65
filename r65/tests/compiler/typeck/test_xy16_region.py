@@ -136,3 +136,14 @@ class TestXy16RegionViolations:
                     }
                 }
             ''')
+
+    def test_region_carries_into_bare_block(self):
+        with pytest.raises(TypeCheckError, match="array indexing.*8-bit index region"):
+            compile_source('''
+                static T: [u8; 4] = [1, 2, 3, 4];
+                fn nested() {
+                    STATUS.XY16 = false;
+                    { let z: u8 = T[1]; }
+                    STATUS.XY16 = true;
+                }
+            ''')

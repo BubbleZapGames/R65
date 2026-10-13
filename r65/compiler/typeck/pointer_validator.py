@@ -125,14 +125,16 @@ class PointerValidator:
 
         Far pointers (24-bit) are needed for:
         - #[ram] variables: stored in bank $7E ($7E2000-$7FFFFF)
-        - ROM variables (immutable statics) in banks other than 0
+        - ROM variables (immutable statics) outside bank 0: an explicit
+          #[bank(n)] with n != 0, or #[bank(auto)] (placed at link time)
+        - an element reached through a far pointer
 
         Near pointers (16-bit) are sufficient for:
         - #[zeropage] variables: bank 0 ($0000-$00FF)
         - #[lowram] variables: bank 0 ($0000-$1FFF)
         - #[hw] variables: typically bank 0
-        - ROM variables in bank 0: same bank as code
-        - Local variables: on stack in current bank
+        - ROM variables in bank 0
+        - Local variables: on the stack, which is always in bank 0
 
         Args:
             operand: The expression being addressed
@@ -173,7 +175,10 @@ class PointerValidator:
 
         static_decl = symbol.definition
         if not static_decl.storage_attr:
-            return False
+            # ROM: bank_attr carries the #[bank] context; a bank number of
+            # None is #[bank(auto)], which may land anywhere.
+            bank_attr = static_decl.bank_attr
+            return bank_attr is not None and bank_attr.bank_number != 0
 
         if not isinstance(static_decl.storage_attr, StorageAttribute):
             return False
@@ -185,6 +190,4 @@ class PointerValidator:
             return True
 
         # ZEROPAGE, LOWRAM, and HW are all in bank 0, so near pointers work
-        # Note: Immutable statics (ROM) don't have storage_attr, they're handled
-        # earlier by returning False when storage_attr is None.
         return False

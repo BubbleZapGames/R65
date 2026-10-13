@@ -95,3 +95,28 @@ def test_forbidden_write_flagged_in_both_free_function_and_method():
     assert len(flagged_lines) == 2, (
         f"expected both writes flagged, got lines {flagged_lines}"
     )
+
+
+DYN_SOURCE = '''
+#[hw(0x2118)]
+static mut VMDATAL: u8;
+
+struct Blitter { n: u8 }
+trait Blit { fn blit(*self); }
+impl Blit for Blitter {
+    fn blit(*self) { VMDATAL = 3; }
+}
+
+#[lowram] static mut BLIT: Blitter;
+
+#[entry]
+fn main() {
+    let b: *dyn Blit = &BLIT;
+    b.blit();
+}
+'''
+
+
+def test_dyn_dispatch_reaches_every_implementor():
+    graph = build_call_graph(_hir(DYN_SOURCE))
+    assert "Blitter__blit" in graph.reachable_from(["main"])

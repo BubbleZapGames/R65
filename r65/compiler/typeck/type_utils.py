@@ -97,7 +97,7 @@ def soa_static_of_index(expr) -> Optional[object]:
 def widen_implicitly(expr, src_type, dst_type):
     """*expr*, converted when a one-byte value is stored into a two-byte place.
 
-    `types_compatible` lets any integer flow into any other, but a u8 loaded in
+    `assignable` lets any integer flow into any other, but a u8 loaded in
     m8 and stored after `REP #$20` carries whatever B held as its high byte. So
     every assignment-shaped site wraps the value in the same `HIRTypeCast` an
     explicit `as` builds: u8 zero-extends, i8 sign-extends. A literal is only
@@ -220,80 +220,79 @@ class TypeUtils:
 
     @staticmethod
     def types_compatible(t1: TypeInfo, t2: TypeInfo) -> bool:
+        """Symmetric compatibility: a value of either type may flow into the other.
+
+        For sites with no destination: comparison operands and the arms of an
+        `if` or `loop` expression. A newtype pairs only with itself here, since
+        the transparent-in direction is a property of a write. A site that
+        stores into a place uses `assignable`.
         """
-        Check if two types are compatible for assignment.
+        if isinstance(t1, NewtypeTypeInfo) or isinstance(t2, NewtypeTypeInfo):
+            return TypeUtils.types_equal(t1, t2)
+        return TypeUtils.assignable(t1, t2) or TypeUtils.assignable(t2, t1)
 
-        This is more permissive than types_equal - it allows:
-        - Exact type matches
-        - Enum types with compatible integer types (u8)
-        - Pointer coercion: far/near and *[T; N] to *T
-        """
-        # Exact match
-        if TypeUtils.types_equal(t1, t2):
-            return True
-
-        # Pointer compatibility: allow *[T; N] to *T coercion and struct-to-trait coercion
-        if isinstance(t1, PointerTypeInfo) and isinstance(t2, PointerTypeInfo):
-            # Pointee types must be compatible (allows [T; N] -> T)
-            if TypeUtils._pointee_types_compatible(t1.pointee_type, t2.pointee_type):
-                # Allow far/near pointer widening (near *T compatible with far *T)
-                return True
-            # far/near must match for trait coercion
-            if t1.is_far == t2.is_far:
-                # *Struct -> *Trait coercion: if struct implements the trait
-                # t1 = expected (*Trait), t2 = actual (*Struct)
-                if isinstance(t1.pointee_type, TraitTypeInfo) and isinstance(t2.pointee_type, StructTypeInfo):
-                    if TypeUtils._struct_implements_trait(t2.pointee_type.name, t1.pointee_type.name):
-                        return True
-                # *dyn Sub -> *dyn Super upcast (no-op): same object + TypeId, so the
-                # bit pattern is identical. t1 = expected (*dyn Super), t2 = actual (*dyn Sub).
-                if isinstance(t1.pointee_type, TraitTypeInfo) and isinstance(t2.pointee_type, TraitTypeInfo):
-                    if TypeUtils._trait_extends(t2.pointee_type.name, t1.pointee_type.name):
-                        return True
-                # *Trait -> *Trait of the same trait is handled by types_equal above
-
-        # Integer type compatibility for comparisons
-        # Allow comparing different-size integers (e.g., u16 vs u8)
-        # This is common in 65816 code and safe for comparisons
-        if isinstance(t1, BasicTypeInfo) and isinstance(t2, BasicTypeInfo):
-            if t1.name in INTEGER_TYPE_NAMES and t2.name in INTEGER_TYPE_NAMES:
-                return True
-
-        # Enum to/from integer compatibility. An enum is an integer of its own
-        # width, so it pairs with the integer type that matches — u8 for the
-        # common case, u16 once a variant exceeds 255. Hardcoding 'u8' here left
-        # a wide enum incompatible with the only type that can hold it.
-        for enum_t, other in ((t1, t2), (t2, t1)):
-            if isinstance(enum_t, EnumTypeInfo) and isinstance(other, BasicTypeInfo):
-                if other.name in INTEGER_TYPE_NAMES:
-                    return True
-
-        return False
+    @staticmethod
+    def drops_bank_byte(src: TypeInfo, dst: TypeInfo) -> bool:
+        """True if storing `src` into `dst` would narrow a far pointer to near."""
+        return (isinstance(src, PointerTypeInfo) and isinstance(dst, PointerTypeInfo)
+                and src.is_far and not dst.is_far)
 
     @staticmethod
     def assignable(src: TypeInfo, dst: TypeInfo) -> bool:
         """Check if a value of type `src` may be stored into a place of type `dst`.
 
-        Unlike `types_compatible`, this is **directional** — which matters only for
-        newtypes, whose whole purpose is to be transparent in and opaque out:
+        The one directional rule behind every write: let, assignment, argument,
+        `self`, return and array element. It accepts:
 
-            let t: TileId = 5;   // ok    — a u8 flows into the newtype
-            let n: u8 = t;       // error — a TileId does not flow back out
+        - exact matches;
+        - any integer into any integer (narrowing truncates, as in `let`);
+        - an enum into any integer and any integer into an enum;
+        - a payload into its newtype, never a newtype back out:
 
-        `types_compatible` is written and called symmetrically (some callers pass
-        (expected, actual), others (actual, expected)), so the newtype rule cannot
-        live there without leaking the second case through.
+            let t: TileId = 5;   // ok    - a u8 flows into the newtype
+            let n: u8 = t;       // error - a TileId does not flow back out
+
+        - a pointer whose pointee matches, `*[T; N]` and `*T` coercing either
+          way; near widens to far, but far never narrows to near, which would
+          drop the bank byte (`as *T` says so explicitly);
+        - `*Struct` into `*dyn Trait` when the struct implements the trait, and
+          `*dyn Sub` into `*dyn Super` (a no-op upcast: same object, same
+          TypeId), both at the same far/near width.
         """
         if isinstance(dst, NewtypeTypeInfo) or isinstance(src, NewtypeTypeInfo):
             if TypeUtils.types_equal(src, dst):
                 return True
-            # Transparent in: the payload type (or anything assignable to it)
-            # may be written into the newtype. Never the reverse.
             if isinstance(dst, NewtypeTypeInfo) and not isinstance(src, NewtypeTypeInfo):
                 return TypeUtils.assignable(src, dst.inner)
             return False
 
-        return TypeUtils.types_compatible(src, dst)
+        if TypeUtils.types_equal(src, dst):
+            return True
+
+        if isinstance(src, PointerTypeInfo) and isinstance(dst, PointerTypeInfo):
+            if TypeUtils.drops_bank_byte(src, dst):
+                return False
+            if TypeUtils._pointee_types_compatible(src.pointee_type, dst.pointee_type):
+                return True
+            if src.is_far == dst.is_far and isinstance(dst.pointee_type, TraitTypeInfo):
+                if isinstance(src.pointee_type, StructTypeInfo):
+                    return TypeUtils._struct_implements_trait(
+                        src.pointee_type.name, dst.pointee_type.name)
+                if isinstance(src.pointee_type, TraitTypeInfo):
+                    return TypeUtils._trait_extends(
+                        src.pointee_type.name, dst.pointee_type.name)
+            return False
+
+        if TypeUtils.is_integer_type(src) and TypeUtils.is_integer_type(dst):
+            return True
+
+        # An enum is an integer, so it pairs with any integer type.
+        if isinstance(src, EnumTypeInfo) and TypeUtils.is_integer_type(dst):
+            return True
+        if isinstance(dst, EnumTypeInfo) and TypeUtils.is_integer_type(src):
+            return True
+
+        return False
 
     @staticmethod
     def _struct_implements_trait(struct_name: str, trait_name: str) -> bool:

@@ -123,7 +123,7 @@ class TestFarPointerPromotion:
 
     def test_static_assignment_far_to_near_error(self, e2e):
         """static mut PTR: *u8; PTR = &RAM_BUF; should give a type error."""
-        with pytest.raises(CompilationError, match="cannot assign far pointer to near pointer static"):
+        with pytest.raises(CompilationError, match=r"expected \*u8, found far \*\[u8; 4\]"):
             e2e.compile('''
                 #[ram]
                 static mut BUF: [u8; 4] = [0; 4];

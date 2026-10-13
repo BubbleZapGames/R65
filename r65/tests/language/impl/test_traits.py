@@ -281,6 +281,27 @@ class TestTraitTypeChecking:
         """
         build_and_check(source)  # Should not raise
 
+    def test_trait_pointer_coerces_at_argument_and_return(self):
+        """*Struct -> *dyn and *dyn Sub -> *dyn Super coerce at every write
+        site, not only at let."""
+        source = """
+            struct Player { x: u8 }
+            trait Drawable { fn draw(*self); }
+            trait Fancy: Drawable { fn shine(*self); }
+            impl Drawable for Player { fn draw(*self) { } }
+            impl Fancy for Player { fn shine(*self) { } }
+            #[zeropage]
+            static mut PLAYER: Player;
+            fn use_dyn(d: *dyn Drawable) { }
+            fn up(f: *dyn Fancy) -> *dyn Drawable { return f; }
+            fn test() {
+                use_dyn(&PLAYER);
+                let f: *dyn Fancy = &PLAYER;
+                use_dyn(up(f));
+            }
+        """
+        build_and_check(source)  # Should not raise
+
     def test_trait_pointer_wrong_struct_fails(self):
         """*Struct cannot be assigned to *Trait if struct doesn't implement trait."""
         source = """

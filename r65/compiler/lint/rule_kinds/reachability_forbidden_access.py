@@ -72,12 +72,11 @@ from r65.compiler.hir import (
     HIRFunctionDecl,
     HIRIdentifier,
     HIRLoopExpression,
-    HIRMethodCall,
     HIRStaticDecl,
     HIRWhileStmt,
 )
 from r65.compiler.hir.nodes import walk_hir
-from r65.compiler.lint.call_graph import _resolve_direct_callee
+from r65.compiler.lint.call_graph import CallGraph
 from r65.compiler.lint.rule import LintContext, LintRule
 from r65.compiler.lint.rule_kinds._common import (
     optional_addr_range,
@@ -180,7 +179,7 @@ class ReachabilityForbiddenAccess(LintRule):
             func = cg.nodes.get(entry)
             if func is None or func.body is None:
                 return set()
-            live_direct, live_indirect = _live_region_callees(func)
+            live_direct, live_indirect = _live_region_callees(func, cg)
             live_roots |= live_direct
             if live_indirect:
                 # A function-pointer call in the game loop can reach any
@@ -329,42 +328,34 @@ def _contains_loop(node) -> bool:
     return any(isinstance(n, (HIRWhileStmt, HIRLoopExpression)) for n in walk_hir(node))
 
 
-def _live_region_callees(func: HIRFunctionDecl) -> Tuple[Set[str], bool]:
-    """Direct callees invoked in ``func``'s live region, and whether that region
-    also makes an indirect (function-pointer / method) call.
+def _live_region_callees(func: HIRFunctionDecl, cg: CallGraph) -> Tuple[Set[str], bool]:
+    """Callees invoked in ``func``'s live region, and whether that region also
+    makes a call through a function pointer.
 
     The live region is everything from the first loop onward — an entry point's
     game loop and any straight-line code following it. A function with no loop
     has no init/live split, so its whole body is treated as live (conservative:
     such an entry grants no init-reachable exemption to anything).
 
-    Returns callee *names* (mangled for resolved method calls); the caller feeds
-    them to ``reachable_from`` to get everything the game loop can reach.
+    Returns callee *names*, resolved by ``cg.call_targets`` (mangled for method
+    calls, every implementor for a ``*dyn`` dispatch); the caller feeds them to
+    ``reachable_from`` to get everything the game loop can reach.
     """
     direct: Set[str] = set()
     # If there is no loop at all, everything is live from the start.
-    state = {"live": not _contains_loop(func.body), "indirect": False}
-
-    def record(call: HIRFunctionCall) -> None:
-        name = _resolve_direct_callee(getattr(call, "func", None))
-        if name is None:
-            info = getattr(call, "method_call_info", None)
-            if info:
-                name = info.get("mangled_name")
-        if name is not None:
-            direct.add(name)
-        else:
-            state["indirect"] = True
+    live = not _contains_loop(func.body)
+    indirect = False
 
     for node in walk_hir(func.body):
         if isinstance(node, (HIRWhileStmt, HIRLoopExpression)):
-            state["live"] = True
-        if state["live"]:
-            if isinstance(node, HIRFunctionCall):
-                record(node)
-            elif isinstance(node, HIRMethodCall):
-                state["indirect"] = True
-    return direct, state["indirect"]
+            live = True
+        if live and isinstance(node, HIRFunctionCall):
+            targets = cg.call_targets(node)
+            if targets is None:
+                indirect = True
+            else:
+                direct |= targets
+    return direct, indirect
 
 
 # ----------------------------------------------------------------- factory

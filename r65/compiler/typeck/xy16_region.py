@@ -87,10 +87,10 @@ class Xy16RegionChecker:
     # ------------------------------------------------------------------
 
     def _check_block(self, block: HIRBlock, *, is_function_body: bool) -> None:
-        # Each block is its own straight-line scope: region state from a parent
-        # scope does NOT carry in (the parent's check already rejected opening
-        # a region and entering nested control flow). Save/restore so sibling
-        # scopes don't interfere.
+        # The function body and each branch or loop body is its own scope:
+        # region state from the parent does not carry in (the parent already
+        # rejected entering control flow inside a region), and a region opened
+        # here must close here. Save/restore so sibling scopes don't interfere.
         saved = self.x8_start_loc
         self.x8_start_loc = None
         for stmt in block.statements:
@@ -122,8 +122,10 @@ class Xy16RegionChecker:
             return
 
         if isinstance(stmt, HIRBlock):
-            # Nested blocks are straight-line too; just recurse with shared state.
-            self._check_block(stmt, is_function_body=False)
+            # A bare `{ }` is part of the enclosing straight line: region state
+            # flows in and back out, as if its statements were written inline.
+            for inner in stmt.statements:
+                self._check_stmt(inner)
             return
 
         if in_x8:

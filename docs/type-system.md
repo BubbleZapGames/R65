@@ -394,7 +394,12 @@ a = b;          // OK: truncates (programmer's responsibility)
 b = a as u16;   // Preferred: explicit cast makes intent clear
 ```
 
-**Non-integer types** require exact type matches (pointers, structs, enums).
+An enum and an integer convert implicitly in either direction. Pointers follow
+[Pointer Type Checking](#pointer-type-checking); other types (structs, unions)
+must match exactly.
+
+The same rule governs every write: `let`, assignment, function arguments, `self`,
+`return`, and array-literal elements.
 
 ### Array Literal Element Checking
 
@@ -460,7 +465,9 @@ fn example16(input @ A: u16) {
 
 ### Function Call Type Checking
 
-**Rule**: Argument types must match parameter types exactly
+**Rule**: An argument is assigned into its parameter, so it follows the
+[assignment rule](#assignment-type-checking): any integer is accepted for an
+integer parameter, and a narrowing argument truncates
 
 ```rust
 fn add(a: u8, b: u8) -> u8 { }
@@ -468,9 +475,10 @@ fn add(a: u8, b: u8) -> u8 { }
 let x: u8 = 10;
 let y: u16 = 20;
 
-add(x, x);  // OK
-add(x, y);  // ERROR: y is u16, parameter expects u8
-add(x, y as u8);  // OK: explicit cast
+add(x, x);        // OK
+add(x, y);        // OK: y truncates to u8 (programmer's responsibility)
+add(x, y as u8);  // Preferred: explicit cast makes intent clear
+add(x, 300);      // ERROR: 300 does not fit in u8
 ```
 
 ### Return Type Checking
@@ -497,19 +505,28 @@ A multi-return signature checks each position against its own declared type. A
 
 ### Pointer Type Checking
 
-**Rule**: Pointer types must match exactly
+**Rule**: Pointee types must match, and a pointer may widen from near to far
+but never narrow from far to near, which would drop the bank byte. The other
+implicit coercions are `*[T; N]` to `*T`, `*Struct` to `*dyn Trait` when the
+struct implements the trait, and `*dyn Sub` to `*dyn Super`; the last two need
+the same far/near width on both sides.
 
 ```rust
-let p1: *u8 = 0x2000;
-let p2: *u16 = 0x3000;
-let p3: far *u8 = 0x01_2000;
+let mut p1: *u8 = 0x2000 as *u8;
+let p2: *u16 = 0x3000 as *u16;
+let p3: far *u8 = 0x01_2000 as far *u8;
+let mut p4: far *u8 = 0x01_2000 as far *u8;
 
 p1 = p2;  // ERROR: *u8 vs *u16
-p1 = p3;  // ERROR: *u8 vs far *u8
+p1 = p3;  // ERROR: far *u8 does not narrow to *u8
+p4 = p1;  // OK: near widens to far
 
 p1 = p2 as *u8;      // OK: explicit cast
 p1 = p3 as *u8;      // OK: explicit cast (drops bank)
 ```
+
+A `let` whose initializer is far takes the far type itself: `let q: *u8 = p3;`
+declares `q` as `far *u8`.
 
 ### Explicit Cast Rules (`as`)
 

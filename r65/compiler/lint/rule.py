@@ -82,7 +82,6 @@ class LintRule:
     code: str = ""
     name: str = ""
     description: str = ""
-    default_enabled: bool = True
 
     def setup(self, ctx: LintContext) -> None:
         """Called once before the HIR walk begins. Use for rule-level

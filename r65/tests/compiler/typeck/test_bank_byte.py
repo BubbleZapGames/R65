@@ -66,6 +66,18 @@ class TestBankByteTypeCheck:
         with pytest.raises(TypeCheckError, match="far pointers"):
             compile_and_type_check(source)
 
+    def test_rom_static_outside_bank_0_is_far(self):
+        """&T of a ROM static in bank 1 is a far pointer: DBR cannot reach it."""
+        source = """
+        fn test(ptr @ A: u8) {
+            let p = &T;
+            A = p.bank_byte();
+        }
+        #[bank(1)]
+        static T: [u8; 4] = [1, 2, 3, 4];
+        """
+        compile_and_type_check(source)  # Should not raise
+
     def test_bank_byte_rejects_non_pointer(self):
         """bank_byte() should reject non-pointer types."""
         source = """

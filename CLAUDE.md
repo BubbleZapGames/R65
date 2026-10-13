@@ -127,7 +127,7 @@ No built-in error handling. Use return codes, global error flags, or sentinel va
 
 ### Type Conversions
 
-All conversions require explicit `as` keyword - no implicit conversions.
+Integers convert implicitly where a value flows into a place (`let`, assignment, `return`, arguments): widening zero/sign-extends, narrowing truncates. In mixed-size expressions the narrower operand is widened. Everything else — pointers, newtypes out of their payload, enums — needs an explicit `as`, which also states intent for integer conversions.
 
 | Conversion | Behavior | Cost |
 |------------|----------|------|

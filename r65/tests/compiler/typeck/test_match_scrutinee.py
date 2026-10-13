@@ -53,6 +53,14 @@ class TestNonScalarScrutineeIsRejected:
         with pytest.raises(TypeCheckError, match="cannot match on P"):
             compile_source(src)
 
+    def test_variant_of_another_enum(self):
+        src = (HW + 'enum Dir { North, East }\nenum Col { North, East }\n'
+               '#[zeropage(0x10)]\nstatic mut FACING: Dir;\n#[entry]\n'
+               'fn main() -> ! { match FACING { Col::North => { INIDISP = 1; }'
+               ' Col::East => { } }; loop { } }')
+        with pytest.raises(TypeCheckError, match="pattern names enum 'Col'"):
+            compile_source(src)
+
     def test_hint_offers_a_way_forward(self):
         src = program('#[zeropage(0x10)]\nstatic mut P: *u8;\n', 'P')
         with pytest.raises(TypeCheckError) as exc:

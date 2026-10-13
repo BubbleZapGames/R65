@@ -445,19 +445,18 @@ class TypeChecker:
             expr: The expression being checked (for enhanced error messages)
             context: Description of the context (e.g., "let binding", "assignment")
             source_loc: Source location for error reporting
-            use_compatible: If True, use types_compatible() instead of types_equal()
+            use_compatible: If True, use assignable() instead of types_equal()
 
         Raises:
             TypeCheckError: If types don't match
         """
-        # Newtypes are transparent in and opaque out, so the check has to know
-        # which side is the destination. Every caller here is assignment-shaped
-        # (let / static / const / assignment / if-arm / break value), so
-        # `expected_type` is always the place being written.
-        if isinstance(expected_type, NewtypeTypeInfo) or isinstance(actual_type, NewtypeTypeInfo):
+        # Every caller here is assignment-shaped (let / static / const /
+        # assignment / if-arm / break value), so `expected_type` is the place
+        # being written and the directional `assignable` rule applies. A newtype
+        # takes it even without `use_compatible`: transparent in, opaque out.
+        if (use_compatible or isinstance(expected_type, NewtypeTypeInfo)
+                or isinstance(actual_type, NewtypeTypeInfo)):
             types_match = TypeUtils.assignable(actual_type, expected_type)
-        elif use_compatible:
-            types_match = TypeUtils.types_compatible(expected_type, actual_type)
         else:
             types_match = TypeUtils.types_equal(expected_type, actual_type)
 
@@ -532,6 +531,9 @@ class TypeChecker:
                 return f"use cast to convert bool to integer: (value as {expected_name})"
 
         # Pointer type hints
+        if TypeUtils.drops_bank_byte(actual_type, expected_type):
+            return (f"a far pointer does not narrow implicitly; declare the destination "
+                    f"'far {expected_type}', or cast (value as {expected_type}) to drop the bank byte")
         if isinstance(expected_type, PointerTypeInfo) and not isinstance(actual_type, PointerTypeInfo):
             return f"expected a pointer; use &value to get address"
 
@@ -915,8 +917,9 @@ class TypeChecker:
 
         Return is assignment-shaped — the value is stored into the return
         register — so the comparison is `assignable(actual, declared)`. That
-        gives newtype opacity here for free, and stops a `u16` silently
-        narrowing on the way out of a `-> u8` function.
+        gives newtype opacity and rejects a far pointer narrowing to near.
+        Integer narrowing is allowed and truncates, as in `let`
+        (docs/type-system.md, Assignment Type Checking).
 
         The declared type is also passed as context when checking each value, so
         an out-of-range literal is caught the same way it is in a `let`.
@@ -948,8 +951,11 @@ class TypeChecker:
                 f"returning '{actual}' from a function declared "
                 f"'-> {declared}'{where}",
                 source_loc=getattr(val, 'source_loc', stmt.source_loc),
-                hint=f"the return type is '{want}'; convert explicitly with "
-                     f"'as {want}' if the narrowing is intended"
+                hint=(f"a far pointer does not narrow implicitly; cast with "
+                      f"'as {want}' to drop the bank byte"
+                      if TypeUtils.drops_bank_byte(actual, want) else
+                      f"the return type is '{want}'; convert explicitly with "
+                      f"'as {want}'")
             )
 
     @staticmethod
@@ -2247,20 +2253,6 @@ class TypeChecker:
             )
             expr.expr_type = target_type
             return target_type
-
-        # Guard: assigning far *T to a static declared as near *T would silently
-        # truncate the bank byte (static is allocated as 2 bytes, not 3).
-        if (isinstance(target_type, PointerTypeInfo) and not target_type.is_far and
-                isinstance(value_type, PointerTypeInfo) and value_type.is_far):
-            if isinstance(expr.target, HIRIdentifier) and expr.target.symbol:
-                defn = expr.target.symbol.definition
-                if isinstance(defn, HIRStaticDecl):
-                    raise TypeCheckError(
-                        f"cannot assign far pointer to near pointer static '{expr.target.name}': "
-                        f"the static is allocated as 2 bytes but a far pointer requires 3 bytes",
-                        source_loc=expr.source_loc,
-                        hint=f"declare as 'static mut {expr.target.name}: far {target_type}' instead"
-                    )
 
         # Register A mode switching: the value's type drives A's mode.
         # A = u16_expr → switch to m16; A = u8_expr → switch to m8.

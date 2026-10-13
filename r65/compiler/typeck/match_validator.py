@@ -89,15 +89,20 @@ class MatchValidator:
             # All arms are diverging (return/break/continue) - match has void type
             result_type = BasicTypeInfo(name='void')
 
+        # Every arm of an enum match must name that enum. Variants are compared
+        # by discriminant, and exhaustiveness by variant name, so nothing else
+        # would notice a foreign variant: it would compile to a comparison
+        # against an unrelated discriminant. A tagged enum's scrutinee is its
+        # tag plane by now, so the enum comes from the match instead.
+        enum_name = expr.tagged_enum
+        if enum_name is None and isinstance(strip_newtype(scrutinee_type), EnumTypeInfo):
+            enum_name = strip_newtype(scrutinee_type).name
+        if enum_name is not None:
+            self._check_arms_name_enum(expr, enum_name)
+
         # Exhaustiveness check: must have wildcard/identifier pattern or cover all cases
         if not has_wildcard:
             self._check_match_exhaustiveness(expr, scrutinee_type)
-
-        # Every arm of a tagged enum match must name that enum. The scrutinee is
-        # its tag plane by now, so nothing else would notice a foreign variant —
-        # it would compile to a comparison against an unrelated discriminant.
-        if expr.tagged_enum is not None:
-            self._check_arms_name_enum(expr, expr.tagged_enum)
 
         expr.expr_type = result_type
         return result_type
@@ -238,8 +243,7 @@ class MatchValidator:
             return False
 
         elif isinstance(pattern, HIREnumPattern):
-            # Enum pattern must match enum type
-            # scrutinee should be the enum's underlying integer type
+            # Which enum it names is checked per arm by `_check_arms_name_enum`.
             return False
 
         elif isinstance(pattern, HIRWildcardPattern):

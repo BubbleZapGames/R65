@@ -103,7 +103,7 @@ class TestPointerCoercion:
         fn takes_near(p: *u8) {}
         fn test() { takes_near(0x7E1000 as far *u8); }
         '''
-        with pytest.raises(TypeCheckError, match="cannot pass far pointer"):
+        with pytest.raises(TypeCheckError, match="argument 1 to 'takes_near' has wrong type"):
             compile_source(source)
 
     def test_far_var_to_near_param_rejected(self):
@@ -115,7 +115,19 @@ class TestPointerCoercion:
             takes_near(fp);
         }
         '''
-        with pytest.raises(TypeCheckError, match="cannot pass far pointer"):
+        with pytest.raises(TypeCheckError, match="argument 1 to 'takes_near' has wrong type"):
+            compile_source(source)
+
+    def test_far_to_near_assignment_rejected(self):
+        """Assigning a far *u8 to a near *u8 local is rejected."""
+        source = '''
+        fn test() {
+            let p: far *u8 = 0x7E2000 as far *u8;
+            let mut q: *u8 = 0x2000 as *u8;
+            q = p;
+        }
+        '''
+        with pytest.raises(TypeCheckError, match=r"expected \*u8, found far \*u8"):
             compile_source(source)
 
     def test_near_to_far_param_allowed(self):
