@@ -2,7 +2,9 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test AssemblyEmitter basic functionality."""
 
-from r65.compiler.codegen.emitter import AssemblyEmitter
+import pytest
+
+from r65.compiler.codegen.emitter import AssemblyEmitter, _emit_instruction
 from r65.compiler.codegen.opcodes import Opcode
 from r65.compiler.codegen.asm_nodes import Immediate, Address
 
@@ -146,3 +148,16 @@ if __name__ == "__main__":
     print()
 
     test_data_directives()
+
+
+@pytest.mark.parametrize("opcode, address, text", [
+    (Opcode.STA_ABSOLUTE, 0x0010, "STA.w $0010"),
+    (Opcode.STA_ABSOLUTE, 0x0300, "STA $0300"),
+    (Opcode.LDA_ABSOLUTE_X, 0x0010, "LDA.w $0010,X"),
+    (Opcode.LDA_LONG, 0x000010, "LDA.l $000010"),
+    (Opcode.LDA_LONG, 0x7E2000, "LDA $7E2000"),
+])
+def test_small_address_keeps_its_mode(opcode, address, text):
+    """WLA-DX shrinks `$0010` and `$000010` to direct page, which under D = S
+    addresses the stack frame; a sized mnemonic keeps the mode."""
+    assert _emit_instruction(opcode, Address(address)) == text

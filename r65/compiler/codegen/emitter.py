@@ -208,26 +208,20 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
         case ("DP_Y", Address(value)):
             return f"{mnem} {_format_value(value)},Y"
 
-        # Absolute
-        # For labels, use .w suffix to force 16-bit addressing in WLA-DX
+        # Absolute and long. WLA-DX picks the smallest form an operand's value
+        # fits, whatever its digits: `STA $0010` and `STA $000010` both
+        # assemble as direct page, which under D = S writes the stack frame.
+        # A label, or a value that would shrink, gets the size suffix.
         case ("ABSOLUTE", Address(value)):
-            suffix = ".w" if isinstance(value, str) else ""
-            return f"{mnem}{suffix} {_format_absolute(value)}"
+            return f"{mnem}{_size_suffix(value, '.w', 0x100)} {_format_absolute(value)}"
         case ("ABSOLUTE_X", Address(value)):
-            suffix = ".w" if isinstance(value, str) else ""
-            return f"{mnem}{suffix} {_format_absolute(value)},X"
+            return f"{mnem}{_size_suffix(value, '.w', 0x100)} {_format_absolute(value)},X"
         case ("ABSOLUTE_Y", Address(value)):
-            suffix = ".w" if isinstance(value, str) else ""
-            return f"{mnem}{suffix} {_format_absolute(value)},Y"
-
-        # Long (24-bit)
-        # For labels, use .l suffix to force 24-bit addressing in WLA-DX
+            return f"{mnem}{_size_suffix(value, '.w', 0x100)} {_format_absolute(value)},Y"
         case ("LONG", Address(value)):
-            suffix = ".l" if isinstance(value, str) else ""
-            return f"{mnem}{suffix} {_format_long_value(value)}"
+            return f"{mnem}{_size_suffix(value, '.l', 0x10000)} {_format_long_value(value)}"
         case ("LONG_X", Address(value)):
-            suffix = ".l" if isinstance(value, str) else ""
-            return f"{mnem}{suffix} {_format_long_value(value)},X"
+            return f"{mnem}{_size_suffix(value, '.l', 0x10000)} {_format_long_value(value)},X"
 
         # Indirect
         case ("INDIRECT", Address(value)):
@@ -273,12 +267,14 @@ def _format_value(value: int | str) -> str:
     return f"${value:04X}"
 
 
+def _size_suffix(value: int | str, suffix: str, shrinks_below: int) -> str:
+    """The WLA-DX size suffix an operand needs to keep its addressing mode."""
+    return suffix if isinstance(value, str) or value < shrinks_below else ""
+
+
 def _format_absolute(value: int | str) -> str:
-    """Format an absolute address value, forcing 16-bit addressing for labels."""
+    """Format an absolute address value."""
     if isinstance(value, str):
-        # For WLA-DX, labels need absolute addressing but the .w suffix approach
-        # requires modifying the mnemonic, so we just return the label and ensure
-        # the opcode used is correct (ABSOLUTE mode, not DP mode)
         return value
     return f"${value:04X}"
 

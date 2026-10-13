@@ -54,7 +54,7 @@ def test_pushes_and_pulls_balance():
     pushed = 2 * len(re.findall(r"^\s*PEI ", handler, re.M))
     # Count only the pool's pops — the trailing PLA restores the saved
     # accumulator, which the CPU-pushed frame accounts for, not the pool.
-    pulled = 2 * len(re.findall(r"^\s*PLA\b\s*(?:;[^\n]*)?\n\s*STA \$00[0-9A-F]{2}\b",
+    pulled = 2 * len(re.findall(r"^\s*PLA\b\s*(?:;[^\n]*)?\n\s*STA(?:\.w)? \$00[0-9A-F]{2}\b",
                                 handler, re.M))
     assert pushed and pushed == pulled
 
@@ -71,7 +71,7 @@ def test_scratch_pairs_ride_as_words():
 def test_words_restored_to_their_own_addresses_in_reverse():
     """Pops mirror pushes: last word pushed is the first restored."""
     handler = _handler_asm()
-    restores = re.findall(r"^\s*STA \$00(0[02])\b", handler, re.M)
+    restores = re.findall(r"^\s*STA(?:\.w)? \$00(0[02])\b", handler, re.M)
     assert restores == ["02", "00"]
 
 
@@ -141,7 +141,7 @@ def test_three_byte_scratch_is_saved_whole():
     handler = _handler_of(WIDE_SOURCE)
     assert re.search(r"^\s*PEI \(\$04\)", handler, re.M)      # FP0 bytes 0-1
     assert re.search(r"^\s*LDA \$06\b", handler, re.M)         # FP0 byte 2
-    assert re.search(r"^\s*STA \$0006\b", handler, re.M)       # ...restored
+    assert re.search(r"^\s*STA(?:\.w)? \$0006\b", handler, re.M)       # ...restored
 
 
 def test_odd_width_pool_balances():
@@ -149,9 +149,9 @@ def test_odd_width_pool_balances():
     handler = _handler_of(WIDE_SOURCE)
     pushed = (2 * len(re.findall(r"^\s*PEI ", handler, re.M))
               + len(re.findall(r"^\s*PHA\b(?!.*full 16-bit)", handler, re.M)))
-    pulled = (2 * len(re.findall(r"^\s*PLA\b[^\n]*\n\s*STA \$00[0-9A-F]{2}\b(?<!\$0006)",
+    pulled = (2 * len(re.findall(r"^\s*PLA\b[^\n]*\n\s*STA(?:\.w)? \$00[0-9A-F]{2}\b(?<!\$0006)",
                                  handler, re.M))
-              + len(re.findall(r"^\s*PLA\b[^\n]*\n\s*STA \$0006\b", handler, re.M)))
+              + len(re.findall(r"^\s*PLA\b[^\n]*\n\s*STA(?:\.w)? \$0006\b", handler, re.M)))
     assert pushed == pulled == 5
 
 
