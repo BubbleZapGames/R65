@@ -20,7 +20,7 @@ from r65.compiler.mir.nodes import (
     CallBase,
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
-    ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
+    ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm, fixed_clobbers,
     TraitDispatch, BankByte, Immediate, map_operands,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
@@ -1220,6 +1220,12 @@ class StackSlotAllocator:
 
         # InlineAsm: conservatively assume it clobbers everything
         if instr_type is InlineAsm:
+            return True
+
+        # Block moves and fills, a large clone and table dispatch expand to
+        # fixed code over A, X and Y (MVN, TAX); B goes with a 16-bit A.
+        fixed = fixed_clobbers(instr)
+        if hw_reg in fixed or (hw_reg == 'B' and 'A' in fixed):
             return True
 
         if hw_reg == 'A':

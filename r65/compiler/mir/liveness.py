@@ -638,6 +638,12 @@ class ClobberRegionAnalyzer:
     uses of the register) so that we can save once before the first clobber
     and restore once before the first use.
 
+    Only calls make regions: the save and restore are emitted by call
+    selection. The other nodes that overwrite a register (`fixed_clobbers`:
+    block moves, a large clone, table dispatch; and `asm!`) never have a value
+    living in it across them - the slot allocator's coalescing checks the same
+    list and keeps such a value out of the register.
+
     This is Phase 2 optimization - V1 keeps regions within single basic blocks.
     """
 
@@ -735,7 +741,7 @@ class ClobberRegionAnalyzer:
             # is NOT a clobber — it's a definition. Without this check, the
             # region analyzer would spill/restore the register around the call,
             # clobbering the return value.
-            is_call = instr_type is Call or instr_type is TraitDispatch
+            is_call = isinstance(instr, CallBase)
             if is_call and not is_def:
                 if self._call_returns_in_hw_reg(instr, hw_reg):
                     is_def = True
