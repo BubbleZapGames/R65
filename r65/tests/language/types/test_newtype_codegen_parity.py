@@ -151,6 +151,7 @@ CASES = {
     "far function call": '''
         #[zeropage(0x10)] static mut O: {T};
         #[bank(1)] far fn compute(a: {T}) -> {T} { return a + 1; }
+        #[bank(0)]
         #[entry] fn main() { O = compute({W}(3)); }
     ''',
     "function pointer": '''

@@ -216,6 +216,7 @@ class TestNonParamDerefVetoesSetDbr:
             return *s;
         }
 
+        #[bank(0)]
         #[entry]
         fn main() { ZP1 = zp_heavy(&OTHER as far *u8); }
     '''

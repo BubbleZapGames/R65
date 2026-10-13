@@ -282,7 +282,8 @@ far fn load_level_data() { A = 0; }
 #[mode(databank=inline)]
 far fn play_sound(sound_id @ A: u8) { X = sound_id; }
 
-// --- Interrupt Handlers ---
+// --- Interrupt Handlers (vectors point into bank 0) ---
+#[bank(0)]
 #[interrupt(nmi)]
 fn vblank_handler() {
     FRAME_COUNTER = FRAME_COUNTER + 1;

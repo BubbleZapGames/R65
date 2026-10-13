@@ -849,6 +849,21 @@ class HIRBuilder:
         inline_attr = attrs['inline']
         is_entry = attrs['is_entry']
 
+        # The reset and interrupt vectors are 16-bit addresses the CPU reads
+        # in bank $00, so whatever they name must be there. A #[bank]
+        # directive carries on to every later declaration, the entry too.
+        if (is_entry or interrupt_attr) and (self.auto_bank_mode or self.current_bank != 0):
+            where = ("#[bank(auto)]" if self.auto_bank_mode
+                     else f"bank {self.current_bank}")
+            what = "entry function" if is_entry else "interrupt handler"
+            raise HIRError(
+                f"{what} '{func.name}' must be in bank 0, but an earlier #[bank] "
+                f"directive places it in {where}",
+                source_loc=func.source_loc,
+                hint="the CPU's vectors point into bank 0: declare it before the "
+                     "#[bank] directive, or put #[bank(0)] above it"
+            )
+
         # Bank comes from current bank context (set by #[bank(n)] directive)
         # In auto-bank mode, use None to indicate automatic placement
         if self.auto_bank_mode:

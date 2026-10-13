@@ -442,7 +442,7 @@ far fn sound_engine() { }            // JSL/RTL, bank 1
 far fn graphics_code() { }           // Callee manages DBR (PHB/PLB)
 ```
 
-**Bank directive**: `#[bank(n)]` sets bank context, `#[bank(auto)]` for automatic placement. Immutable statics (ROM) inherit bank.
+**Bank directive**: `#[bank(n)]` sets bank context, `#[bank(auto)]` for automatic placement. Immutable statics (ROM) inherit bank. The context carries on to every later declaration, but the `#[entry]` function and `#[interrupt]` handlers must be in bank 0 (the vectors are 16-bit): one after a `#[bank(n)]` is an error, so put `#[bank(0)]` above it.
 
 **Call rules**: Near functions can only call near functions in same bank. Far functions callable from anywhere.
 

@@ -28,6 +28,7 @@ far fn show() {
     OUT = pal[2];
 }
 
+#[bank(0)]
 #[entry]
 fn main() {
     show();
