@@ -45,3 +45,19 @@ def test_read_compare_and_restore(e2e):
         0x7E0308: [1, 0x7E, 0x00, 0x00],       # compare hit, DBR set/restored, PBR
     }))
     assert result.success, f"Failures: {result.failures} {result.error}"
+
+
+def test_b_survives_a_later_load_into_a(e2e):
+    """`B = t` then a load into A, then a read of B.
+
+    The A-to-B transfer's XBA was tracked as a swap, so the read of B saw
+    "A already holds B" and skipped its XBA: R got Q's 9, not t's 7.
+    """
+    result = e2e.run('''
+        #[zeropage(0x40)] static mut P: u8;
+        #[zeropage(0x41)] static mut Q: u8;
+        #[zeropage(0x42)] static mut R: u8;
+        #[entry]
+        fn main() -> ! { P = 5; Q = 9; let t: u8 = P + 2; B = t; A = Q; R = B; loop {} }
+    ''', ExpectedState(memory={0x7E0042: [7]}))
+    assert result.success, f"Failures: {result.failures} {result.error}"

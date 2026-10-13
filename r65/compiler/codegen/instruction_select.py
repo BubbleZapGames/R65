@@ -1581,8 +1581,11 @@ class InstructionSelector:
                 self._ensure_xba_state_swapped("Transfer B to A")
                 return
             elif src_reg == 'A' and dest_reg == 'B':
-                # A to B: XBA swaps them
-                self._emit_xba("Transfer A to B")
+                # A to B: XBA puts the value in B. That is B's home, so the
+                # state is NORMAL afterwards (a toggle would leave SWAPPED,
+                # and a later read of B would skip the XBA it needs and take
+                # A instead).
+                self._store_to_b_from_a()
                 return
             elif src_reg == 'B' and dest_reg in ('X', 'Y'):
                 # B to X/Y: Get B value, zero-extend to 16-bit, transfer to X/Y
