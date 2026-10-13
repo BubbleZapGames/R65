@@ -28,6 +28,7 @@ from r65.compiler.mir.register_tracker import RegisterAliasTracker
 from r65.compiler.mir.cfg import CFGBuilder
 from r65.compiler.typeck.processor_mode import ProcessorMode
 from r65.compiler.errors import MIRLoweringError
+from r65.compiler.typeck.type_utils import TypeUtils
 
 if TYPE_CHECKING:
     from r65.compiler.mir.builder import MIRBuilder
@@ -131,28 +132,34 @@ class StaticInitLowerer:
                 # Struct literal: create ROM data, copy to RAM only if not ROM
                 self._emit_struct_literal_init(static_decl, mem_loc, initializer, skip_copy=is_rom_storage)
 
+            elif is_rom_storage and not TypeUtils.is_aggregate_type(static_decl.var_type):
+                # A scalar in ROM: its bytes become a data label, read in
+                # place. Without one it fell to the RAM allocator and read $00.
+                self._emit_rom_scalar_init(static_decl, initializer)
+
+            elif is_rom_storage:
+                # Any other ROM initializer (`include_bytes!`) is laid out
+                # by its own path, not stored at runtime.
+                pass
+
             elif self._is_function_pointer_init(initializer):
                 # Function pointer: emit Store with FunctionPointer directly
-                # Skip for ROM statics (function pointer tables in ROM)
-                if not is_rom_storage:
-                    func_name = self._get_function_name(initializer)
-                    func_ptr = FunctionPointer(function_name=func_name)
-                    self.emit(Store(
-                        source=func_ptr,
-                        dest=mem_loc,
-                        type_info=static_decl.var_type
-                    ))
+                func_name = self._get_function_name(initializer)
+                func_ptr = FunctionPointer(function_name=func_name)
+                self.emit(Store(
+                    source=func_ptr,
+                    dest=mem_loc,
+                    type_info=static_decl.var_type
+                ))
 
             else:
                 # Scalar value: simple store
-                # Skip for ROM statics (constants in ROM don't need runtime init)
-                if not is_rom_storage:
-                    init_value = self.builder.lower_expression(initializer)
-                    self.emit(Store(
-                        source=init_value,
-                        dest=mem_loc,
-                        type_info=static_decl.var_type
-                    ))
+                init_value = self.builder.lower_expression(initializer)
+                self.emit(Store(
+                    source=init_value,
+                    dest=mem_loc,
+                    type_info=static_decl.var_type
+                ))
 
         # Emit return instruction
         self.emit(Return(values=[]))
@@ -161,6 +168,23 @@ class StaticInitLowerer:
         mir_func.exit_block_ids = self.builder.cfg_builder.find_exit_blocks()
 
         return mir_func
+
+    def _emit_rom_scalar_init(self, static_decl: HIRStaticDecl,
+                              initializer: HIRExpression):
+        """Lay out an immutable scalar static as ROM data under its label."""
+        name = static_decl.name
+        size = self.builder._get_type_size(static_decl.var_type)
+        if self._is_function_pointer_init(initializer):
+            func_name = self._get_function_name(initializer)
+            data = [SymbolByte(func_name, part)
+                    for part in ('low', 'high', 'bank')[:size]]
+        else:
+            data = self._extract_initializer_bytes(
+                initializer, size, f"initializer of static `{name}`")
+        label = f"__{name}_data"
+        self.builder._rom_data_sections.append(
+            ROMDataRef(label=label, data=data, element_size=size))
+        static_decl.symbol.rom_label = label
 
     def _is_function_pointer_init(self, initializer: HIRExpression) -> bool:
         """Check if initializer is a function pointer (identifier or address-of function)."""

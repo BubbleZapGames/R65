@@ -9,7 +9,7 @@ functions are always kept.
 
 from typing import Set, List
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, Call, TraitDispatch, Move, FunctionPointer,
+    MIRProgram, MIRFunction, Call, TraitDispatch, Move, FunctionPointer, SymbolByte,
 )
 
 
@@ -63,6 +63,13 @@ class DeadFunctionEliminator:
                 for impl_info in trait_info.get('implementors', []):
                     for mangled_name in impl_info.get('mangled', []):
                         roots.add(mangled_name)
+
+        # A function whose address is ROM data - a `fn` static - is reached
+        # through it, by code this pass cannot follow.
+        for rom_data in mir_program.rom_data_sections:
+            for byte in rom_data.data:
+                if isinstance(byte, SymbolByte) and byte.label in func_map:
+                    roots.add(byte.label)
 
         # Build call graph
         call_graph = self._build_call_graph(mir_program.functions)
