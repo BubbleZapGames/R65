@@ -82,8 +82,10 @@ class ProcessorMode:
         elif reg_name == 'Y':
             return self.get_y_type()
         elif reg_name == 'B':
-            # B register is always u8 - it's the high byte of the 16-bit accumulator
-            # Programmer is responsible for ensuring proper mode via STATUS.A16 = false
+            # B is the accumulator's high byte, u8 in either mode. In m16 it is
+            # the top half of whatever A holds; codegen reaches it with XBA in
+            # m8, and a value live across that access is never kept in A
+            # (StackSlotAllocator._clobbers_a), so it waits in its stack slot.
             return BasicTypeInfo("u8")
         elif reg_name == 'STATUS':
             return BasicTypeInfo("u8")

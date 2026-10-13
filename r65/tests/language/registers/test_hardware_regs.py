@@ -2,7 +2,10 @@
 """Tests for hardware registers: A, X, Y, STATUS, D, DBR, PBR, S, B."""
 
 from r65.compiler.frontend import ast
-from r65.tests.language.common import parse_function, build_hir
+import pytest
+
+from r65.compiler.errors import TypeCheckError
+from r65.tests.language.common import parse_function, build_hir, type_check
 
 
 class TestRegisterAccess:
@@ -71,3 +74,12 @@ class TestRegisterHIR:
         """)
         func = hir_prog.functions[0]
         assert len(func.body.statements) >= 3
+
+
+class TestAccumulatorHalves:
+    """A and B are the two halves of one accumulator."""
+
+    def test_a_from_b_is_rejected(self):
+        # XBA is the only route from B to A, and it moves A into B.
+        with pytest.raises(TypeCheckError, match=r"`A = B` is not supported"):
+            type_check("fn f() { B = 5; A = B; }")

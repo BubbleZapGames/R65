@@ -8,6 +8,8 @@ had no route, `A = D;` and `D = W;` recursed forever, and `D = saved;`
 had no load.
 """
 
+import pytest
+
 from r65.tests.e2e import ExpectedState
 
 
@@ -60,4 +62,22 @@ def test_b_survives_a_later_load_into_a(e2e):
         #[entry]
         fn main() -> ! { P = 5; Q = 9; let t: u8 = P + 2; B = t; A = Q; R = B; loop {} }
     ''', ExpectedState(memory={0x7E0042: [7]}))
+    assert result.success, f"Failures: {result.failures} {result.error}"
+
+
+@pytest.mark.parametrize("opt", ["-O0", "-O1", "-O2"])
+def test_b_in_m16_keeps_the_live_accumulator_value(e2e, opt):
+    """In m16, B is the high byte of A: reaching it with XBA must not cost the
+    16-bit value still live in A, which waits on the stack instead."""
+    result = e2e.run('''
+        #[lowram(0x0300)] static mut HI: u8;
+        #[lowram(0x0302)] static mut OUT: [u16; 2];
+        #[inline(never)]
+        fn read_hi(v @ A: u16) -> u16 { let z: u8 = B; HI = z; return v; }
+        #[inline(never)]
+        fn write_hi(v @ A: u16) -> u16 { B = 0x56; return v + 1; }
+        #[entry]
+        fn main() -> ! { OUT[0] = read_hi(0x1234); OUT[1] = write_hi(0x1234); loop {} }
+    ''', ExpectedState(memory={0x7E0300: [0x12], 0x7E0302: [0x34, 0x12, 0x35, 0x12]}),
+        extra_args=[opt])
     assert result.success, f"Failures: {result.failures} {result.error}"

@@ -293,6 +293,7 @@ B is always 8-bit, so transfers to/from 16-bit X/Y require zero-extension:
 | `X = B` | `XBA; REP; AND #$00FF; TAX; SEP; XBA` |
 | `B = X` | `PHA; REP; TXA; SEP; XBA; PLA` |
 | `Y = B` | `XBA; REP; AND #$00FF; TAY; SEP; XBA` |
+| `A = B` | compile error (XBA would overwrite B) |
 | `B = Y` | `PHA; REP; TYA; SEP; XBA; PLA` |
 
 **Example `X = B`**:
@@ -471,21 +472,28 @@ fn bcd_add_16bit(a: u16, b: u16) -> u16 {
 
 ## Mode and B Register
 
-B register is only available in m8 mode (the default). Functions using B should not have a `@ A: u16` parameter:
+B is a `u8` in both modes. In m8 it is the hidden high byte of the
+accumulator; in m16 it is the high byte of whatever A holds. Either way the
+compiler reaches it with XBA in m8, so a value that is still live across a
+B access is not kept in A: it waits in its stack slot and is reloaded after.
 
 ```rust
-// m8 mode (default) - B is available
+// m8 mode (default)
 fn safe_b_function(value @ B: u8) -> u8 {
     B = B & 0xF0;
     return B;
 }
 
-// m16 mode (due to @ A: u16) - B is NOT available
+// m16 mode (due to @ A: u16) - B still works; `value` is saved first
 fn wide_function(value @ A: u16) -> u16 {
-    // B = 0x12;  // ERROR: B not available in m16 mode
-    return value + 1;
+    B = 0x12;
+    return value + 1;   // still the argument, not 0x12xx
 }
 ```
+
+`A = B` is a compile error: the only way to move B into A is XBA, which also
+moves A into B, so B's value cannot survive. Copy through a variable
+(`let hi: u8 = B; A = hi;`) or write `asm!("XBA")` when a swap is what you mean.
 
 The compiler automatically handles mode transitions when calling between m8 and m16 functions.
 

@@ -39,7 +39,7 @@ All 65816 processor registers are exposed as global variables:
 A: u8       // Accumulator (u16 when u16 @ A parameter)
 X: u16      // X index register (always 16-bit in R65)
 Y: u16      // Y index register (always 16-bit in R65)
-B: u8       // Accumulator high byte (m8 mode only)
+B: u8       // Accumulator high byte
 STATUS: u8  // Processor status flags (NVMXDIZC)
 D: u16      // Direct Page register
 DBR: u8     // Data Bank Register
@@ -47,7 +47,7 @@ PBR: u8     // Program Bank Register (read-only)
 S: u16      // Stack Pointer
 ```
 
-**Rules**: All mutable except `PBR` (read-only). `A` type depends on function parameter (u8 default, u16 if `@ A: u16`). `X` and `Y` are always u16 (x16 mode). `B` only available in m8 mode. Modifying `D`, `DBR`, `S` without restoration causes bugs.
+**Rules**: All mutable except `PBR` (read-only). `A` type depends on function parameter (u8 default, u16 if `@ A: u16`). `X` and `Y` are always u16 (x16 mode). `B` is u8 in both modes; in m16 it is the high byte of A, and a 16-bit value live across a B access waits on the stack. `A = B` is a compile error (the XBA would overwrite B). Modifying `D`, `DBR`, `S` without restoration causes bugs.
 
 *(See [docs/b-register.md](docs/b-register.md) and [docs/status-flags.md](docs/status-flags.md) for details)*
 
@@ -609,7 +609,7 @@ For ROM tests as ordinary Python tests, use Mesen-GDB's `mesen_gdb.rom_driver` (
 ## Key Technical Decisions
 
 1. **No `unsafe`**: All code has direct hardware access
-2. **All registers exposed**: A, X, Y, STATUS, D, DBR, S mutable; PBR read-only; B in m8 mode only
+2. **All registers exposed**: A, X, Y, STATUS, D, DBR, S mutable; PBR read-only; B in both modes (`A = B` rejected)
 3. **Hardware-aware operators**: `*`, `/`, `<<`, `>>` restricted; expensive ops use functions
 4. **Automatic volatile**: `#[hw]` variables always access hardware
 5. **No bounds checking**: Programmer responsible for index safety

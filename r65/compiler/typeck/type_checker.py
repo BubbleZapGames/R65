@@ -1240,28 +1240,11 @@ class TypeChecker:
                 reg_type = mode.get_register_type(expr.name)
 
             if reg_type is None:
-                # Special error message for B register in wrong mode
-                if expr.name == 'B':
-                    from r65.compiler.typeck.processor_mode import ModeState
-                    mode = self._get_mode_at(expr)
-                    if mode.m_mode == ModeState.M16:
-                        raise TypeCheckError(
-                            f"B register only available in m8 mode (function has m16)",
-                            source_loc=expr.source_loc,
-                            hint="B is the high byte of 16-bit accumulator, only accessible in 8-bit mode"
-                        )
-                    else:
-                        raise TypeCheckError(
-                            f"B register only available in m8 mode",
-                            source_loc=expr.source_loc,
-                            hint="B is accessible when the function has no u16 @ A parameter (m8 mode)"
-                        )
-                else:
-                    raise TypeCheckError(
-                        f"cannot determine type of register {expr.name} in unknown mode",
-                        source_loc=expr.source_loc,
-                        hint="mode is inferred from parameter types: u16 @ A means m16, otherwise m8"
-                    )
+                raise TypeCheckError(
+                    f"cannot determine type of register {expr.name} in unknown mode",
+                    source_loc=expr.source_loc,
+                    hint="mode is inferred from parameter types: u16 @ A means m16, otherwise m8"
+                )
 
             expr.expr_type = reg_type
             return reg_type
@@ -2175,6 +2158,17 @@ class TypeChecker:
 
         # Mutability check: reject assignments to immutable variables
         self._check_target_mutable(expr.target, expr.source_loc)
+
+        # A and B are the two halves of one accumulator: the only way to move
+        # B into A is XBA, which also moves A into B, so `A = B` cannot keep
+        # B's value.
+        if (isinstance(expr.target, HIRRegister) and expr.target.name == 'A'
+                and isinstance(expr.value, HIRRegister) and expr.value.name == 'B'):
+            raise TypeCheckError(
+                "`A = B` is not supported: the XBA it needs also overwrites B",
+                source_loc=expr.source_loc,
+                hint="copy through a variable (`let hi: u8 = B; A = hi;`), or "
+                     "swap the two halves explicitly with asm!(\"XBA\")")
 
         target_type = self.check_expression(expr.target)
 
