@@ -45,6 +45,7 @@ Notes on `.ACCU`:
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
@@ -204,34 +205,6 @@ def _required_mode_of(node) -> Mode:
     return None
 
 
-def _transfer(in_bits: int, node, *, flag: int = M_FLAG) -> int:
-    """Compute the OUT mode bitmask for a node given its IN bitmask.
-
-    `flag` selects which P-flag to track (M_FLAG for the accumulator,
-    X_FLAG for index registers). The transfer function is identical
-    for both — only the bit being inspected on SEP/REP differs.
-    """
-    from r65.compiler.codegen.asm_nodes import Instruction, Immediate
-
-    if not isinstance(node, Instruction):
-        # Labels, directives, comments — pass mode through unchanged.
-        return in_bits
-
-    op = node.opcode
-    if op == Opcode.SEP_IMMEDIATE:
-        if isinstance(node.operand, Immediate) and isinstance(node.operand.value, int):
-            if node.operand.value & flag:
-                return _BIT_M8
-    elif op == Opcode.REP_IMMEDIATE:
-        if isinstance(node.operand, Immediate) and isinstance(node.operand.value, int):
-            if node.operand.value & flag:
-                return _BIT_M16
-    elif op in (Opcode.PLP, Opcode.RTI):
-        return _BIT_UNK
-
-    return in_bits
-
-
 # Every 65816 mnemonic the compiler knows. An inline-asm line starting
 # with one of these (other than the mode-setting ones handled first)
 # leaves the m/x flags alone.
@@ -239,6 +212,7 @@ _MNEMONICS = frozenset(op.name.split('_')[0] for op in Opcode)
 _IMMEDIATE_RE = re.compile(r'#\s*(\$[0-9A-F]+|%[01]+|[0-9]+)\b')
 
 
+@functools.lru_cache(maxsize=4096)
 def _rawasm_effect(text: str):
     """The (m, x) lattice masks a raw asm line leaves, None for each flag
     it does not touch, or None if it touches neither.
@@ -281,8 +255,7 @@ def _rawasm_effect(text: str):
 
 def _modeled_effect(node, call_exit_modes: Dict[str, Mode]):
     """The (m, x) masks `node` leaves under the modeled-calls analysis
-    (None per flag for the ordinary transfer), or None to use
-    `_transfer` for both."""
+    (None per flag for the ordinary transfer), or None for neither."""
     from r65.compiler.codegen.asm_nodes import Instruction, RawAsm
 
     if isinstance(node, RawAsm):
@@ -299,32 +272,6 @@ def _modeled_effect(node, call_exit_modes: Dict[str, Mode]):
     if node.opcode == Opcode.XCE:
         return (_BIT_UNK, _BIT_UNK)
     return None
-
-
-def _branch_target(node) -> Optional[str]:
-    """If node is a branch/jump with a label target, return the label name."""
-    from r65.compiler.codegen.asm_nodes import Instruction, Address
-
-    if not isinstance(node, Instruction):
-        return None
-    if node.opcode not in BRANCH_OPCODES and node.opcode not in JUMP_OPCODES:
-        return None
-    operand = node.operand
-    if operand is None:
-        return None
-    val = getattr(operand, 'value', None)
-    if isinstance(val, str):
-        return val
-    return None
-
-
-def _is_unconditional_terminator(node) -> bool:
-    """True if control cannot fall through past this node to nodes[i+1]."""
-    from r65.compiler.codegen.asm_nodes import Instruction
-
-    if not isinstance(node, Instruction):
-        return False
-    return node.opcode in _UNCONDITIONAL_TRANSFER
 
 
 def compute_modes(
@@ -367,7 +314,7 @@ def compute_modes(
         ModeInfo. Every reachable node has a non-empty ``incoming`` set;
         unreachable nodes have an empty set (use ``is_reachable``).
     """
-    from r65.compiler.codegen.asm_nodes import Label, Instruction
+    from r65.compiler.codegen.asm_nodes import Immediate, Instruction, Label, RawAsm
 
     entry_modes = entry_modes or {}
     entry_x_modes = entry_x_modes or {}
@@ -378,32 +325,66 @@ def compute_modes(
     info.required = [None] * n
     info.pred_count = [0] * n
 
-    # Pre-pass: index labels and stash required-mode per instruction.
+    # Pre-pass: resolve each node once. `fixed_m[i]` / `fixed_x[i]` is the
+    # mask the node leaves when reached (-1: passes its input through),
+    # `falls[i]` whether control falls through to i+1, and `target[i]` the
+    # label a branch/jump names. Every transfer is the identity or a
+    # constant, so the loop below is pure mask arithmetic.
+    required = info.required
+    fixed_m = [-1] * n
+    fixed_x = [-1] * n
+    falls = [True] * n
+    target_name: List[Optional[str]] = [None] * n
     label_idx: Dict[str, int] = {}
+    modeled = call_exit_modes is not None
     for i, node in enumerate(nodes):
-        if isinstance(node, Label):
+        cls = type(node)
+        if cls is Instruction:
+            op = node.opcode
+            operand = node.operand
+            if op in _UNCONDITIONAL_TRANSFER:
+                falls[i] = False
+            if op in M16_IMMEDIATE_OPCODES:
+                required[i] = _required_mode_of(node)
+            elif op == Opcode.SEP_IMMEDIATE or op == Opcode.REP_IMMEDIATE:
+                if isinstance(operand, Immediate) and isinstance(operand.value, int):
+                    bits = _BIT_M8 if op == Opcode.SEP_IMMEDIATE else _BIT_M16
+                    if operand.value & M_FLAG:
+                        fixed_m[i] = bits
+                    if operand.value & X_FLAG:
+                        fixed_x[i] = bits
+            elif op == Opcode.PLP or op == Opcode.RTI:
+                fixed_m[i] = fixed_x[i] = _BIT_UNK
+            if op in BRANCH_OPCODES or op in JUMP_OPCODES:
+                value = getattr(operand, 'value', None) if operand is not None else None
+                if isinstance(value, str):
+                    target_name[i] = value
+        elif cls is Label:
             # First occurrence wins if (somehow) duplicated.
             label_idx.setdefault(node.name, i)
-        info.required[i] = _required_mode_of(node)
-
-    # Nodes whose effect the plain transfer does not model (calls, XCE,
-    # inline asm), resolved once up front.
-    effects: Optional[List] = None
-    if call_exit_modes is not None:
-        effects = [_modeled_effect(node, call_exit_modes) for node in nodes]
+        elif cls is not RawAsm:
+            continue
+        if modeled:
+            # Calls, XCE and inline asm, which the plain analysis passes
+            # straight through.
+            effect = _modeled_effect(node, call_exit_modes)
+            if effect is not None:
+                if effect[0] is not None:
+                    fixed_m[i] = effect[0]
+                if effect[1] is not None:
+                    fixed_x[i] = effect[1]
+    target = [label_idx.get(name, -1) if name is not None else -1 for name in target_name]
 
     # Count physical predecessors (fall-through + branch/jump sources).
     # The fall-through count is fixed by source order: every node has at
     # most one fall-through predecessor (the previous index), unless that
     # previous node unconditionally transfers control elsewhere.
-    for i in range(1, n):
-        prev = nodes[i - 1]
-        if not _is_unconditional_terminator(prev):
-            info.pred_count[i] += 1
-    for i, node in enumerate(nodes):
-        target = _branch_target(node)
-        if target is not None and target in label_idx:
-            info.pred_count[label_idx[target]] += 1
+    pred_count = info.pred_count
+    for i in range(n):
+        if falls[i] and i + 1 < n:
+            pred_count[i + 1] += 1
+        if target[i] >= 0:
+            pred_count[target[i]] += 1
 
     # Seed: node 0 starts the program. Function entry labels (and their
     # explicit declared modes) seed their respective indices too. We
@@ -419,81 +400,73 @@ def compute_modes(
     # mode. Without this, a function with a `.ACCU 8` anchor whose
     # textual predecessor is a RawAsm header (mode unknown) would have
     # incoming = {None, 8}, and unique_mode_at would yield None.
-    frozen_m: Set[int] = set()
-    frozen_x: Set[int] = set()
+    frozen_m = bytearray(n)
+    frozen_x = bytearray(n)
     if n > 0 and start_bits is not None:
         info.incoming[0], info.x_incoming[0] = start_bits
     elif n > 0:
         info.incoming[0] |= _mode_bit(entry_modes.get('__entry__', None))
         if '__entry__' in entry_x_modes:
             info.x_incoming[0] |= _mode_bit(entry_x_modes['__entry__'])
-            frozen_x.add(0)
+            frozen_x[0] = 1
     for label, mode in entry_modes.items():
         if label in label_idx:
             idx = label_idx[label]
             info.incoming[idx] = _mode_bit(mode)
-            frozen_m.add(idx)
+            frozen_m[idx] = 1
     for label, mode in entry_x_modes.items():
         if label in label_idx:
             idx = label_idx[label]
             info.x_incoming[idx] = _mode_bit(mode)
-            frozen_x.add(idx)
+            frozen_x[idx] = 1
 
-    # Worklist iteration. Lattice height is small (≤3 distinct modes in any
-    # incoming mask), so this converges in O(n) iterations of the full pass
-    # for any realistic program. Modes are 3-bit masks: union is `|`, the
-    # "already a subset" test is `cur | out == cur` (i.e. union doesn't grow).
+    # Propagate to the least fixpoint. Each transfer is the identity or a
+    # constant, both distributive over union, so the fixpoint does not
+    # depend on visiting order: sweep forward over the nodes whose input
+    # grew, and re-sweep only from the earliest one a back-edge grew.
+    # Modes are 3-bit masks; union is `|`.
     inc = info.incoming
     xinc = info.x_incoming
-    changed = True
-    while changed:
-        changed = False
-        for i in range(n):
+    dirty = bytearray(1 if (inc[i] or xinc[i]) else 0 for i in range(n))
+    start = 0
+    while start < n:
+        rewind = n
+        for i in range(start, n):
+            if not dirty[i]:
+                continue
+            dirty[i] = 0
             in_bits = inc[i]
             in_x_bits = xinc[i]
-            if not in_bits and not in_x_bits:
-                continue  # unreachable so far — don't propagate ⊥
-            node = nodes[i]
-            out_bits = _transfer(in_bits, node, flag=M_FLAG) if in_bits else 0
-            out_x_bits = _transfer(in_x_bits, node, flag=X_FLAG) if in_x_bits else 0
-            effect = effects[i] if effects is not None else None
-            if effect is not None:
-                if in_bits and effect[0] is not None:
-                    out_bits = effect[0]
-                if in_x_bits and effect[1] is not None:
-                    out_x_bits = effect[1]
+            fm = fixed_m[i]
+            fx = fixed_x[i]
+            out_bits = (in_bits if fm < 0 else fm) if in_bits else 0
+            out_x_bits = (in_x_bits if fx < 0 else fx) if in_x_bits else 0
 
-            # Fall-through successor (next index), unless this node
-            # unconditionally transfers control elsewhere. Frozen
-            # successors (seeded function/block entries) reject
-            # incoming propagation — their mode is authoritative.
-            if not _is_unconditional_terminator(node) and i + 1 < n:
+            # Fall-through successor, then branch/jump successor. Frozen
+            # successors (seeded function/block entries) reject incoming
+            # propagation — their mode is authoritative.
+            if falls[i] and i + 1 < n:
                 nxt = i + 1
-                if out_bits and nxt not in frozen_m:
-                    merged = inc[nxt] | out_bits
-                    if merged != inc[nxt]:
-                        inc[nxt] = merged
-                        changed = True
-                if out_x_bits and nxt not in frozen_x:
-                    merged = xinc[nxt] | out_x_bits
-                    if merged != xinc[nxt]:
-                        xinc[nxt] = merged
-                        changed = True
-
-            # Branch / jump successor.
-            target = _branch_target(node)
-            if target is not None and target in label_idx:
-                tgt_idx = label_idx[target]
-                if out_bits and tgt_idx not in frozen_m:
-                    merged = inc[tgt_idx] | out_bits
-                    if merged != inc[tgt_idx]:
-                        inc[tgt_idx] = merged
-                        changed = True
-                if out_x_bits and tgt_idx not in frozen_x:
-                    merged = xinc[tgt_idx] | out_x_bits
-                    if merged != xinc[tgt_idx]:
-                        xinc[tgt_idx] = merged
-                        changed = True
+                if out_bits and not frozen_m[nxt] and inc[nxt] | out_bits != inc[nxt]:
+                    inc[nxt] |= out_bits
+                    dirty[nxt] = 1
+                if out_x_bits and not frozen_x[nxt] and xinc[nxt] | out_x_bits != xinc[nxt]:
+                    xinc[nxt] |= out_x_bits
+                    dirty[nxt] = 1
+            tgt = target[i]
+            if tgt >= 0:
+                grew = False
+                if out_bits and not frozen_m[tgt] and inc[tgt] | out_bits != inc[tgt]:
+                    inc[tgt] |= out_bits
+                    grew = True
+                if out_x_bits and not frozen_x[tgt] and xinc[tgt] | out_x_bits != xinc[tgt]:
+                    xinc[tgt] |= out_x_bits
+                    grew = True
+                if grew:
+                    dirty[tgt] = 1
+                    if tgt <= i and tgt < rewind:
+                        rewind = tgt
+        start = rewind
 
     return info
 
