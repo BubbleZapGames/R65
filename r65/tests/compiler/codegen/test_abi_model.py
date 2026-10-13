@@ -164,6 +164,10 @@ class _MockSelector:
     def emit_scratch_param_argument(self, arg, arg_loc):
         self.calls.append(('scratch_param', arg.scratch_addr))
 
+    def emit_argument_setup(self, arg, arg_loc):
+        from r65.compiler.codegen.call_select import CallInstructionSelector
+        CallInstructionSelector.emit_argument_setup(self, arg, arg_loc)
+
     def load_y_with_self(self, arg, stack_bytes_pushed):
         self.calls.append(('load_y_self',))
 

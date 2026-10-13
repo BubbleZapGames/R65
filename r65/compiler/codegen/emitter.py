@@ -9,6 +9,7 @@ Builds structured AsmNode objects which are converted to assembly text
 via emit_nodes().
 """
 
+from contextlib import contextmanager
 from typing import List, Optional, TYPE_CHECKING
 from datetime import datetime
 
@@ -19,7 +20,7 @@ from r65.compiler.errors import InternalCompilerError
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, addressing_mode, BRANCH_OPCODES, MEMORY_WRITE_OPCODES,
     ACCUMULATOR_OPCODES, NZ_PRESERVING_MNEMONICS, nz_register, registers_written,
-    rep_sep_preserves_nz,
+    rep_sep_preserves_nz, REGISTER_WRITES,
 )
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Comment, Directive, ModeChange, BlankLine,
@@ -165,6 +166,10 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
                     return f"{mnem} {operand}"
         return mnem
 
+    # JMP_LONG (0x5C) is written JML, as the hand-written stubs spell it.
+    if opcode == Opcode.JMP_LONG and isinstance(operand, Address):
+        return f"JML {_format_long_value(operand.value)}"
+
     # JMP_INDIRECT_LONG (0xDC) is JML [addr] in WLA-DX. The mnemonic()
     # helper strips the suffix and yields "JMP", but WLA-DX rejects
     # `JMP [addr]` for 0xDC — it requires the explicit "JML" form.
@@ -290,6 +295,70 @@ def _format_long_value(value: int | str) -> str:
 
 
 # =============================================================================
+# Emitted-code effects
+# =============================================================================
+
+# Control leaves the emitted code: whatever runs there may write anything.
+_LEAVES = frozenset({'JSR', 'JSL', 'BRK', 'COP', 'WDM'})
+
+
+def written_registers(nodes) -> 'set | None':
+    """The registers among A, X, Y, D, DBR the emitted nodes write.
+
+    None means all of them (the code calls out). Raw text is read by its
+    first word, so directives and labels write nothing.
+    """
+    written = set()
+    for node in nodes:
+        if isinstance(node, Instruction):
+            mn = mnemonic(node.opcode)
+            accumulator = addressing_mode(node.opcode) is None
+        elif isinstance(node, RawAsm):
+            parts = node.text.split(';', 1)[0].split(None, 1)
+            if not parts:
+                continue
+            mn = parts[0].upper()
+            accumulator = len(parts) == 1 or parts[1].strip().upper() == 'A'
+        else:
+            continue
+        if mn in _LEAVES:
+            return None
+        written |= REGISTER_WRITES.get(mn, frozenset())
+        if accumulator and Opcode.__members__.get(mn) in ACCUMULATOR_OPCODES:
+            written.add('A')
+    return written
+
+
+def _snapshot(obj) -> dict:
+    """*obj*'s attributes, with its mutable containers copied."""
+    names = (vars(obj) if hasattr(obj, '__dict__')
+             else {n: None for n in type(obj).__slots__})
+    return {n: (v.copy() if isinstance(v, (list, set, dict)) else v)
+            for n in names if n != 'nodes' and hasattr(obj, n)
+            for v in (getattr(obj, n),)}
+
+
+def _restore(obj, snapshot: dict):
+    if hasattr(obj, '__dict__'):
+        for n in [n for n in vars(obj) if n != 'nodes' and n not in snapshot]:
+            delattr(obj, n)
+    for n, v in snapshot.items():
+        setattr(obj, n, v)
+
+
+class Capture:
+    """The nodes emitted so far inside an `AssemblyEmitter.capture()` block."""
+
+    def __init__(self, emitter: 'AssemblyEmitter', start: int):
+        self._emitter = emitter
+        self._start = start
+
+    @property
+    def nodes(self) -> list:
+        return self._emitter.nodes[self._start:]
+
+
+# =============================================================================
 # Assembly Emitter Class
 # =============================================================================
 
@@ -353,6 +422,33 @@ class AssemblyEmitter:
         self.data_bank: int = 0x00
         # The 65816 bank of the code being emitted (`.BASE` + `.BANK`).
         self.code_bank: int = 0x00
+
+    # ========================================================================
+    # Trial Emission
+    # ========================================================================
+
+    @contextmanager
+    def capture(self, *trackers):
+        """Emit on trial: inside the block code is emitted as usual, and on
+        exit it is gone as if it never was.
+
+        Yields a `Capture` whose `nodes` are what the block emitted. On exit
+        the node list is cut back to where it was, which takes the labels,
+        mode directives and source locations (the debug info) with it, and
+        every tracked attribute of the emitter - accumulator and index mode,
+        N/Z validity, X = Y, the A/X stack slots and stack depth, used banks -
+        is put back. *trackers* are other objects whose state the emission
+        moves (XBA state, the stack displacement tracker); their attributes
+        are put back too.
+        """
+        start = len(self.nodes)
+        saved = [(obj, _snapshot(obj)) for obj in (self, *trackers)]
+        try:
+            yield Capture(self, start)
+        finally:
+            del self.nodes[start:]
+            for obj, snapshot in saved:
+                _restore(obj, snapshot)
 
     # ========================================================================
     # Low-Level Node Emission

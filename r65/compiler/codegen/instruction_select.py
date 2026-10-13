@@ -6,6 +6,7 @@ Converts MIR instructions to WLA-DX assembly mnemonics with proper
 addressing modes and register usage.
 """
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -389,6 +390,22 @@ class InstructionSelector:
         """Format a block label with function-scoped naming."""
         func_name = self.current_function.name if self.current_function else ""
         return f"{func_name}__L{block_id}"
+
+    @contextmanager
+    def trial_emission(self):
+        """Emit on trial (see `AssemblyEmitter.capture`), also putting back
+        the selector state emission moves: the XBA state, the call
+        selector's region and stack-displacement tracking, and the label
+        counter.
+        """
+        label_counter = InstructionSelector._global_label_counter
+        region_state = self.call_selector.region_state
+        try:
+            with self.emitter.capture(self.xba_manager, region_state,
+                                      region_state.stack_tracker) as trial:
+                yield trial
+        finally:
+            InstructionSelector._global_label_counter = label_counter
 
     def _get_unique_label(self) -> str:
         """Generate a unique label for inline branching."""

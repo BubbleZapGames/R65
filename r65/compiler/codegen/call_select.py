@@ -1247,61 +1247,32 @@ class CallInstructionSelector(BaseSelector):
         else:
             self._emit_memory_to_register(arg_loc, target_reg)
 
+    def emit_argument_setup(self, arg, arg_loc):
+        """Emit what puts one non-stack argument in place.
+
+        A VARIABLE argument needs nothing: CallLowerer's MIR Store, sized by
+        the parameter type, wrote the variable before the Call. A SELF_Y
+        argument is loaded after every other one (`_emit_self_y`).
+        """
+        if arg.mechanism == ArgumentMechanism.REGISTER:
+            self.emit_register_argument(arg, arg_loc)
+        elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
+            self.emit_scratch_param_argument(arg, arg_loc)
+
     def arg_setup_clobbers_a(self, arg, arg_loc) -> bool:
         """Does emitting this argument destroy whatever is currently in A?
 
-        Mirrors the emitters below branch for branch. It lives here, next to
-        them, because it is a fact about the code they emit — the ABI models
-        that consume it are policy and should not have to know how a B argument
-        reaches B.
-
-        Erring towards True only costs a redundant save; erring towards False
-        silently miscompiles, so unmodelled shapes must answer True.
+        Answered by emitting the setup on trial and reading what the emitted
+        instructions write, so it cannot disagree with the emission. `XBA`
+        counts: it is a swap, so even an A-resident source is destroyed when
+        the old B lands in A.
         """
-        from r65.compiler.mir.nodes import ArgumentMechanism
+        from r65.compiler.codegen.emitter import written_registers
 
-        if arg.mechanism == ArgumentMechanism.REGISTER:
-            target = (arg.location.name if hasattr(arg.location, 'name')
-                      else str(arg.location))
-
-            # emit_register_argument returns immediately when the value is
-            # already in its target register.
-            if arg_loc.is_hw(target):
-                return False
-
-            # Every branch of _emit_b_register_argument routes through A and
-            # ends in XBA. Note XBA is a *swap*: even an A-resident source is
-            # destroyed, because the old B lands in A.
-            if target == 'B':
-                return True
-
-            if target == 'A':
-                return True          # not already in A, so the load writes it
-
-            # X / Y. LDX/LDY #imm and TAX/TYX leave A alone; a stack source has
-            # no LDX sr,S so it becomes LDA + TAX/TAY.
-            if isinstance(arg.value, MIRImmediate):
-                return False
-            if arg_loc.is_hw():
-                return False
-            return arg_loc.kind == LocationKind.STACK
-
-        if arg.mechanism == ArgumentMechanism.VARIABLE:
-            # The MIR Store before the Call already wrote the variable.
-            return False
-
-        if arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
-            # The forwarding shortcut returns before emitting anything.
-            param_size = arg_param_size(arg)
-            if (arg_loc.kind == LocationKind.SCRATCH
-                    and arg_loc.scratch_addr == arg.scratch_addr
-                    and (arg_loc.size or 0) >= param_size):
-                return False
-            return True
-
-        # STACK and SELF_Y both route through A. Not reached from the
-        # other-args pass, but the predicate should be total.
-        return True
+        with self.parent.trial_emission() as trial:
+            self.emit_argument_setup(arg, arg_loc)
+            written = written_registers(trial.nodes)
+        return written is None or 'A' in written
 
     def _emit_b_register_argument(self, arg, arg_loc):
         """Emit B register argument (special handling)."""

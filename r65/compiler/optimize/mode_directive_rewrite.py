@@ -281,7 +281,8 @@ def normalize_mode_directives(
          (``_reconcile_anchors_with_cfg``).
       3. Run ``compute_modes`` on the stripped list, seeded with the
          anchored directives so the dataflow knows the runtime mode at
-         function and block entries.
+         function and block entries, and every other entry the passes
+         started from (``function_entry_seeds``) in an unknown mode.
       4. Walk the stripped list. Track WLA-DX's currently-believed mode
          (the value of the most-recently-emitted directive of each
          kind). Wherever the dataflow reports a unique mode that
@@ -322,9 +323,14 @@ def normalize_mode_directives(
     _reconcile_anchors_with_cfg(stripped, stripped_is_anchor, entry_m, entry_x,
                                 call_exit_modes, entry_modes)
 
+    # Every code entry the passes' dataflow started from, at its anchor
+    # where codegen wrote one: an entry without one (a trait dispatch
+    # wrapper, entered in its caller's mode) is reached in an unknown mode
+    # rather than not at all, so its own SEP/REP still get directives.
+    seeds = function_entry_seeds(stripped, entry_modes) if entry_modes is not None else {}
     info = compute_modes(
         stripped,
-        entry_modes=entry_m,
+        entry_modes={**seeds, **entry_m},
         entry_x_modes=entry_x,
         call_exit_modes=call_exit_modes,
     )

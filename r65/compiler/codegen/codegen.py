@@ -407,8 +407,13 @@ class ProgramCodeGenerator:
             # ROM static data and initializer tables placed in this bank
             self._emit_rom_data_sections(rom_data_by_bank.get(bank_num, []))
 
-        # Trait dispatch tables (jump tables and wrapper functions)
-        self._emit_trait_dispatch_tables(mir_program)
+        # Trait dispatch tables (jump tables and wrapper functions): a
+        # region of their own, each wrapper entered in its caller's mode.
+        start = len(self.emitter.nodes)
+        for dispatch_label in self._emit_trait_dispatch_tables(mir_program):
+            entry_modes[dispatch_label] = None
+        if len(self.emitter.nodes) > start:
+            function_starts.append(self.emitter.nodes[start])
 
         # Interrupt vectors
         self._emit_interrupt_vectors(mir_program)
@@ -474,9 +479,10 @@ class ProgramCodeGenerator:
     # Helper Methods
     # ========================================================================
 
-    def _emit_trait_dispatch_tables(self, mir_program: MIRProgram):
+    def _emit_trait_dispatch_tables(self, mir_program: MIRProgram) -> List[str]:
         """
-        Emit trait dispatch wrapper functions and jump tables.
+        Emit trait dispatch wrapper functions and jump tables; return the
+        wrappers' entry labels.
 
         For each trait method, generates:
         1. A dispatch wrapper function that loads TypeId from self_ptr and
@@ -485,9 +491,9 @@ class ProgramCodeGenerator:
 
         Near dispatch wrapper (self in Y, DBR = object's bank):
             TraitName__method__dispatch:
-              LDA $0000,Y          ; Load TypeId from *self (offset 0)
+              LDA.w $0000,Y        ; Load TypeId from *self (offset 0)
               REP #$20
-              AND #$00FF           ; Zero-extend to 16-bit
+              AND #$00FF           ; Zero-extend to 16-bit (B is garbage)
               ASL A                ; x2 for word table
               TAX
               SEP #$20
@@ -497,10 +503,11 @@ class ProgramCodeGenerator:
         the caller's JSL return address stays for the method's RTL.
         """
         if not hasattr(mir_program, 'trait_dispatch_info') or not mir_program.trait_dispatch_info:
-            return
+            return []
 
         self.emitter.emit_section_header("Trait Dispatch Tables")
 
+        dispatch_labels = []
         for trait_name, trait_info in mir_program.trait_dispatch_info.items():
             is_far = trait_info.get('is_far', False)
             methods = trait_info.get('methods', [])
@@ -515,6 +522,7 @@ class ProgramCodeGenerator:
             for method_idx, method_name in enumerate(methods):
                 dispatch_label = f"{trait_name}__{method_name}__dispatch"
                 table_label = f"{trait_name}__{method_name}__table"
+                dispatch_labels.append(dispatch_label)
 
                 if is_far:
                     self._emit_far_dispatch(
@@ -528,23 +536,39 @@ class ProgramCodeGenerator:
                     )
 
         # Emit _trait_error handler (STP to halt processor on invalid TypeId)
+        from r65.compiler.codegen.opcodes import Opcode
         self.emitter.emit_label("_trait_error")
-        self.emitter.emit_raw("    STP")
+        self.emitter.emit_instr(Opcode.STP)
         self.emitter.emit_blank_line()
+        return dispatch_labels
 
     def _emit_dispatch_wrapper(self, dispatch_label, table_label):
         """Emit a dispatch entry: jump through the word table *table_label*
         by the TypeId at offset 0 of the trait object. The self pointer is
         in Y (DBR:Y addressing; a far caller has set DBR to the object's
-        bank)."""
+        bank).
+
+        Entered in the caller's accumulator width, which the TypeId load does
+        not depend on: the index is computed in m16 (AND clears B, which TAX
+        would otherwise carry into X's high byte) and the method is entered
+        in m8.
+        """
+        from r65.compiler.codegen.asm_nodes import Address, Immediate
+        from r65.compiler.codegen.constants import M_FLAG
+        from r65.compiler.codegen.opcodes import Opcode
+
+        emit = self.emitter.emit_instr
         self.emitter.emit_label(dispatch_label)
-        self.emitter.emit_raw("    LDA $0000,Y")            # TypeId byte at DBR:Y+0
-        self.emitter.emit_raw("    REP #$20")
-        self.emitter.emit_raw("    AND #$00FF")              # Zero-extend
-        self.emitter.emit_raw("    ASL A")                   # x2 for word table entries
-        self.emitter.emit_raw("    TAX")
-        self.emitter.emit_raw("    SEP #$20")
-        self.emitter.emit_raw(f"    JMP ({table_label},X)")
+        self.emitter.set_accu_mode_tracking(None)
+        emit(Opcode.LDA_ABSOLUTE_Y, Address(0), "TypeId at DBR:Y+0")
+        emit(Opcode.REP_IMMEDIATE, Immediate(M_FLAG))
+        self.emitter.emit_accu_mode(16)
+        emit(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend the TypeId")
+        emit(Opcode.ASL, None, "x2 for word table entries")
+        emit(Opcode.TAX)
+        emit(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Methods are entered in m8")
+        self.emitter.emit_accu_mode(8)
+        emit(Opcode.JMP_INDIRECT_X, Address(table_label))
         self.emitter.emit_blank_line()
 
     def _emit_near_dispatch(self, dispatch_label, table_label, trait_name, method_name,
@@ -605,13 +629,13 @@ class ProgramCodeGenerator:
         self.emitter.emit_blank_line()
 
         # JML stubs: each is a long jump to the concrete implementation
+        from r65.compiler.codegen.asm_nodes import Address
+        from r65.compiler.codegen.opcodes import Opcode
         for tid in range(max_type_id + 1):
             jml_label = f"{trampoline_label}_{tid}"
             self.emitter.emit_label(jml_label)
-            if tid in type_id_to_impl:
-                self.emitter.emit_raw(f"    JML {type_id_to_impl[tid]}")
-            else:
-                self.emitter.emit_raw("    JML _trait_error")
+            self.emitter.emit_instr(
+                Opcode.JMP_LONG, Address(type_id_to_impl.get(tid, '_trait_error')))
 
         self.emitter.emit_blank_line()
 

@@ -354,12 +354,7 @@ class ABIModel(ABC):
         def emit(arg):
             # Resolved late: a stack save shifts every stack-relative source.
             arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
-            # A VARIABLE argument needs nothing here: CallLowerer's MIR Store,
-            # sized by the parameter type, wrote the variable before the Call.
-            if arg.mechanism == ArgumentMechanism.REGISTER:
-                selector.emit_register_argument(arg, arg_loc)
-            elif arg.mechanism == ArgumentMechanism.SCRATCH_PARAM:
-                selector.emit_scratch_param_argument(arg, arg_loc)
+            selector.emit_argument_setup(arg, arg_loc)
 
         locs = [selector.parent._get_operand_location(a.value) for a in ordered]
         a_idxs = [i for i, l in enumerate(locs) if l.is_hw('A')]

@@ -518,7 +518,9 @@ class TestTraitCodeGen:
         assert "_trait_error:" in asm
 
     def test_dispatch_wrapper_loads_type_id(self):
-        """Dispatch wrapper loads TypeId from self pointer."""
+        """The dispatch wrapper loads the TypeId through the Y self pointer
+        and indexes its table in m16; after the peephole the AND immediate
+        still has the `.ACCU 16` that sizes it."""
         source = """
             #[zeropage(0x10, register)]
             static mut SCRATCH0: u8;
@@ -535,10 +537,13 @@ class TestTraitCodeGen:
                 p.draw();
             }
         """
-        asm = compile_to_asm(source)
+        asm = compile_to_asm(source)        # -O1: through the peephole
 
-        # Dispatch wrapper should load TypeId via Y-pointer: LDA $0000,Y
-        assert "LDA $0000,Y" in asm
+        body = asm.split("Drawable__draw__dispatch:\n", 1)[1].split("\n\n", 1)[0]
+        assert [line.split(';')[0].strip() for line in body.splitlines()] == [
+            "LDA.w $0000,Y", "REP #$20", ".ACCU 16", "AND #$FF", "ASL A",
+            "TAX", "SEP #$20", ".ACCU 8", "JMP (Drawable__draw__table,X)",
+        ]
 
     _DISPATCH_SOURCE = """
             #[zeropage(0x10, register)]

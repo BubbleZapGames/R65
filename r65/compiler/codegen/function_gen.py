@@ -13,58 +13,27 @@ from r65.compiler.mir.nodes import (
     Jump, CondBranch, TypeConvert, LoadIndirect, StoreIndirect, Push,
     MemoryFill, BlockCopy, InlineAsm, iter_operands,
 )
-from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node
+from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node, written_registers
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.type_utils import get_type_size, pointer_element_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import (
-    Opcode, PUSH_OPCODES, PULL_OPCODES, mnemonic, addressing_mode,
-    ACCUMULATOR_OPCODES, REGISTER_WRITES,
+    Opcode, PUSH_OPCODES, PULL_OPCODES,
 )
 from r65.compiler.codegen.asm_nodes import (
-    Immediate, Address, StackOffset, Instruction, RawAsm, ModeChange)
+    Immediate, Address, StackOffset, Instruction, ModeChange)
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 from r65.compiler.codegen.abi_model import emit_d_equals_s_keeping_c
 from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.far_ptr_strategy import far_self_body_needs_dbr
-
-# Control leaves the handler: whatever runs there may write anything.
-_LEAVES = frozenset({'JSR', 'JSL', 'BRK', 'COP', 'WDM'})
 
 
 def _block_mode_switch(bits: int):
     """(opcode, operand, comment) of the block-entry switch to m`bits`."""
     opcode = Opcode.REP_IMMEDIATE if bits == 16 else Opcode.SEP_IMMEDIATE
     return opcode, Immediate(M_FLAG), f"REQUIRED: restore m{bits} mode for block"
-
-
-def interrupt_body_written_regs(nodes) -> 'set | None':
-    """The registers among A, X, Y, D, DBR the emitted nodes write.
-
-    None means all of them (the body calls out). Raw text is read by its
-    first word, so directives and labels write nothing.
-    """
-    written = set()
-    for node in nodes:
-        if isinstance(node, Instruction):
-            mn = mnemonic(node.opcode)
-            accumulator = addressing_mode(node.opcode) is None
-        elif isinstance(node, RawAsm):
-            parts = node.text.split(';', 1)[0].split(None, 1)
-            if not parts:
-                continue
-            mn = parts[0].upper()
-            accumulator = len(parts) == 1 or parts[1].strip().upper() == 'A'
-        else:
-            continue
-        if mn in _LEAVES:
-            return None
-        written |= REGISTER_WRITES.get(mn, frozenset())
-        if accumulator and Opcode.__members__.get(mn) in ACCUMULATOR_OPCODES:
-            written.add('A')
-    return written
 
 class FunctionCodeGenerator:
     """
@@ -1279,7 +1248,7 @@ class FunctionCodeGenerator:
         # The restore runs only pull what was saved; leave them out.
         in_restores = {id(n) for run in mir_func.interrupt_restore_runs for n in run}
         body = [n for n in nodes[start + len(save_run):] if id(n) not in in_restores]
-        written = interrupt_body_written_regs(body)
+        written = written_registers(body)
         if written is None:
             written = {'A', 'X', 'Y', 'D', 'DBR'}
         if written <= saved:

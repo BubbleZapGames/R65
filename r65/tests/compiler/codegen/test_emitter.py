@@ -170,3 +170,26 @@ def test_bool_constant_equ_is_numeric():
     emitter.emit_equ("T", True)
     assert ".EQU DBG 0" in emitter.to_string()
     assert ".EQU T 1" in emitter.to_string()
+
+
+def test_capture_leaves_no_trace():
+    """A trial emission shows its nodes inside the block and on exit leaves
+    the node list and every tracked state as they were."""
+    from r65.compiler.codegen.abi import StackStateTracker
+    from r65.compiler.codegen.instruction_select_helpers import XBAStateManager
+
+    emitter = AssemblyEmitter()
+    emitter.emit_instr(Opcode.TYX)
+    xba, stack = XBAStateManager(emitter), StackStateTracker()
+    before = (list(emitter.nodes), dict(vars(emitter)), xba.state)
+    with emitter.capture(xba, stack) as trial:
+        emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20))
+        emitter.emit_accu_mode(16)
+        emitter.emit_instr(Opcode.PHA)
+        emitter.emit_label("trial")
+        xba.emit_xba()
+        stack.push(2)
+        assert [n.opcode for n in trial.nodes if hasattr(n, 'opcode')] == [
+            Opcode.REP_IMMEDIATE, Opcode.PHA, Opcode.XBA]
+    assert (emitter.nodes, dict(vars(emitter)), xba.state) == before
+    assert (stack.displacement, stack.peak_displacement) == (0, 0)
