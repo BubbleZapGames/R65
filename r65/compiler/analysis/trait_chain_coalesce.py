@@ -619,6 +619,24 @@ def _instr_redefines_vreg(instr, vreg):
                for _, v in iter_operands(instr, role=OperandRole.WRITE))
 
 
+def _uses_dbr(mem) -> bool:
+    """True if codegen addresses `mem` through DBR (16-bit absolute).
+
+    RAM and lowram are emitted absolute. A `#[hw]` register at a 16-bit
+    address is absolute too: it lives in bank $00 (and its mirrors), not
+    in a RAM or ROM object's bank. A ROM label is emitted LONG except
+    when indexed by Y, which has no long form and falls back to absolute.
+    Zeropage goes through DP.
+    """
+    if mem.storage_type in ('ram', 'lowram'):
+        return True
+    if mem.storage_type == 'hw':
+        return mem.address is None or mem.address <= 0xFFFF
+    if mem.storage_type == 'rom':
+        return mem.index_register == 'Y'
+    return False
+
+
 def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=None):
     """True if `instr` is safe to execute while DBR is set to self's bank
     (rather than the caller's DBR).
@@ -627,18 +645,15 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=No
     ``_instr_preserves_y`` and both can be plugged into the same predicate
     helpers (``_function_satisfies``, ``_between_satisfies``).
 
-    Disqualifiers (per docs/register_memory_config.md and the brief):
-      - non-LONG RAM access (DBR-relative absolute load/store of RAM)
+    Disqualifiers:
+      - a memory operand codegen addresses DBR-relative (`_uses_dbr`)
       - near pointer dereference
-      - call to a non-DBR-independent function
-      - nested far-self TraitDispatch on a DIFFERENT self vreg
+      - indirect call, or call to a non-DBR-independent function
+      - any TraitDispatch
     """
-    # RAM and lowram both use DBR-relative absolute addressing. ROM/HW are
-    # emitted as LONG already; zeropage uses DP. Lowram lives in bank $7E
-    # ($00-$1FFF) but the codegen emits absolute (not LONG), so under a
-    # non-default DBR it would address the wrong bank. Any node may name
-    # one - a load or store, a folded operand, a read-modify-write, a copy.
-    if any(m.storage_type in ('ram', 'lowram') for m in iter_memory_operands(instr)):
+    # Any node may name memory - a load or store, a folded operand, a
+    # read-modify-write, a copy.
+    if any(_uses_dbr(m) for m in iter_memory_operands(instr)):
         return False
 
     if isinstance(instr, (LoadIndirect, StoreIndirect)):

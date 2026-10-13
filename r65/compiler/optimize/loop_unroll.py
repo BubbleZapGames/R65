@@ -24,7 +24,9 @@ from r65.compiler.mir.nodes import (
     ReturnFromInterrupt, InlineAsm, map_block_targets,
     OperandRole, iter_operands, map_operands,
 )
-from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
+from r65.compiler.analysis.loop_analysis import (
+    find_back_edges, find_loops as _find_loops,
+)
 
 # Size thresholds
 MIN_BODY_OPS = 4
@@ -436,16 +438,13 @@ def _body_is_safe(func: MIRFunction, body_block_ids: List[int],
                         instr.false_target != header_id):
                     return False
 
-    # Reject nested loops (any back-edge within body that doesn't target
-    # our header)
-    for bid in body_block_ids:
-        block = func.blocks.get(bid)
-        if block is None:
-            continue
-        for instr in block.instructions:
-            if isinstance(instr, Jump) and instr.target != header_id:
-                if instr.target in body_set and instr.target <= bid:
-                    return False  # Inner back-edge = nested loop
+    # Reject nested loops: a back-edge from the body to anything but our
+    # header. Back-edges come from the DFS in `find_back_edges`; a jump to
+    # a lower block ID is not one (an inner `if` reaching an outer `if`'s
+    # merge block does that).
+    for source, target in find_back_edges(func):
+        if source in body_set and target != header_id:
+            return False
 
     return True
 

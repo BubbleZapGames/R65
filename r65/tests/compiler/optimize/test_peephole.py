@@ -74,14 +74,15 @@ class TestIdentityCopyElimination:
     def test_multiple_identity_copies(self):
         """Multiple identity copies should all be eliminated."""
         nodes = [
+            Label('fn'), ModeChange('ACCU', 8),
             Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
             Instruction(opcode=Opcode.STA_DP, operand=Address(0x10)),
             Instruction(opcode=Opcode.LDA_DP, operand=Address(0x12)),
             Instruction(opcode=Opcode.STA_DP, operand=Address(0x12)),
         ]
         opt = PeepholeOptimizer()
-        result = opt.optimize(nodes)
-        assert len(result) == 0
+        result = opt.optimize(nodes, entry_modes={'fn': 8}, call_exit_modes={'fn': 8})
+        assert not [n for n in result if isinstance(n, Instruction)]
         assert opt.stats.identity_copies_eliminated == 2
 
     def test_absolute_identity_copy_eliminated(self):
@@ -95,8 +96,8 @@ class TestIdentityCopyElimination:
         assert len(result) == 0
         assert opt.stats.identity_copies_eliminated == 1
 
-    def test_surrounding_instructions_preserved(self):
-        """Instructions around an identity copy should be preserved."""
+    def test_load_kept_when_a_is_read_after(self):
+        """TAY reads the loaded value: only the identity STA goes."""
         nodes = [
             Instruction(opcode=Opcode.TAX),
             Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
@@ -105,9 +106,7 @@ class TestIdentityCopyElimination:
         ]
         opt = PeepholeOptimizer()
         result = opt.optimize(nodes)
-        assert len(result) == 2
-        assert result[0].opcode == Opcode.TAX
-        assert result[1].opcode == Opcode.TAY
+        assert [n.opcode for n in result] == [Opcode.TAX, Opcode.LDA_DP, Opcode.TAY]
 
 
 class TestBranchThreadingRawAsm:
@@ -554,3 +553,56 @@ class TestPerFunctionRegions:
         result = PeepholeOptimizer().optimize(nodes, region_starts=[second])
         assert any(isinstance(n, Instruction) and n.opcode == Opcode.STA_STACK
                    for n in result)
+
+
+class TestDroppedWritesMustBeDead:
+    """A pass may drop an instruction only if nothing reads what it wrote:
+    an LDA's N/Z, or the zeroed B of `AND #$00FF`."""
+
+    def test_reload_kept_for_a_branch(self):
+        """After a call N/Z are the callee's; the reload sets them for BNE."""
+        nodes = [
+            Instruction(opcode=Opcode.JSR, operand=Address("f")),
+            Instruction(opcode=Opcode.STA_STACK, operand=StackOffset(0x01)),
+            Instruction(opcode=Opcode.LDA_STACK, operand=StackOffset(0x01)),
+            Instruction(opcode=Opcode.BNE, operand=Address("f")),
+        ]
+        result = PeepholeOptimizer()._eliminate_redundant_load_after_store(nodes)
+        assert len(result) == 4
+
+    def test_tracked_reload_kept_for_a_branch(self):
+        """A holds the value again, but the CMP between rewrote N/Z."""
+        nodes = [
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.CMP_IMMEDIATE, operand=Immediate(5)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.BEQ, operand=Address(0x20)),
+        ]
+        result = PeepholeOptimizer()._eliminate_redundant_loads_tracked(nodes)
+        assert len(result) == 4
+
+    def test_mask_kept_before_tax(self):
+        """In x16, TAX copies B into X's high byte, so the m16 mask stays."""
+        nodes = [
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.AND_IMMEDIATE, operand=Immediate(0xFF)),
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.TAX),
+            Instruction(opcode=Opcode.LDA_ABSOLUTE_X, operand=Address(0x1000)),
+        ]
+        result = PeepholeOptimizer()._eliminate_redundant_and_before_sep(nodes)
+        assert any(n.opcode == Opcode.AND_IMMEDIATE for n in result)
+
+
+def test_x_only_rep_does_not_declare_the_accumulator_mode():
+    """`REP #$10` widens X/Y only; the `.ACCU 8` after it is the signal."""
+    from r65.compiler.optimize.asm_mode_dataflow import (
+        compute_modes, first_constraining_mode_after,
+    )
+    nodes = [
+        Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x10)),
+        ModeChange('ACCU', 8),
+        Instruction(opcode=Opcode.RTS),
+    ]
+    assert first_constraining_mode_after(nodes, compute_modes(nodes), 0) == 8

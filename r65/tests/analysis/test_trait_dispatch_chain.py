@@ -215,6 +215,22 @@ class TestChainBreaks:
         assert a.self_chain_role == ChainRole.SOLO
         assert b.self_chain_role == ChainRole.SOLO
 
+    def test_break_by_hw_store(self):
+        """A #[hw] register is addressed absolute, so it is reached only
+        through the caller's DBR, not self's RAM bank."""
+        s = _make_self_vreg()
+        a = _make_dispatch(s)
+        b = _make_dispatch(s)
+        hw_store = Store(
+            source=Immediate(value=0x0F),
+            dest=MemoryLocation(storage_type='hw', address=0x2100, symbol=None),
+            type_info=BasicTypeInfo('u8'),
+        )
+        prog = _build_program({0: _make_block(0, [a, hw_store, b, Return()])})
+        _run_analysis(prog)
+        assert a.self_chain_role == ChainRole.SOLO
+        assert b.self_chain_role == ChainRole.SOLO
+
     def test_break_by_near_pointer_deref(self):
         """A near pointer deref between dispatches forces SOLO."""
         s = _make_self_vreg()

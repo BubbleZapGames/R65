@@ -209,3 +209,41 @@ class TestFixedStackRecursionRejection:
         """
         result = compile_string(source, "test.r65")
         assert "countdown:" in result
+
+
+def test_dispatch_reserves_the_dispatched_methods_param_bytes(monkeypatch):
+    """A caller of `wide` reserves both bytes of its u16 scratch param,
+    sized from `wide`'s signature, not from the first impl (`small`)."""
+    from r65.compiler.analysis import fixedstack_params as fp
+
+    reserved = {}
+    collect = fp._collect_trait_dispatch_scratch_addrs
+
+    def spy(program, *args):
+        collect(program, *args)
+        for f in program.functions:
+            reserved[f.name] = getattr(f, '_trait_dispatch_scratch_addrs', set())
+
+    monkeypatch.setattr(fp, '_collect_trait_dispatch_scratch_addrs', spy)
+    source = """
+    #[zeropage(0x10, register)] static mut S0: u8;
+    #[zeropage(0x11, register)] static mut S1: u8;
+    #[zeropage(0x12, register)] static mut S2: u8;
+    #[zeropage(0x13, register)] static mut S3: u8;
+    #[zeropage(0x14, register)] static mut S4: u8;
+    struct Foo { a: u8 }
+    trait T {
+        fn small(far *self, v: u8) -> u8;
+        fn wide(far *self, v: u16) -> u8;
+    }
+    impl T for Foo {
+        fn small(far *self, v: u8) -> u8 { return v; }
+        fn wide(far *self, v: u16) -> u8 { return v as u8; }
+    }
+    #[ram] static mut FOO: Foo;
+    #[zeropage(0x30)] static mut R: u8;
+    fn run(p: far *dyn T) { R = p.wide(0x1234); }
+    #[entry] fn main() -> ! { run(&FOO as far *dyn T); run(&FOO as far *dyn T); loop {} }
+    """
+    compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
+    assert reserved['run'] == {0x10, 0x11}

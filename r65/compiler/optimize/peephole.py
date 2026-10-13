@@ -10,11 +10,11 @@ Pattern matching uses the typed Opcode enum; a few helpers
 """
 
 import itertools
-from typing import List, Optional, Tuple, TYPE_CHECKING, Set
+from typing import List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Set
 from dataclasses import dataclass
 
 from r65.compiler.codegen.opcodes import (
-    Opcode,
+    Opcode, mnemonic, nz_register, ACCUMULATOR_OPCODES,
     BRANCH_OPCODES, JUMP_OPCODES, CALL_OPCODES,
     LOAD_A_OPCODES, LOAD_X_OPCODES, LOAD_Y_OPCODES,
     STORE_A_OPCODES, STORE_X_OPCODES, STORE_Y_OPCODES,
@@ -249,6 +249,221 @@ def _mode_switch_residue(node):
 
 
 # ============================================================================
+# Accumulator / N-Z Liveness
+# ============================================================================
+#
+# A pass that deletes an instruction writing A or N/Z (an LDA, an
+# `AND #$00FF`) is sound only if nothing downstream reads what it wrote:
+# `STA $10; LDA $10; BEQ` needs the LDA for its Z flag even though A is
+# unchanged. `_live_after` answers that by walking forward from a
+# position along every control-flow path, tracking three resources:
+#
+#   'A'  - the accumulator's low byte
+#   'B'  - its high byte (read by XBA, TAX/TAY in x16, TCD/TCS, and by
+#          every A read in m16)
+#   'NZ' - the N and Z flags
+#
+# No flag crosses a call or a return in the R65 ABI, so JSR/JSL and
+# RTS/RTL/RTI kill N/Z. Both read A (an argument or return register).
+# They read B in m16 (part of a u16 A) and, in m8, only where the ABI
+# passes a value in B (a `@ B` parameter or a B return slot) or where
+# the function is unknown; an m8 callee treats B as garbage otherwise.
+# A call to a known function that does not preserve A also kills A and
+# B: the caller cannot rely on either surviving it.
+# Straight-line inline asm is read line by line for the A and B it may
+# read; it is assumed to write neither and passes N/Z through. Inline asm
+# that branches, jumps, returns, pushes P, changes mode or holds a label
+# or data, an indirect jump, a branch out of the node list, and a walk
+# past `_LIVENESS_BUDGET` instructions all count as reading everything.
+
+_NZ_WRITERS = frozenset({
+    'LDA', 'LDX', 'LDY', 'AND', 'ORA', 'EOR', 'ADC', 'SBC',
+    'CMP', 'CPX', 'CPY', 'INC', 'DEC', 'INX', 'DEX', 'INY', 'DEY',
+    'ASL', 'LSR', 'ROL', 'ROR', 'TAX', 'TAY', 'TXA', 'TYA', 'TXY', 'TYX',
+    'TSX', 'TDC', 'TCD', 'TSC', 'PLA', 'PLX', 'PLY', 'PLB', 'PLD', 'PLP',
+    'XBA', 'BIT',  # BIT #imm writes Z only, so it is excluded below
+})
+_NZ_READERS = frozenset({'BEQ', 'BNE', 'BMI', 'BPL', 'PHP'})
+
+# Instructions that read A's low byte whatever their addressing mode.
+_A_READERS = frozenset({
+    'STA', 'ADC', 'SBC', 'AND', 'ORA', 'EOR', 'CMP', 'BIT', 'TRB', 'TSB',
+    'TAX', 'TAY', 'TCD', 'TCS', 'PHA', 'XBA', 'MVN', 'MVP',
+})
+# Read-modify-write ops read A only in their accumulator form
+# (ACCUMULATOR_OPCODES); `ASL $10` leaves A alone.
+_RMW_MNEMONICS = frozenset({'ASL', 'LSR', 'ROL', 'ROR', 'INC', 'DEC'})
+# Writers of A's low byte that do not read it first.
+_A_WRITERS = frozenset({'LDA', 'TXA', 'TYA', 'PLA', 'TDC', 'TSC'})
+# Readers of B whatever the m flag (16-bit transfers, x16 TAX/TAY,
+# the block-move count).
+_B_READERS_ANY_MODE = frozenset({'XBA', 'TAX', 'TAY', 'TCD', 'TCS', 'MVN', 'MVP'})
+# Writers of B whatever the m flag.
+_B_WRITERS_ANY_MODE = frozenset({'TDC', 'TSC'})
+
+# Instructions that touch none of A, B and N/Z.
+_ACC_FLAG_NEUTRAL = frozenset({
+    'STX', 'STY', 'STZ', 'CLC', 'SEC', 'CLD', 'SED', 'CLI', 'SEI', 'CLV',
+    'NOP', 'WDM', 'SEP', 'REP', 'XCE', 'TXS', 'PHX', 'PHY', 'PHB', 'PHD',
+    'PHK', 'PEA', 'PEI', 'PER', 'BCC', 'BCS', 'BVC', 'BVS', 'BRA', 'BRL',
+    'JMP',
+})
+
+_LIVENESS_BUDGET = 256
+
+# Inline-asm mnemonics that make a RawAsm block opaque to `_live_after`.
+_RAWASM_OPAQUE_MNEMONICS = frozenset({
+    'BCC', 'BCS', 'BEQ', 'BNE', 'BMI', 'BPL', 'BVC', 'BVS', 'BRA', 'BRL',
+    'JMP', 'JML', 'JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'PHP', 'BRK', 'COP',
+    'SEP', 'REP', 'PLP', 'XCE',
+})
+_KNOWN_MNEMONICS = frozenset(mnemonic(op) for op in Opcode)
+
+_ALL_RESOURCES = frozenset({'A', 'B', 'NZ'})
+
+
+class AccAbi(NamedTuple):
+    """How a function's ABI uses the accumulator, for `_live_after`."""
+    passes_b: bool     # a `@ B` parameter or a B return slot
+    preserves_a: bool  # `#[preserves(A)]`: A and B survive a call to it
+
+
+def _call_return_effect(instr, m16: Optional[bool],
+                        abi: Optional[AccAbi]) -> Tuple[frozenset, frozenset]:
+    """(reads, writes) of a call or return; `abi` is the callee's (for a
+    call) or the enclosing function's (for a return), None if unknown."""
+    reads = {'A'}
+    if m16 is not False or abi is None or abi.passes_b:
+        reads.add('B')
+    writes = {'NZ'}
+    if instr.opcode in CALL_OPCODES and abi is not None and not abi.preserves_a:
+        writes.update(('A', 'B'))
+    return frozenset(reads), frozenset(writes)
+
+
+def _acc_flag_effect(instr, m16: Optional[bool]) -> Tuple[frozenset, frozenset]:
+    """(reads, writes) of a non-call, non-return instr over
+    {'A', 'B', 'NZ'}.
+
+    `m16` is the accumulator width at instr: True, False, or None when
+    the mode dataflow cannot say. A reads also read B unless m8 is
+    known; LDA-class writes cover B only when m16 is known.
+    """
+    op = instr.opcode
+    mn = mnemonic(op)
+
+    reads: Set[str] = set()
+    writes: Set[str] = set()
+    if mn in _NZ_READERS:
+        reads.add('NZ')
+    if mn in _NZ_WRITERS and op != Opcode.BIT_IMMEDIATE:
+        writes.add('NZ')
+    a_read = op in ACCUMULATOR_OPCODES if mn in _RMW_MNEMONICS else mn in _A_READERS
+    if a_read:
+        reads.add('A')
+        if m16 is not False:
+            reads.add('B')
+    if mn in _B_READERS_ANY_MODE:
+        reads.add('B')
+    if mn in _A_WRITERS:
+        writes.add('A')
+        if m16 is True or mn in _B_WRITERS_ANY_MODE:
+            writes.add('B')
+
+    if not (reads or writes) and mn not in _ACC_FLAG_NEUTRAL:
+        return _ALL_RESOURCES, frozenset()
+    return frozenset(reads), frozenset(writes)
+
+
+def _rawasm_reads(node, m16: Optional[bool]) -> Optional[frozenset]:
+    """The subset of {'A', 'B'} an inline-asm RawAsm may read, or None
+    if it is not straight-line code `_live_after` can step over (see the
+    section comment)."""
+    reads: Set[str] = set()
+    for line in node.text.splitlines():
+        code = line.split(';', 1)[0].strip()
+        if not code:
+            continue
+        if code.endswith(':') or code.startswith('.'):
+            return None
+        words = code.split()
+        mn = words[0].upper().split('.')[0]
+        if mn in _RAWASM_OPAQUE_MNEMONICS:
+            return None
+        if mn not in _KNOWN_MNEMONICS:
+            reads.update(('A', 'B'))
+            continue
+        operand = words[1].upper() if len(words) > 1 else ''
+        a_read = (operand in ('', 'A')) if mn in _RMW_MNEMONICS else mn in _A_READERS
+        if a_read:
+            reads.add('A')
+            if m16 is not False:
+                reads.add('B')
+        if mn in _B_READERS_ANY_MODE:
+            reads.add('B')
+    return frozenset(reads)
+
+
+def _live_after(nodes: List['AsmNode'], start: int, resources,
+                labels, mode_at, abi_at=lambda k: None) -> bool:
+    """True if any of `resources` may be read on a path from nodes[start].
+
+    `labels` maps each label name in `nodes` to its index; `mode_at(k)`
+    gives the accumulator width (8, 16 or None) at index k, and
+    `abi_at(k)` the `AccAbi` of the call or return at k (None if
+    unknown). A resource is dead on a path once something writes it
+    without reading it first.
+    """
+    from r65.compiler.codegen.asm_nodes import Instruction, RawAsm
+
+    worklist = [(start, frozenset(resources))]
+    seen = set()
+    budget = _LIVENESS_BUDGET
+    while worklist:
+        k, live = worklist.pop()
+        while live and (k, live) not in seen:
+            seen.add((k, live))
+            if k >= len(nodes):
+                break  # nothing executes past the last node
+            node = nodes[k]
+            if isinstance(node, RawAsm) and not _rawasm_is_transparent(node):
+                mode = mode_at(k)
+                reads = _rawasm_reads(node, None if mode is None else mode == 16)
+                if reads is None or reads & live:
+                    return True
+                k += 1
+                continue
+            if not isinstance(node, Instruction):
+                k += 1
+                continue
+            budget -= 1
+            if budget < 0:
+                return True
+            mode = mode_at(k)
+            m16 = None if mode is None else mode == 16
+            if node.opcode in CALL_OPCODES or node.opcode in RETURN_OPCODES:
+                reads, writes = _call_return_effect(node, m16, abi_at(k))
+            else:
+                reads, writes = _acc_flag_effect(node, m16)
+            if reads & live:
+                return True
+            live = live - writes
+            op = node.opcode
+            if op in RETURN_OPCODES:
+                break
+            if op in BRANCH_OPCODES or op in JUMP_OPCODES:
+                target = getattr(node.operand, 'value', None)
+                if not isinstance(target, str) or target not in labels:
+                    return True
+                if op in (Opcode.BRA, Opcode.BRL) or op in JUMP_OPCODES:
+                    k = labels[target]
+                    continue
+                worklist.append((labels[target], live))
+            k += 1
+    return False
+
+
+# ============================================================================
 # Peephole Optimizer
 # ============================================================================
 
@@ -281,6 +496,7 @@ class PeepholeOptimizer:
         # Seeds for the passes' mode dataflow; see optimize().
         self._entry_modes: dict = {}
         self._call_exit_modes: Optional[dict] = None
+        self._acc_abi: Optional[dict] = None
 
     @property
     def optimizations_applied(self) -> int:
@@ -290,7 +506,8 @@ class PeepholeOptimizer:
     def optimize(self, nodes: List['AsmNode'],
                  region_starts: Optional[List['AsmNode']] = None,
                  entry_modes: Optional[dict] = None,
-                 call_exit_modes: Optional[dict] = None) -> List['AsmNode']:
+                 call_exit_modes: Optional[dict] = None,
+                 acc_abi: Optional[dict] = None) -> List['AsmNode']:
         """
         Apply peephole optimizations to AsmNode list.
 
@@ -307,6 +524,10 @@ class PeepholeOptimizer:
                 function at its entry mode and follows calls and inline
                 asm; without them function bodies are unreachable to it
                 and the mode-driven passes leave them alone.
+            acc_abi: ``{label: AccAbi}`` for each function, used to
+                tell which calls and returns read B and which calls
+                clobber A. Calls and returns of unlisted functions are
+                taken to read A and B and to clobber neither.
 
         Returns:
             Optimized node list
@@ -327,6 +548,7 @@ class PeepholeOptimizer:
             self._entry_modes = function_entry_seeds(nodes, entry_modes or {})
             self._call_exit_modes = call_exit_modes
 
+        self._acc_abi = acc_abi
         regions = _split_regions(nodes, region_starts)
         if len(regions) == 1:
             nodes = self._optimize_region(nodes)
@@ -403,8 +625,9 @@ class PeepholeOptimizer:
     def _rewrite_adjacent_pairs(self, nodes: List['AsmNode'], match) -> List['AsmNode']:
         """Scan for adjacent Instruction pairs and rewrite matches.
 
-        match(n0, n1) returns the replacement node list for the pair — [n0] to
-        keep only the first, [] to drop both — or None to leave n0 untouched.
+        match(n0, n1, i) returns the replacement node list for the pair at
+        nodes[i], nodes[i + 1] — [n0] to keep only the first, [] to drop
+        both — or None to leave n0 untouched.
         Non-Instruction nodes and a trailing instruction are passed through.
         The match callback is responsible for any stat bookkeeping.
         """
@@ -416,7 +639,7 @@ class PeepholeOptimizer:
             node = nodes[i]
             if (isinstance(node, Instruction) and i + 1 < len(nodes)
                     and isinstance(nodes[i + 1], Instruction)):
-                replacement = match(node, nodes[i + 1])
+                replacement = match(node, nodes[i + 1], i)
                 if replacement is not None:
                     optimized.extend(replacement)
                     i += 2
@@ -433,17 +656,42 @@ class PeepholeOptimizer:
             STA $XX; LDA $XX -> STA $XX  (A still contains the value)
             STX $XX; LDX $XX -> STX $XX
             STY $XX; LDY $XX -> STY $XX
+
+        The register is unchanged but N/Z need not be: the load sets them
+        from the value and the store leaves whatever came before. The load
+        goes when the instruction before the store already set N/Z from
+        that register's value, or when N/Z are dead after the load. A
+        `#[hw]` operand is never dropped — reading it back need not return
+        what was written, and the read itself can be a side effect.
         """
-        def match(node, next_node):
+        def match(node, next_node, i):
             if (node.opcode in STORE_TO_LOAD_MAP and
                     next_node.opcode in STORE_TO_LOAD_MAP[node.opcode] and
                     node.operand == next_node.operand and
-                    self._same_addressing_mode(node.opcode, next_node.opcode)):
+                    self._same_addressing_mode(node.opcode, next_node.opcode) and
+                    not self._is_hardware_register(node.operand) and
+                    (self._nz_describes_register(nodes, i, mnemonic(node.opcode)[2])
+                     or not self._acc_live_after(nodes, i + 2, ('NZ',)))):
                 self.stats.redundant_loads_eliminated += 1
                 return [node]  # keep store, drop redundant load
             return None
 
         return self._rewrite_adjacent_pairs(nodes, match)
+
+    @staticmethod
+    def _nz_describes_register(nodes: List['AsmNode'], i: int, reg: str) -> bool:
+        """True if the instruction just before nodes[i] set N/Z from the
+        value it left in `reg` ('A', 'X' or 'Y')."""
+        from r65.compiler.codegen.asm_nodes import Comment, Directive, Instruction, ModeChange
+
+        for k in range(i - 1, -1, -1):
+            prev = nodes[k]
+            if isinstance(prev, (Comment, Directive, ModeChange)):
+                continue
+            if not isinstance(prev, Instruction):
+                return False
+            return nz_register(prev.opcode) == reg
+        return False
 
     def _same_addressing_mode(self, op1: Opcode, op2: Opcode) -> bool:
         """Check if two opcodes use the same addressing mode."""
@@ -457,13 +705,23 @@ class PeepholeOptimizer:
         Patterns:
             LDA $NN; STA $NN -> (removed)  — DP identity copy
             LDA $NN,S; STA $NN,S -> (removed)  — Stack-relative identity copy
+
+        The STA writes back what was just read, so it always goes (unless
+        the operand is `#[hw]`, where both accesses are I/O). The LDA
+        still sets A — B too in m16 — and N/Z for whatever follows, so
+        it goes only when all of those are dead after the pair.
         """
-        def match(node, next_node):
+        def match(node, next_node, i):
             if (node.opcode in LOAD_A_OPCODES and
                     next_node.opcode in STORE_A_OPCODES and
                     node.operand == next_node.operand and
-                    self._same_addressing_mode(node.opcode, next_node.opcode)):
+                    self._same_addressing_mode(node.opcode, next_node.opcode) and
+                    not self._is_hardware_register(node.operand)):
                 self.stats.identity_copies_eliminated += 1
+                live = ('A', 'NZ') if self._mode_info(nodes).unique_mode_at(i) == 8 \
+                    else ('A', 'B', 'NZ')
+                if self._acc_live_after(nodes, i + 2, live):
+                    return [node]  # the load's result is still needed
                 return []  # identity copy — drop both
             return None
 
@@ -579,10 +837,47 @@ class PeepholeOptimizer:
         invalidate `self._accu_mode_cache` whenever they hand in a
         freshly-allocated node list.
         """
+        return self._mode_info(nodes).unique_mode_at(idx)
+
+    def _mode_info(self, nodes: List['AsmNode']):
+        """The seeded asm-mode dataflow for `nodes`, cached on its identity."""
         cache = getattr(self, '_accu_mode_cache', None)
         if cache is None or cache[0] is not nodes:
             self._accu_mode_cache = (nodes, self._modes(nodes))
-        return self._accu_mode_cache[1].unique_mode_at(idx)
+        return self._accu_mode_cache[1]
+
+    def _acc_live_after(self, nodes: List['AsmNode'], start: int, resources) -> bool:
+        """True if any of `resources` ('A', 'B', 'NZ') may be read on a
+        path from nodes[start]. See `_live_after`."""
+        from r65.compiler.codegen.asm_nodes import Label
+
+        cache = getattr(self, '_label_index_cache', None)
+        if cache is None or cache[0] is not nodes:
+            known = self._acc_abi or {}
+            labels = {}
+            owner = []  # the function each node belongs to, if known
+            current = None
+            for k, n in enumerate(nodes):
+                if isinstance(n, Label):
+                    labels[n.name] = k
+                    if n.name in known:
+                        current = n.name
+                owner.append(current)
+            self._label_index_cache = cache = (nodes, labels, owner)
+        _, labels, owner = cache
+        info = self._mode_info(nodes)
+        return _live_after(nodes, start, resources, labels, info.unique_mode_at,
+                           lambda k: self._abi_at(nodes[k], owner[k]))
+
+    def _abi_at(self, instr: 'Instruction', owner: Optional[str]) -> Optional[AccAbi]:
+        """The `AccAbi` of the call `instr` targets, or of `owner` (the
+        function `instr` sits in) for a return; None if unknown."""
+        if instr.opcode in RETURN_OPCODES:
+            func = owner
+        else:
+            target = getattr(instr.operand, 'value', None)
+            func = target if isinstance(target, str) else None
+        return (self._acc_abi or {}).get(func)
 
     def _is_dead_store(self, nodes: List['AsmNode'], store_idx: int, store_operand) -> bool:
         """
@@ -755,7 +1050,7 @@ class PeepholeOptimizer:
             Opcode.TYX: Opcode.TXY,
         }
 
-        def match(node, next_node):
+        def match(node, next_node, _i):
             if (node.opcode in reverse_transfers and
                     next_node.opcode == reverse_transfers[node.opcode]):
                 self.stats.redundant_transfers_eliminated += 1
@@ -772,7 +1067,7 @@ class PeepholeOptimizer:
 
         Note: This is conservative - only removes immediately adjacent pairs.
         """
-        def match(node, next_node):
+        def match(node, next_node, _i):
             if (node.opcode in PUSH_PULL_PAIRS and
                     next_node.opcode == PUSH_PULL_PAIRS[node.opcode]):
                 self.stats.redundant_stack_ops_eliminated += 1
@@ -1179,8 +1474,11 @@ class PeepholeOptimizer:
         """
         Remove AND #$00FF when followed by SEP #$20.
 
-        In 8-bit accumulator mode, only the low byte is used, so masking
-        off the high byte before switching to 8-bit is redundant.
+        The mask leaves A's low byte alone, but it also zeroes B and sets
+        N/Z, and m8 code still reaches B: TAX/TAY copy all 16 bits into
+        the x16 index registers, and XBA, TCD and any A use after a REP
+        read it. So the AND goes only when B (if the AND ran in m16) and
+        N/Z are both dead after the SEP.
 
         Pattern: AND #$00FF (or #$FF), SEP #$xx where xx & 0x20 != 0
         """
@@ -1215,7 +1513,11 @@ class PeepholeOptimizer:
                         if (isinstance(next_instr, Instruction) and
                             next_instr.opcode == Opcode.SEP_IMMEDIATE and
                             isinstance(next_instr.operand, Immediate) and
-                            next_instr.operand.value & M_FLAG):
+                            next_instr.operand.value & M_FLAG and
+                            not self._acc_live_after(
+                                nodes, next_instr_idx + 1,
+                                ('NZ',) if self._mode_info(nodes).unique_mode_at(i) == 8
+                                else ('B', 'NZ'))):
                             # Pattern matched - skip the AND, keep directives and SEP
                             optimized.extend(directives_between)
                             i = next_instr_idx  # Will emit SEP on next iteration
@@ -2200,7 +2502,9 @@ class PeepholeOptimizer:
 
         Tracks the last LDA as (opcode, operand). When a subsequent LDA has
         the same opcode and operand, it's eliminated since A already holds
-        that value.
+        that value — provided N/Z are dead after it, since an intervening
+        CMP, BIT or TAX leaves the tracking valid but rewrites the flags
+        the load would have set.
 
         Only tracks deterministic addressing modes (immediate, DP, absolute,
         stack-relative) — indexed and indirect loads depend on register values
@@ -2217,7 +2521,7 @@ class PeepholeOptimizer:
         # Track last LDA: (opcode, operand) or None
         known_a = None
 
-        for node in nodes:
+        for idx, node in enumerate(nodes):
             if not isinstance(node, Instruction):
                 if isinstance(node, (Label, RawAsm)):
                     # Label = unknown incoming state
@@ -2232,7 +2536,8 @@ class PeepholeOptimizer:
             if opcode in LOAD_A_OPCODES:
                 if (known_a is not None and
                     known_a[0] == opcode and
-                    known_a[1] == node.operand):
+                    known_a[1] == node.operand and
+                    not self._acc_live_after(nodes, idx + 1, ('NZ',))):
                     # A already holds this value — skip the LDA
                     self.stats.tracked_loads_eliminated += 1
                     continue
@@ -2588,6 +2893,7 @@ def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
                    region_starts: Optional[List['AsmNode']] = None,
                    entry_modes: Optional[dict] = None,
                    call_exit_modes: Optional[dict] = None,
+                   acc_abi: Optional[dict] = None,
                    ) -> Tuple[List['AsmNode'], int]:
     """
     Apply peephole optimizations to AsmNode list.
@@ -2602,10 +2908,13 @@ def optimize_nodes(nodes: List['AsmNode'], volatile_names: Set[str] = None,
                        optimize independently; see PeepholeOptimizer.optimize.
         entry_modes, call_exit_modes: Each function's entry and exit mode;
                        see PeepholeOptimizer.optimize.
+        acc_abi: Each function's accumulator ABI; see
+                       PeepholeOptimizer.optimize.
 
     Returns:
         Tuple of (optimized nodes, number of optimizations applied)
     """
     optimizer = PeepholeOptimizer(volatile_names, volatile_addresses)
-    optimized = optimizer.optimize(nodes, region_starts, entry_modes, call_exit_modes)
+    optimized = optimizer.optimize(nodes, region_starts, entry_modes, call_exit_modes,
+                                   acc_abi)
     return optimized, optimizer.optimizations_applied

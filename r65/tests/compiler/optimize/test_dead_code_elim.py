@@ -2,8 +2,8 @@
 """Dead-code elimination keeps a read of a #[hw] register nothing uses.
 
 The read is the side effect: $213F resets the H/V latch flip-flop, $2137
-latches the counters, $4211 acknowledges the timer IRQ. -O1 used to drop
-all three, so the V counter read 0 and the IRQ was never acknowledged.
+latches the counters, $4211 acknowledges the timer IRQ. Dropping them leaves
+the V counter reading 0 and the IRQ unacknowledged.
 """
 
 from r65.compiler.main import compile_source
@@ -55,3 +55,18 @@ def test_unused_plain_read_is_still_removed(tmp_path):
 
 def test_interrupt_acknowledge_survives(tmp_path):
     assert "BIT $4211" in _fn(_compile(tmp_path), "irq")
+
+
+def test_unused_read_through_pointer_survives(tmp_path):
+    # DCE cannot tell where a pointer points, and it may hold a #[hw] address.
+    source = """
+    #[zeropage] static mut PTR: *u8;
+    #[inline(never)]
+    fn ack() { PTR = 0x4211 as *u8; let unused: u8 = *PTR; }
+    #[entry]
+    fn main() -> ! { ack(); loop {} }
+    """
+    out = tmp_path / "p.asm"
+    compile_source(source, "p.r65", output_file=str(out), quiet=True, opt_level=1)
+    code = _fn(out.read_text(), "ack")
+    assert any(c.startswith("LDA (") for c in code), code

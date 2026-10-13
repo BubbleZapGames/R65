@@ -497,8 +497,9 @@ def first_constraining_mode_after(
          in m16 (`AND #$8000`, etc.) — a *hard* constraint: if the
          instruction is to behave correctly the mode must be m16.
 
-      3. An explicit `SEP #$20` / `REP #$20` — itself declares the
-         mode for what follows.
+      3. A `SEP` / `REP` whose mask includes the M bit ($20) — itself
+         declares the mode for what follows. One that touches only X
+         (`REP #$10`) says nothing about A and does not stop the scan.
 
       4. Function exit (`RTS` / `RTL` / `RTI`) — give up; downstream
          code is in another function.
@@ -508,7 +509,7 @@ def first_constraining_mode_after(
     BRA-to-next-label or JMP between adjacent blocks of one loop, and
     the mode signal we want lives just past that no-op transfer.
     """
-    from r65.compiler.codegen.asm_nodes import Instruction, ModeChange
+    from r65.compiler.codegen.asm_nodes import Immediate, Instruction, ModeChange
 
     end = min(start_idx + max_lookahead, len(nodes))
     for k in range(start_idx, end):
@@ -517,10 +518,11 @@ def first_constraining_mode_after(
             return node.bits
         if not isinstance(node, Instruction):
             continue
-        if node.opcode == Opcode.SEP_IMMEDIATE:
-            return 8
-        if node.opcode == Opcode.REP_IMMEDIATE:
-            return 16
+        if (node.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE)
+                and isinstance(node.operand, Immediate)
+                and isinstance(node.operand.value, int)
+                and node.operand.value & M_FLAG):
+            return 8 if node.opcode == Opcode.SEP_IMMEDIATE else 16
         req = info.required_at(k)
         if req is not None:
             return req

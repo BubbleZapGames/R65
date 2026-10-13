@@ -113,15 +113,8 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
                 f = func_by_name.get(name)
                 if f is None:
                     continue
-                bytes_for_f = func_scratch_bytes.setdefault(name, set())
-                for param_idx, (kind, base_addr) in promos.items():
-                    if kind != 'scratch':
-                        continue
-                    if param_idx >= len(f.parameters):
-                        continue
-                    param_size = get_type_size(f.parameters[param_idx].param_type)
-                    for offset in range(param_size):
-                        bytes_for_f.add(base_addr + offset)
+                func_scratch_bytes.setdefault(name, set()).update(
+                    _scratch_param_bytes(promos, f))
 
     for func in mir_program.functions:
         if not func.stack_param_offsets:
@@ -219,7 +212,8 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     # dispatch so function_gen.py reserves them as occupied for that function.
     # Two different trait methods CAN share the same scratch addresses since
     # a given caller only dispatches one at a time (liveness doesn't cross).
-    _collect_trait_dispatch_scratch_addrs(mir_program, trait_method_promos)
+    _collect_trait_dispatch_scratch_addrs(mir_program, trait_method_promos,
+                                          trait_impl_groups)
 
     # Step 4c: Allocate scratch slots for far-self trait methods that need to
     # save self across calls/ROM. In FixedStack mode, self is never pushed to
@@ -663,9 +657,21 @@ def _allocate_far_self_scratches(
                 func._trait_dispatch_scratch_addrs = existing | per_func
 
 
+def _scratch_param_bytes(promos: Dict[int, Tuple[str, object]],
+                         func: MIRFunction) -> Set[int]:
+    """The scratch bytes `promos` places `func`'s parameters in."""
+    addrs: Set[int] = set()
+    for param_idx, (kind, base_addr) in promos.items():
+        if kind == 'scratch' and param_idx < len(func.parameters):
+            param_size = get_type_size(func.parameters[param_idx].param_type)
+            addrs.update(range(base_addr, base_addr + param_size))
+    return addrs
+
+
 def _collect_trait_dispatch_scratch_addrs(
     mir_program: MIRProgram,
     trait_method_promos: Dict[Tuple[str, int], Dict[int, Tuple[str, object]]],
+    trait_impl_groups: Dict[Tuple[str, int], List[str]],
 ):
     """
     For each function that contains TraitDispatch calls, collect the scratch
@@ -677,21 +683,17 @@ def _collect_trait_dispatch_scratch_addrs(
     if not trait_method_promos:
         return
 
-    # Build set of all scratch byte addresses per trait method
+    # Scratch bytes per trait method, sized by an impl of that method (all
+    # its impls share one signature).
+    func_by_name = {f.name: f for f in mir_program.functions}
     trait_scratch_bytes: Dict[Tuple[str, int], Set[int]] = {}
     for key, promos in trait_method_promos.items():
-        addrs: Set[int] = set()
-        # Need impl function to get param sizes — find any impl
-        for func in mir_program.functions:
-            if func.name in {n for names in find_trait_impl_groups(mir_program).values() for n in names}:
-                for param_idx, (kind, base_addr) in promos.items():
-                    if kind == 'scratch' and param_idx < len(func.parameters):
-                        param_size = get_type_size(func.parameters[param_idx].param_type)
-                        for offset in range(param_size):
-                            addrs.add(base_addr + offset)
-                break
-        if addrs:
-            trait_scratch_bytes[key] = addrs
+        impl = next((func_by_name[n] for n in trait_impl_groups.get(key, ())
+                     if n in func_by_name), None)
+        if impl is not None:
+            addrs = _scratch_param_bytes(promos, impl)
+            if addrs:
+                trait_scratch_bytes[key] = addrs
 
     # Scan each function for TraitDispatch instructions
     for func in mir_program.functions:

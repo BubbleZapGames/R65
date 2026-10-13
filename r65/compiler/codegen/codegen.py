@@ -24,6 +24,24 @@ from r65.compiler.errors import CodegenError
 # Note: Optimize imports are done lazily in generate() to avoid circular imports
 
 
+def _acc_abi(mir_func):
+    """How `mir_func`'s ABI uses the accumulator, for the peephole's
+    A/B liveness: whether a value rides in B (a `@ B` parameter, written
+    or promoted, or a B return slot) and whether A survives a call."""
+    from r65.compiler.codegen.constants import get_return_registers
+    from r65.compiler.hir.nodes import RegisterBinding
+    from r65.compiler.optimize.peephole import AccAbi
+
+    passes_b = (
+        'B' in get_return_registers(mir_func.return_type, mir_func.entry_m_mode)
+        or 'B' in mir_func.hw_param_regs.values()
+        or any(isinstance(p.binding, RegisterBinding) and p.binding.register_name == 'B'
+               for p in mir_func.parameters))
+    preserves = mir_func.preserves_attr
+    preserves_a = preserves is not None and 'A' in preserves.registers
+    return AccAbi(passes_b=passes_b, preserves_a=preserves_a)
+
+
 def _function_modes(mir_func):
     """The accumulator width (8/16) `mir_func` is entered and returns in.
 
@@ -324,6 +342,7 @@ class ProgramCodeGenerator:
         function_starts = []
         entry_modes = {}
         exit_modes = {}
+        acc_abi = {}
         for bank_num in sorted(functions_by_bank.keys()):
             bank_functions = functions_by_bank[bank_num]
 
@@ -349,6 +368,7 @@ class ProgramCodeGenerator:
                     function_starts.append(self.emitter.nodes[start])
                 entry_modes[mir_func.name], exit_modes[mir_func.name] = (
                     _function_modes(mir_func))
+                acc_abi[mir_func.name] = _acc_abi(mir_func)
                 # Emit this function's local array/string/struct literal
                 # init data immediately after its body so the data lands in
                 # the same ROM bank as the function's inlined MVN block-copy.
@@ -405,7 +425,8 @@ class ProgramCodeGenerator:
             optimized_nodes, num_optimizations = optimize_nodes(
                 nodes, volatile_names, volatile_addresses,
                 region_starts=function_starts,
-                entry_modes=entry_modes, call_exit_modes=exit_modes)
+                entry_modes=entry_modes, call_exit_modes=exit_modes,
+                acc_abi=acc_abi)
             if num_optimizations > 0:
                 print(f"Peephole optimizer: {num_optimizations} optimization(s) applied")
         else:

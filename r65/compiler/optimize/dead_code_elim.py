@@ -17,9 +17,8 @@ from r65.compiler.mir.nodes import (
 # Side effects and operand access (the shared registry in mir/nodes.py)
 # ============================================================================
 
-# Types that are safe to eliminate (no side effects beyond writing dest).
-# `_reads_volatile` exempts only a direct Load: a LoadIndirect through a
-# pointer to a #[hw] register is dropped when its value is unused.
+# Types that are safe to eliminate (no side effects beyond writing dest),
+# unless `_reads_volatile` says the read itself is one.
 _SIDE_EFFECT_FREE = frozenset({
     Move, Load, LoadIndirect, BinaryOp, UnaryOp,
     TypeConvert, ToBool, Rotate,
@@ -27,9 +26,16 @@ _SIDE_EFFECT_FREE = frozenset({
 
 
 def _reads_volatile(instr: MIRInstruction) -> bool:
-    """True for a read of a #[hw] location. The read is the side effect —
-    $2137 latches the H/V counters, $4211 acknowledges the timer IRQ — so
-    it stays even when nothing uses the value."""
+    """True for a read that may hit a #[hw] location. The read is the side
+    effect — $2137 latches the H/V counters, $4211 acknowledges the timer
+    IRQ — so it stays even when nothing uses the value.
+
+    A direct Load says whether its location is #[hw]. A LoadIndirect does
+    not: a pointer can hold any address (`0x4211 as *u8`), and DCE does not
+    track what one points at, so every read through a pointer stays.
+    """
+    if type(instr) is LoadIndirect:
+        return True
     return type(instr) is Load and instr.source.is_volatile
 
 

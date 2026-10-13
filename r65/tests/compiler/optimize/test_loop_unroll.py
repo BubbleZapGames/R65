@@ -194,6 +194,23 @@ class TestUnrollEligibility:
         count = unroller._unroll_in_function(func)
         assert count == 0
 
+    def test_if_joining_a_lower_block_id_is_not_a_nested_loop(self):
+        """An `if` arm (block 5) jumping forward to its merge (block 4) is
+        not a back-edge, though the target's block ID is lower."""
+        func = _make_for_loop(trip_count=4, body_op_count=5)
+        body = func.blocks[2]
+        merge = BasicBlock(block_id=4, instructions=body.instructions,
+                           predecessors=[2, 5], successors=[1])
+        arm = BasicBlock(block_id=5, instructions=[Jump(target=4)],
+                         predecessors=[2], successors=[4])
+        flag = VirtualRegister(id=50, type_info=U8, hint="flag")
+        body.instructions = [CondBranch(condition=flag, true_target=5,
+                                        false_target=4, comparison='!=')]
+        body.successors = [5, 4]
+        func.blocks[1].predecessors = [0, 4]
+        func.blocks.update({4: merge, 5: arm})
+        assert LoopUnroller()._unroll_in_function(func) == 1
+
 
 class TestUnrollCorrectness:
     def test_old_loop_blocks_removed(self):
