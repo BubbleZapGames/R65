@@ -46,7 +46,7 @@ from typing import Dict, List, Optional
 from r65.compiler.codegen.type_utils import is_narrowing_convert
 from r65.compiler.mir.nodes import (
     BinaryOp, Immediate, Load, MemoryLocation, MIRFunction, MIRProgram,
-    OperandRole, TypeConvert, VirtualRegister, iter_operands,
+    TypeConvert, VirtualRegister, count_vreg_reads,
 )
 
 
@@ -118,27 +118,9 @@ class ByteExtractOptimizer:
     # ------------------------------------------------------------------
 
     def _optimize_function(self, func: MIRFunction) -> None:
-        uses = self._count_vreg_reads(func)
+        uses = count_vreg_reads(func)
         for block in func.blocks.values():
             block.instructions = self._rewrite_block(block.instructions, uses)
-
-    @staticmethod
-    def _count_vreg_reads(func: MIRFunction) -> Dict[int, int]:
-        """How many times each vreg is read anywhere in the function.
-
-        The chain's two intermediates are only dead once nothing else
-        reads them — including a later block, which is why this counts
-        across the whole function rather than per block. `iter_operands`
-        is the registry every pass shares, and a coverage test keeps it
-        exhaustive over MIR node types, so no reader goes uncounted.
-        """
-        counts: Dict[int, int] = {}
-        for block in func.blocks.values():
-            for instr in block.instructions:
-                for _spec, value in iter_operands(instr, role=OperandRole.READ):
-                    if isinstance(value, VirtualRegister):
-                        counts[value.id] = counts.get(value.id, 0) + 1
-        return counts
 
     def _rewrite_block(self, instrs: List, uses: Dict[int, int]) -> List:
         out: List = []

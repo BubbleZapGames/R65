@@ -5,56 +5,17 @@ Dead Code Elimination.
 Removes unreachable code and dead assignments within functions.
 """
 
-from typing import Set, Dict, List
+from typing import Set
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, BasicBlock, MIRInstruction,
-    VirtualRegister, HardwareRegister,
-    Move, Load, Store, BinaryOp, UnaryOp, Compare, TypeConvert, ToBool,
-    Jump, CondBranch, Return, ReturnFromInterrupt, Call,
-    LoadIndirect, StoreIndirect, Rotate, BitTest, JumpTable, BankByte,
-    Push, Pull, SaveRegister, RestoreRegister, InlineAsm, SetMode,
-    MemoryFill, BlockCopy, LookupTable, TraitDispatch, MemoryLocation,
+    MIRProgram, MIRFunction, MIRInstruction, VirtualRegister, MemoryLocation,
+    Move, Load, BinaryOp, UnaryOp, TypeConvert, ToBool, LoadIndirect, Rotate,
+    SaveRegister, OperandRole, iter_operands,
 )
 
 
 # ============================================================================
-# Read-vreg extraction (data-driven)
+# Operand access (the shared registry in mir/nodes.py)
 # ============================================================================
-
-_EMPTY: frozenset = frozenset()
-
-# Instruction types whose read operands are simple named fields.
-# Maps type -> tuple of attribute names to check for VirtualRegister.
-_READ_FIELDS = {
-    Move: ('source',),
-    Store: ('source',),
-    LoadIndirect: ('pointer',),
-    StoreIndirect: ('source', 'pointer'),
-    BinaryOp: ('left', 'right'),
-    UnaryOp: ('operand',),
-    Compare: ('left', 'right'),
-    TypeConvert: ('source',),
-    ToBool: ('source',),
-    BankByte: ('source',),
-    CondBranch: ('condition',),
-    Rotate: ('source',),
-    BitTest: ('value',),
-    JumpTable: ('scrutinee',),
-    LookupTable: ('scrutinee',),
-    RestoreRegister: ('save_location',),
-}
-
-# Types that read no vregs at all
-_READ_NONE = frozenset({
-    Load, Jump, ReturnFromInterrupt, Push, Pull, SaveRegister,
-    InlineAsm, SetMode, MemoryFill, BlockCopy,
-})
-
-# Types whose dest field is a writable vreg
-_DEST_TYPES = frozenset({
-    Move, Load, LoadIndirect, BinaryOp, UnaryOp,
-    TypeConvert, ToBool, Rotate, LookupTable,
-})
 
 # Types that are safe to eliminate (no side effects beyond writing dest)
 _SIDE_EFFECT_FREE = frozenset({
@@ -74,66 +35,19 @@ def _reads_volatile(instr: MIRInstruction) -> bool:
 
 def _get_read_vreg_ids(instr: MIRInstruction) -> Set[int]:
     """Get the set of virtual register IDs read by an instruction."""
-    instr_type = type(instr)
-
-    # Fast path: field-spec types (covers ~15 instruction types)
-    fields = _READ_FIELDS.get(instr_type)
-    if fields is not None:
-        if len(fields) == 1:
-            val = getattr(instr, fields[0])
-            return {val.id} if type(val) is VirtualRegister else _EMPTY
-        # Two fields
-        read = set()
-        for f in fields:
-            val = getattr(instr, f)
-            if type(val) is VirtualRegister:
-                read.add(val.id)
-        return read
-
-    # Special cases with loop-based logic
-    if instr_type is Call:
-        read = set()
-        for arg in instr.args:
-            if type(arg.value) is VirtualRegister:
-                read.add(arg.value.id)
-        if type(instr.function) is VirtualRegister:
-            read.add(instr.function.id)
-        return read
-
-    if instr_type is TraitDispatch:
-        read = set()
-        for arg in instr.args:
-            if type(arg.value) is VirtualRegister:
-                read.add(arg.value.id)
-        if type(instr.self_ptr) is VirtualRegister:
-            read.add(instr.self_ptr.id)
-        return read
-
-    if instr_type is Return:
-        read = set()
-        for val in instr.values:
-            if type(val) is VirtualRegister:
-                read.add(val.id)
-        return read
-
-    # No-read types (Load, Jump, InlineAsm, etc.)
-    return _EMPTY
+    return {v.id for _, v in iter_operands(instr, role=OperandRole.READ)
+            if type(v) is VirtualRegister}
 
 
 def _get_written_vreg_id(instr: MIRInstruction):
-    """Get the virtual register ID written by an instruction, or None."""
-    instr_type = type(instr)
+    """The virtual register ID an instruction writes, or None.
 
-    if instr_type in _DEST_TYPES:
-        dest = instr.dest
-    elif instr_type is SaveRegister:
-        dest = instr.save_location
-    elif instr_type is Call or instr_type is TraitDispatch:
-        return None
-    else:
-        return None
-
-    return dest.id if type(dest) is VirtualRegister else None
+    Asked only of the side-effect-free types, which each write one dest.
+    """
+    for _, v in iter_operands(instr, role=OperandRole.WRITE):
+        if type(v) is VirtualRegister:
+            return v.id
+    return None
 
 
 # ============================================================================

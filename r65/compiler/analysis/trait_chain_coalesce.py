@@ -32,10 +32,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 from r65.compiler.mir.nodes import (
-    ChainRole, MIRFunction, HardwareRegister,
+    ChainRole, MIRFunction, HardwareRegister, OperandRole, iter_operands,
     Load, Store, LoadIndirect, StoreIndirect,
     Call, TraitDispatch, MemoryLocation, VirtualRegister,
-    Move, TypeConvert, Compare, BinaryOp, UnaryOp, BitTest, InlineAsm,
+    Move, TypeConvert, Compare, BinaryOp, UnaryOp, BitTest, InlineAsm, iter_memory_operands,
 )
 
 
@@ -626,17 +626,8 @@ def _between_satisfies(flat, prev_run_idx, next_idx, instr_ok,
 
 def _instr_redefines_vreg(instr, vreg):
     """True if instr writes to vreg (which would invalidate chained self)."""
-    # Most instruction classes have a `dest` field that is a register.
-    dest = getattr(instr, 'dest', None)
-    if isinstance(dest, VirtualRegister) and dest.id == vreg.id:
-        return True
-    # Move's dest covers most rebinds; Call/TraitDispatch returns lists.
-    returns = getattr(instr, 'returns', None)
-    if returns:
-        for r in returns:
-            if isinstance(r, VirtualRegister) and r.id == vreg.id:
-                return True
-    return False
+    return any(isinstance(v, VirtualRegister) and v.id == vreg.id
+               for _, v in iter_operands(instr, role=OperandRole.WRITE))
 
 
 def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=None):
@@ -672,13 +663,8 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=No
     # dependent. Inline MemoryLocation operands are observed on
     # Compare, BitTest, BinaryOp, UnaryOp.
     if isinstance(instr, (Compare, BitTest, BinaryOp, UnaryOp)):
-        for attr in ('left', 'right', 'source', 'value'):
-            operand = getattr(instr, attr, None)
-            if isinstance(operand, MemoryLocation):
-                st = operand.storage_type
-                if st in ('ram', 'lowram'):
-                    return False
-        return True
+        return not any(m.storage_type in ('ram', 'lowram')
+                       for m in iter_memory_operands(instr))
 
     if isinstance(instr, (LoadIndirect, StoreIndirect)):
         if not instr.is_far:

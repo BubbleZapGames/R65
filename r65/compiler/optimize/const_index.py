@@ -35,23 +35,13 @@ from typing import Dict, List, Optional, Set
 from r65.compiler.mir.nodes import (
     BinaryOp, BitTest, Compare, CondBranch, HardwareRegister, Immediate,
     IncDecMemory, Jump, Load, MemoryLocation, MIRFunction, MIRProgram, Move,
-    Return, Rotate, Store, ToBool, TypeConvert, UnaryOp, VirtualRegister,
+    Return, Rotate, Store, ToBool, TypeConvert, UnaryOp, VirtualRegister, iter_memory_operands, map_memory_operands,
 )
 
 # Instructions whose only contact with X is through operands the pass sees:
 # a memory operand's index, or X named as a register operand.
 _TRANSPARENT = (Load, Store, IncDecMemory, Move, BinaryOp, UnaryOp, Compare,
                 TypeConvert, ToBool, BitTest, Rotate, Jump, CondBranch)
-
-# The fields of each transparent instruction that may hold a MemoryLocation.
-_MEM_FIELDS = {
-    Load: ('source',),
-    Store: ('dest',),
-    IncDecMemory: ('location',),
-    BinaryOp: ('left', 'right'),
-    Compare: ('left', 'right'),
-    BitTest: ('value',),
-}
 
 _CONST_OPS = {
     '+': lambda a, b: a + b,
@@ -82,10 +72,8 @@ def _reads_x(instr) -> bool:
         return any(_is_x(v) for v in instr.values)
     if not isinstance(instr, _TRANSPARENT):
         return True
-    for name in _MEM_FIELDS.get(type(instr), ()):
-        v = getattr(instr, name, None)
-        if isinstance(v, MemoryLocation) and v.index_register == 'X':
-            return True
+    if any(m.index_register == 'X' for m in iter_memory_operands(instr)):
+        return True
     for f in fields(instr):
         if f.name == 'dest' and _writes_x(instr):
             continue
@@ -119,12 +107,12 @@ class ConstIndexFolder:
             consts: Dict[int, int] = {}
             for instr in block.instructions:
                 if known_x is not None and isinstance(instr, _TRANSPARENT):
-                    for name in _MEM_FIELDS.get(type(instr), ()):
-                        loc = getattr(instr, name, None)
-                        if isinstance(loc, MemoryLocation) and loc.index_register == 'X':
-                            setattr(instr, name, self._at(loc, known_x))
-                            self.folded += 1
-                            changed = True
+                    hits = sum(m.index_register == 'X' for m in iter_memory_operands(instr))
+                    if hits:
+                        map_memory_operands(instr, lambda m: self._at(m, known_x)
+                                            if m.index_register == 'X' else m)
+                        self.folded += hits
+                        changed = True
                 if not isinstance(instr, _TRANSPARENT):
                     known_x = None
                     consts.clear()

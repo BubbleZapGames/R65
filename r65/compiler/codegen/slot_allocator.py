@@ -20,8 +20,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm,
-    TraitDispatch, RestoreRegister, SaveRegister,
-    CondBranch, JumpTable, LookupTable, BankByte, Immediate,
+    TraitDispatch, RestoreRegister, BankByte, Immediate, map_operands,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -583,86 +582,7 @@ class StackSlotAllocator:
     @staticmethod
     def _replace_vreg_in_instr(instr, old: VirtualRegister, new: VirtualRegister):
         """Replace every occurrence of *old* vreg with *new* inside *instr*."""
-
-        def _sub(val):
-            return new if isinstance(val, VirtualRegister) and val == old else val
-
-        # --- Memory operations ---
-        if isinstance(instr, Load):
-            instr.dest = _sub(instr.dest)
-        elif isinstance(instr, Store):
-            instr.source = _sub(instr.source)
-        elif isinstance(instr, LoadIndirect):
-            instr.dest = _sub(instr.dest)
-            instr.pointer = _sub(instr.pointer)
-        elif isinstance(instr, StoreIndirect):
-            instr.source = _sub(instr.source)
-            instr.pointer = _sub(instr.pointer)
-
-        # --- Moves & conversions ---
-        elif isinstance(instr, Move):
-            instr.dest = _sub(instr.dest)
-            instr.source = _sub(instr.source)
-        elif isinstance(instr, TypeConvert):
-            instr.dest = _sub(instr.dest)
-            instr.source = _sub(instr.source)
-        elif isinstance(instr, ToBool):
-            instr.dest = _sub(instr.dest)
-            instr.source = _sub(instr.source)
-
-        # --- ALU ---
-        elif isinstance(instr, BinaryOp):
-            instr.dest = _sub(instr.dest)
-            instr.left = _sub(instr.left)
-            instr.right = _sub(instr.right)
-        elif isinstance(instr, UnaryOp):
-            instr.dest = _sub(instr.dest)
-            instr.operand = _sub(instr.operand)
-        elif isinstance(instr, Rotate):
-            instr.dest = _sub(instr.dest)
-            instr.source = _sub(instr.source)
-
-        # --- Compare / BitTest ---
-        elif isinstance(instr, Compare):
-            instr.left = _sub(instr.left)
-            instr.right = _sub(instr.right)
-        elif isinstance(instr, BitTest):
-            instr.value = _sub(instr.value)
-
-        # --- Control flow ---
-        elif isinstance(instr, CondBranch):
-            instr.condition = _sub(instr.condition)
-        elif isinstance(instr, JumpTable):
-            instr.scrutinee = _sub(instr.scrutinee)
-        elif isinstance(instr, LookupTable):
-            instr.dest = _sub(instr.dest)
-            instr.scrutinee = _sub(instr.scrutinee)
-
-        # --- Return ---
-        elif isinstance(instr, Return):
-            instr.values = [_sub(v) for v in instr.values]
-
-        # --- Calls ---
-        elif isinstance(instr, (Call, TraitDispatch)):
-            for arg in instr.args:
-                arg.value = _sub(arg.value)
-            instr.returns = [_sub(r) for r in instr.returns]
-            if isinstance(instr, Call) and isinstance(instr.function, VirtualRegister):
-                instr.function = _sub(instr.function)
-            if isinstance(instr, TraitDispatch) and isinstance(instr.self_ptr, VirtualRegister):
-                instr.self_ptr = _sub(instr.self_ptr)
-
-        # --- Save / Restore ---
-        elif isinstance(instr, SaveRegister):
-            instr.save_location = _sub(instr.save_location)
-        elif isinstance(instr, RestoreRegister):
-            instr.save_location = _sub(instr.save_location)
-
-        # --- StatusFlagRead ---
-        elif isinstance(instr, StatusFlagRead):
-            instr.dest = _sub(instr.dest)
-
-        # Other instructions (Jump, InlineAsm, SetMode, etc.) have no vregs.
+        map_operands(instr, lambda v: new if isinstance(v, VirtualRegister) and v == old else v)
 
     def _replace_vreg_everywhere(self, old: VirtualRegister, new: VirtualRegister):
         """Replace *old* with *new* in every instruction of every block."""

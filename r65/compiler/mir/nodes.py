@@ -5,7 +5,7 @@ MIR node types: instructions, operands, basic blocks, and CFG structures.
 Provides a 3-address-code style IR for code generation.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from typing import Optional, List, Dict, Set, Any, Union, Tuple, NamedTuple
 from enum import Enum
 
@@ -1079,6 +1079,97 @@ def map_operands(instr, fn):
         else:  # ARG_LIST
             for arg in getattr(instr, spec.field):
                 arg.value = fn(arg.value)
+
+
+# Operand slots (keyed by (instr_type, field)) where codegen legally accepts an
+# Immediate — it loads/uses the value via `LDA #imm` / `ADC #imm` / etc. An
+# Immediate must NOT be substituted into a pointer slot (LoadIndirect.pointer,
+# StoreIndirect.pointer), a switch scrutinee, a branch condition, or a return
+# value: those are register/DP-typed at codegen and a constant there silently
+# corrupts output. Caller VirtualRegister args are unconstrained (a vreg is
+# legal in every slot) and skip this whitelist. Used by the inliner's
+# parameter substitution and the loop unroller's counter substitution.
+IMMEDIATE_SAFE_SLOTS: Set[Tuple[type, str]] = {
+    (Move, 'source'),
+    (Store, 'source'),
+    (StoreIndirect, 'source'),
+    (BinaryOp, 'left'), (BinaryOp, 'right'),
+    (UnaryOp, 'operand'),
+    (Compare, 'left'), (Compare, 'right'),
+    (TypeConvert, 'source'),
+    (BankByte, 'source'),
+    (ToBool, 'source'),
+    (Rotate, 'source'),
+    (BitTest, 'value'),
+}
+
+
+# Block-id slots of the control-flow instructions: a scalar target or a list
+# of them. The one table every pass that follows or rewrites an edge reads.
+BLOCK_TARGET_FIELDS: Dict[type, Tuple[str, ...]] = {
+    Jump: ('target',),
+    CondBranch: ('true_target', 'false_target'),
+    JumpTable: ('targets', 'default_target'),
+    LookupTable: ('merge_target',),
+}
+
+
+def iter_block_targets(instr):
+    """Yield every block id *instr* can transfer control to."""
+    for name in BLOCK_TARGET_FIELDS.get(type(instr), ()):
+        value = getattr(instr, name)
+        if isinstance(value, list):
+            yield from value
+        else:
+            yield value
+
+
+def map_block_targets(instr, fn):
+    """In place, replace each block id of *instr* with fn(id). A list slot
+    gets a new list, so a shallow copy of the instruction stays independent."""
+    for name in BLOCK_TARGET_FIELDS.get(type(instr), ()):
+        value = getattr(instr, name)
+        if isinstance(value, list):
+            setattr(instr, name, [fn(t) for t in value])
+        else:
+            setattr(instr, name, fn(value))
+
+
+def iter_memory_operands(instr):
+    """Yield every MemoryLocation operand of *instr*, from whichever field holds
+    one. Read off the node itself, so no per-type list can fall out of date."""
+    for f in dataclass_fields(instr):
+        value = getattr(instr, f.name)
+        if isinstance(value, MemoryLocation):
+            yield value
+        elif isinstance(value, list):
+            yield from (v for v in value if isinstance(v, MemoryLocation))
+
+
+def map_memory_operands(instr, fn):
+    """In place, replace each MemoryLocation operand of *instr* with fn(loc)."""
+    for f in dataclass_fields(instr):
+        value = getattr(instr, f.name)
+        if isinstance(value, MemoryLocation):
+            setattr(instr, f.name, fn(value))
+        elif isinstance(value, list) and any(isinstance(v, MemoryLocation) for v in value):
+            setattr(instr, f.name, [fn(v) if isinstance(v, MemoryLocation) else v
+                                    for v in value])
+
+
+def count_vreg_reads(func) -> Dict[int, int]:
+    """How many times each vreg is read anywhere in *func*, by vreg id.
+
+    Across the whole function rather than per block, so a value also wanted in
+    a later block counts as used there.
+    """
+    counts: Dict[int, int] = {}
+    for block in func.blocks.values():
+        for instr in block.instructions:
+            for _spec, value in iter_operands(instr, role=OperandRole.READ):
+                if isinstance(value, VirtualRegister):
+                    counts[value.id] = counts.get(value.id, 0) + 1
+    return counts
 
 
 # ============================================================================

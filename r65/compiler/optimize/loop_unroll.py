@@ -15,17 +15,13 @@ Constraints:
 """
 
 from copy import deepcopy
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set
 
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, BasicBlock, MIRInstruction,
-    VirtualRegister, HardwareRegister, Immediate,
-    Move, BinaryOp, Compare, CondBranch, Jump, Return,
-    ReturnFromInterrupt, Call, TraitDispatch,
-    Load, Store, LoadIndirect, StoreIndirect,
-    UnaryOp, TypeConvert, ToBool, Rotate, BitTest,
-    InlineAsm, SetMode, Push, Pull, SaveRegister, RestoreRegister,
-    JumpTable, LookupTable, MemoryFill, BlockCopy,
+    MIRProgram, MIRFunction, BasicBlock, MIRInstruction, VirtualRegister,
+    Immediate, Move, BinaryOp, Compare, CondBranch, Jump, Return,
+    ReturnFromInterrupt, Call, TraitDispatch, InlineAsm, map_block_targets,
+    IMMEDIATE_SAFE_SLOTS, OperandRole, iter_operands, map_operands,
 )
 from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
 
@@ -92,6 +88,11 @@ class LoopUnroller:
         # --- Check body is safe to unroll (no break/continue/return/nested loops) ---
         if not _body_is_safe(func, body_block_ids, header_id, exit_block_id,
                              increment_block_id):
+            return False
+
+        # The counter becomes a constant in each copy, so it may only be read
+        # where codegen takes an Immediate.
+        if not _counter_read_slots(func, body_block_ids, counter_vreg) <= IMMEDIATE_SAFE_SLOTS:
             return False
 
         # --- Perform the unroll ---
@@ -479,73 +480,46 @@ def _order_body_blocks(func: MIRFunction, entry_id: int,
 
 def _all_vregs_defined(instr: MIRInstruction) -> List[VirtualRegister]:
     """Get all VirtualRegisters defined (written to) by an instruction."""
-    result = []
-    if hasattr(instr, 'dest') and isinstance(getattr(instr, 'dest'), VirtualRegister):
-        result.append(instr.dest)
-    return result
+    return [v for _, v in iter_operands(instr, role=OperandRole.WRITE)
+            if isinstance(v, VirtualRegister)]
+
+
+def _counter_read_slots(func: MIRFunction, block_ids, counter_vreg: VirtualRegister):
+    """The `(instr_type, field)` slots the counter is read in across the body."""
+    slots = set()
+    for bid in block_ids:
+        for instr in func.blocks[bid].instructions:
+            for spec, v in iter_operands(instr, role=OperandRole.READ):
+                if isinstance(v, VirtualRegister) and v.id == counter_vreg.id:
+                    slots.add((type(instr), spec.field))
+    return slots
 
 
 def _replace_vreg_with_immediate(instr: MIRInstruction,
                                  target_vreg: VirtualRegister,
                                  replacement: Immediate):
-    """Replace all reads of target_vreg with an Immediate in an instruction."""
-    # Fields that can hold operands (reads)
-    for field_name in ('source', 'left', 'right', 'operand', 'condition',
-                       'pointer', 'value', 'scrutinee'):
-        val = getattr(instr, field_name, None)
-        if (isinstance(val, VirtualRegister) and val.id == target_vreg.id):
-            # For fields that accept Immediate
-            if field_name in ('source', 'left', 'right', 'operand',
-                              'scrutinee'):
-                setattr(instr, field_name, replacement)
+    """Replace reads of target_vreg with an Immediate wherever codegen takes one.
 
-    # For Compare: replace left/right
-    if isinstance(instr, Compare):
-        if (isinstance(instr.left, VirtualRegister) and
-                instr.left.id == target_vreg.id):
-            instr.left = replacement
-        if (isinstance(instr.right, VirtualRegister) and
-                instr.right.id == target_vreg.id):
-            instr.right = replacement
-
-    # If the dest is the counter vreg in a Move/BinaryOp, this is the
-    # increment — will be removed separately. Don't replace dest.
+    The caller has already refused a loop whose counter is read anywhere else.
+    """
+    for spec, v in list(iter_operands(instr, role=OperandRole.READ)):
+        if (isinstance(v, VirtualRegister) and v.id == target_vreg.id
+                and (type(instr), spec.field) in IMMEDIATE_SAFE_SLOTS):
+            setattr(instr, spec.field, replacement)
 
 
 def _remap_vregs(instr: MIRInstruction,
                  vreg_map: Dict[int, VirtualRegister]):
     """Replace VirtualRegister references using the given mapping."""
-    for field_name in ('dest', 'source', 'left', 'right', 'operand',
-                       'condition', 'pointer', 'value', 'scrutinee',
-                       'save_location'):
-        val = getattr(instr, field_name, None)
-        if isinstance(val, VirtualRegister) and val.id in vreg_map:
-            setattr(instr, field_name, vreg_map[val.id])
-
-    # Handle list fields
-    if hasattr(instr, 'values') and isinstance(instr.values, list):
-        instr.values = [vreg_map.get(v.id, v) if isinstance(v, VirtualRegister)
-                        else v for v in instr.values]
-    if hasattr(instr, 'args') and isinstance(instr.args, list):
-        for arg in instr.args:
-            if (hasattr(arg, 'value') and
-                    isinstance(arg.value, VirtualRegister) and
-                    arg.value.id in vreg_map):
-                arg.value = vreg_map[arg.value.id]
+    map_operands(instr, lambda v: vreg_map.get(v.id, v)
+                 if isinstance(v, VirtualRegister) else v)
 
 
 def _remap_block_targets(block: BasicBlock,
                          block_id_map: Dict[int, int]):
-    """Remap Jump/CondBranch targets using the block ID mapping."""
+    """Remap every branch target using the block ID mapping."""
     for instr in block.instructions:
-        if isinstance(instr, Jump):
-            if instr.target in block_id_map:
-                instr.target = block_id_map[instr.target]
-        elif isinstance(instr, CondBranch):
-            if instr.true_target in block_id_map:
-                instr.true_target = block_id_map[instr.true_target]
-            if instr.false_target in block_id_map:
-                instr.false_target = block_id_map[instr.false_target]
+        map_block_targets(instr, lambda t: block_id_map.get(t, t))
 
 
 def _remove_back_edge_jump(block: BasicBlock, header_id: int):
@@ -575,12 +549,8 @@ def _remove_counter_increment(block: BasicBlock,
 
 
 def _redirect_targets(block: BasicBlock, old_target: int, new_target: int):
-    """Redirect all Jump/CondBranch targets from old to new."""
+    """Redirect every branch target from old to new."""
     for instr in block.instructions:
-        if isinstance(instr, Jump) and instr.target == old_target:
-            instr.target = new_target
-        elif isinstance(instr, CondBranch):
-            if instr.true_target == old_target:
-                instr.true_target = new_target
-            if instr.false_target == old_target:
-                instr.false_target = new_target
+        map_block_targets(instr, lambda t: new_target if t == old_target else t)
+
+

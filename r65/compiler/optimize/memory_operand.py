@@ -36,7 +36,7 @@ from typing import Dict, List, Optional
 
 from r65.compiler.mir.nodes import (
     BinaryOp, Compare, HardwareRegister, Load, MemoryLocation, MIRFunction,
-    MIRProgram, Move, OperandRole, VirtualRegister, iter_operands,
+    MIRProgram, Move, VirtualRegister, count_vreg_reads,
 )
 
 # Operations whose right operand may be a memory location. Shifts, multiply
@@ -72,21 +72,9 @@ class MemoryOperandFolder:
     # ------------------------------------------------------------------
 
     def _optimize_function(self, func: MIRFunction) -> None:
-        uses = self._count_vreg_reads(func)
+        uses = count_vreg_reads(func)
         for block in func.blocks.values():
             block.instructions = self._rewrite_block(block.instructions, uses)
-
-    @staticmethod
-    def _count_vreg_reads(func: MIRFunction) -> Dict[int, int]:
-        """Reads of each vreg across the whole function, so a load whose value
-        is also wanted in another block is left alone."""
-        counts: Dict[int, int] = {}
-        for block in func.blocks.values():
-            for instr in block.instructions:
-                for _spec, value in iter_operands(instr, role=OperandRole.READ):
-                    if isinstance(value, VirtualRegister):
-                        counts[value.id] = counts.get(value.id, 0) + 1
-        return counts
 
     def _rewrite_block(self, instrs: List, uses: Dict[int, int]) -> List:
         out: List = []

@@ -8,7 +8,7 @@ reused by the inliner, loop unroller, and register promotion passes.
 
 from typing import Dict, List, Set, Tuple
 
-from r65.compiler.mir.nodes import MIRFunction, Jump, CondBranch
+from r65.compiler.mir.nodes import MIRFunction, iter_block_targets
 
 
 def find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:
@@ -29,13 +29,7 @@ def find_loops(func: MIRFunction) -> List[Tuple[int, Set[int]]]:
 
     for block_id, block in func.blocks.items():
         for instr in block.instructions:
-            if isinstance(instr, Jump):
-                targets = (instr.target,)
-            elif isinstance(instr, CondBranch):
-                targets = (instr.true_target, instr.false_target)
-            else:
-                continue
-            for target in targets:
+            for target in iter_block_targets(instr):
                 if (block_id, target) in back_edges:
                     loops.append((target, _find_loop_body(func, target, block_id)))
 
@@ -80,10 +74,7 @@ def _successors(block) -> List[int]:
     """Branch targets of *block*: its recorded successors plus its jumps'."""
     succs = list(block.successors)
     for instr in block.instructions:
-        if isinstance(instr, Jump):
-            succs.append(instr.target)
-        elif isinstance(instr, CondBranch):
-            succs.extend((instr.true_target, instr.false_target))
+        succs.extend(iter_block_targets(instr))
     return list(dict.fromkeys(succs))
 
 

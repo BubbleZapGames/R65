@@ -14,11 +14,11 @@ A stack parameter is promoted if:
 
 from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
-    MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate, Move, BinaryOp, UnaryOp, Compare, Store, StoreIndirect, LoadIndirect,
-    Call, TraitDispatch, CondBranch, Jump, TypeConvert, ToBool,
-    Rotate,
-    JumpTable, LookupTable, iter_operands, map_operands,
-    BlockCopy, MemoryFill, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX,
+    MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate,
+    Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, Call,
+    TraitDispatch, TypeConvert, ToBool, Rotate, JumpTable, LookupTable,
+    iter_operands, map_operands, BlockCopy, MemoryFill, AggregateCopy,
+    AGGREGATE_COPY_UNROLL_MAX,
 )
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
@@ -785,16 +785,6 @@ def _iter_vregs(instr):
             yield v
 
 
-def _map_vregs(instr, fn):
-    """Replace every VirtualRegister-bearing operand slot in place.
-
-    fn passes non-register values through unchanged (_replace_vreg is a no-op on
-    them). Operand coverage comes from the shared registry (mir/nodes.py), so it
-    can never drift from liveness / the inliner.
-    """
-    map_operands(instr, fn)
-
-
 def _get_vregs_from_instr(instr) -> List[VirtualRegister]:
     """Extract all VirtualRegister references from an instruction."""
     return list(_iter_vregs(instr))
@@ -916,4 +906,4 @@ def _replace_vreg(val, replacements: Dict[int, VirtualRegister]):
 
 def _replace_in_instr(instr, replacements: Dict[int, VirtualRegister]):
     """Replace VirtualRegister references in a single instruction."""
-    _map_vregs(instr, lambda v: _replace_vreg(v, replacements))
+    map_operands(instr, lambda v: _replace_vreg(v, replacements))

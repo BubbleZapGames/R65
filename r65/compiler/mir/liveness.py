@@ -14,7 +14,7 @@ from r65.compiler.mir.nodes import (
     Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest, Rotate,
     Call, Return, Jump, CondBranch, JumpTable, LookupTable, TypeConvert, ToBool,
     LoadIndirect, StoreIndirect, StatusFlagRead, TraitDispatch, BankByte,
-    iter_operands, OperandRole,
+    iter_operands, OperandRole, iter_block_targets,
 )
 
 # ============================================================================
@@ -36,19 +36,18 @@ _LIVENESS_NODES = frozenset({
 })
 
 
-def _uses_of(instr):
+def liveness_uses(instr) -> List:
+    """The operands *instr* reads, as liveness counts them."""
+    if type(instr) not in _LIVENESS_NODES:
+        return []
     return [v for _, v in iter_operands(instr, role=OperandRole.READ)]
 
 
-def _defs_of(instr):
+def liveness_defs(instr) -> List:
+    """The operands *instr* writes, as liveness counts them."""
+    if type(instr) not in _LIVENESS_NODES:
+        return []
     return [v for _, v in iter_operands(instr, role=OperandRole.WRITE)]
-
-
-# Compat shim: optimize/inline.py imports _GET_USES and calls
-# _GET_USES.get(type(instr))(instr) to collect read vreg ids. Keying on the
-# frozen node set reproduces the old dict's .get() -> (handler or None).
-_GET_USES = {t: _uses_of for t in _LIVENESS_NODES}
-_GET_DEFS = {t: _defs_of for t in _LIVENESS_NODES}
 
 
 @dataclass
@@ -188,31 +187,21 @@ class LivenessAnalyzer:
         """
         Get variables used (read) by an instruction.
 
-        Uses dispatch dict for O(1) type lookup.
-
         Returns both VirtualRegister and HardwareRegister instances.
         Note: HardwareRegister tracking is only for X and Y; A is not tracked
         for direct usage because it's constantly used for intermediate calculations.
         """
-        handler = _GET_USES.get(type(instr))
-        if handler:
-            return handler(instr)
-        return []
+        return liveness_uses(instr)
 
     def _get_defs(self, instr: MIRInstruction) -> List:
         """
         Get variables defined (written) by an instruction.
 
-        Uses dispatch dict for O(1) type lookup.
-
         Returns both VirtualRegister and HardwareRegister instances.
         Note: HardwareRegister tracking is only for X and Y; A is not tracked
         for direct usage because it's constantly used for intermediate calculations.
         """
-        handler = _GET_DEFS.get(type(instr))
-        if handler:
-            return handler(instr)
-        return []
+        return liveness_defs(instr)
 
     def _get_successors(self, block: BasicBlock) -> List[int]:
         """
@@ -224,31 +213,10 @@ class LivenessAnalyzer:
         Returns:
             List of successor block IDs
         """
-        successors = []
-
-        # Look at last instruction in block
-        if block.instructions:
-            last = block.instructions[-1]
-
-            if isinstance(last, Jump):
-                successors.append(last.target)
-
-            elif isinstance(last, CondBranch):
-                successors.append(last.true_target)
-                successors.append(last.false_target)
-
-            elif isinstance(last, JumpTable):
-                successors.extend(last.targets)
-                successors.append(last.default_target)
-
-            elif isinstance(last, LookupTable):
-                successors.append(last.merge_target)
-
-            elif isinstance(last, Return):
-                # No successors for return
-                pass
-
-        return successors
+        # Only the last instruction transfers control.
+        if not block.instructions:
+            return []
+        return list(iter_block_targets(block.instructions[-1]))
 
     def get_live_ranges(self) -> Dict[VirtualRegister, Set[int]]:
         """

@@ -39,8 +39,8 @@ instruction selection, which saw neither indexed operands nor 16-bit ones.
 from typing import Dict, List
 
 from r65.compiler.mir.nodes import (
-    BinaryOp, Compare, CondBranch, Immediate, IncDecMemory, Load, MIRFunction,
-    MIRProgram, OperandRole, Store, VirtualRegister, iter_operands,
+    BinaryOp, Compare, CondBranch, Immediate, IncDecMemory, Load,
+    MIRProgram, Store, VirtualRegister, count_vreg_reads,
 )
 
 # Storage INC/DEC can address with a 16-bit operand: direct page / absolute.
@@ -65,20 +65,10 @@ class MemoryIncDecFolder:
         self.folded = 0
         self.branch_flags_reused = 0
         for func in mir_program.functions:
-            reads = self._count_vreg_reads(func)
+            reads = count_vreg_reads(func)
             for block in func.blocks.values():
                 block.instructions = self._rewrite_block(block.instructions, reads)
         return self.folded
-
-    @staticmethod
-    def _count_vreg_reads(func: MIRFunction) -> Dict[int, int]:
-        counts: Dict[int, int] = {}
-        for block in func.blocks.values():
-            for instr in block.instructions:
-                for _spec, value in iter_operands(instr, role=OperandRole.READ):
-                    if isinstance(value, VirtualRegister):
-                        counts[value.id] = counts.get(value.id, 0) + 1
-        return counts
 
     def _rewrite_block(self, instrs: List, reads: Dict[int, int]) -> List:
         out: List = []

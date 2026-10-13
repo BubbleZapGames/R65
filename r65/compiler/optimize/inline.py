@@ -22,7 +22,7 @@ from r65.compiler.mir.nodes import (
     MemoryFill, BlockCopy, BankByte, BitTest, Rotate,
     StatusFlagTest, StatusFlagSet, StatusFlagRead,
     SetMode, Push, Pull, SaveRegister, RestoreRegister,
-    OPERAND_SPECS, OperandContainer, map_operands,
+    OPERAND_SPECS, OperandContainer, map_operands, map_block_targets, IMMEDIATE_SAFE_SLOTS, iter_memory_operands,
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
@@ -30,27 +30,8 @@ from r65.compiler.analysis.loop_analysis import compute_block_nesting
 from r65.compiler.optimize.far_to_near import compute_auto_bank_num, effective_bank
 
 
-# Operand slots (keyed by (instr_type, field)) where codegen legally accepts an
-# Immediate — it loads/uses the value via `LDA #imm` / `ADC #imm` / etc. An
-# Immediate must NOT be substituted into a pointer slot (LoadIndirect.pointer,
-# StoreIndirect.pointer), a switch scrutinee, a branch condition, or a return
-# value: those are register/DP-typed at codegen and a constant there silently
-# corrupts output. Caller VirtualRegister args are unconstrained (a vreg is
-# legal in every slot) and skip this whitelist. Used by
-# FunctionInliner._compute_param_substitution.
-_IMMEDIATE_SAFE_SLOTS: Set[Tuple[type, str]] = {
-    (Move, 'source'),
-    (Store, 'source'),
-    (StoreIndirect, 'source'),
-    (BinaryOp, 'left'), (BinaryOp, 'right'),
-    (UnaryOp, 'operand'),
-    (Compare, 'left'), (Compare, 'right'),
-    (TypeConvert, 'source'),
-    (BankByte, 'source'),
-    (ToBool, 'source'),
-    (Rotate, 'source'),
-    (BitTest, 'value'),
-}
+# Where an Immediate may replace a vreg read: see mir/nodes.py.
+_IMMEDIATE_SAFE_SLOTS = IMMEDIATE_SAFE_SLOTS
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +357,7 @@ class InlinabilityChecker:
 
         # Operands that may carry MemoryLocation references. Reject if any
         # bank-dependent location appears.
-        for op in self._maybe_memory_operands(instr):
+        for op in iter_memory_operands(instr):
             if not self._mem_loc_is_bank_safe(op):
                 return False
 
@@ -390,15 +371,6 @@ class InlinabilityChecker:
         # CondBranch, SetMode, Return, etc.) is bank-independent at the
         # body level.
         return True
-
-    def _maybe_memory_operands(self, instr: MIRInstruction):
-        """Yield MemoryLocation operands of `instr`. Used to scan
-        BinaryOp/UnaryOp/Compare/etc. whose source slots can hold a
-        MemoryLocation directly (avoids loading into a temp vreg)."""
-        for field in ('left', 'right', 'operand', 'source', 'value'):
-            op = getattr(instr, field, None)
-            if isinstance(op, MemoryLocation):
-                yield op
 
     def _mem_loc_is_bank_safe(self, loc) -> bool:
         """Decide whether codegen will emit bank-independent addressing
@@ -700,16 +672,6 @@ class BlockCloner:
     # Control-flow nodes carry block-id targets (not register operands); these
     # are remapped into the caller's block space during inlining. A new node
     # with jump targets must be added here.
-    _BLOCK_ID_SCALAR_FIELDS = {
-        Jump: ('target',),
-        CondBranch: ('true_target', 'false_target'),
-        JumpTable: ('default_target',),
-        LookupTable: ('merge_target',),
-    }
-    _BLOCK_ID_LIST_FIELDS = {
-        JumpTable: ('targets',),
-    }
-
     def _clone_instruction(self, instr: MIRInstruction) -> MIRInstruction:
         """Clone an instruction with all operands and block-ids remapped.
 
@@ -746,10 +708,7 @@ class BlockCloner:
         # Remap register operands (scalars, operand lists, arg.value).
         map_operands(new, self._remap_operand)
         # Remap block-id targets into the caller's block space.
-        for f in self._BLOCK_ID_SCALAR_FIELDS.get(type(instr), ()):
-            setattr(new, f, self._remap_block_id(getattr(new, f)))
-        for f in self._BLOCK_ID_LIST_FIELDS.get(type(instr), ()):
-            setattr(new, f, [self._remap_block_id(t) for t in getattr(new, f)])
+        map_block_targets(new, self._remap_block_id)
         # Defensive copy of the one constant (non-operand) list field.
         if isinstance(instr, LookupTable):
             new.values = list(instr.values)
@@ -1632,14 +1591,6 @@ class FunctionInliner:
         dead stack-param Moves: if the inlined body never reads the param's
         vreg, the inserted setup Move is a dead store.
         """
-        from r65.compiler.mir.liveness import _GET_USES
-        used: Set[int] = set()
-        for block in blocks.values():
-            for instr in block.instructions:
-                handler = _GET_USES.get(type(instr))
-                if handler is None:
-                    continue
-                for op in handler(instr):
-                    if isinstance(op, VirtualRegister):
-                        used.add(op.id)
-        return used
+        from r65.compiler.mir.liveness import liveness_uses
+        return {op.id for block in blocks.values() for instr in block.instructions
+                for op in liveness_uses(instr) if isinstance(op, VirtualRegister)}
