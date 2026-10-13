@@ -320,6 +320,9 @@ class MoveOperationSelector(BaseSelector):
         if is_u16:
             self.parent._emit_16bit_immediate_store(value, dest_loc)
         else:
+            # A u8 store needs m8: in m16 it would write 2 bytes and
+            # clobber the byte after dest.
+            self.parent._ensure_m8_mode()
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFF))
             self._emit_load_store('STA', dest_loc)
 

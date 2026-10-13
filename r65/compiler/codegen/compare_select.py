@@ -419,8 +419,9 @@ class CompareSelector(BaseSelector):
     def _can_elide_cmp_zero(self, reg: str, right_operand, is_immediate: bool) -> bool:
         """
         Check if CMP/CPX/CPY #0 can be skipped because N/Z flags already
-        reflect the register's value from a prior instruction (LDA, DEX,
-        TXA, XBA, etc.).
+        reflect the register's value, at its current width, from a prior
+        instruction (LDA, DEX, TXA, XBA, etc.). The emitter drops that
+        validity at a REP/SEP that changes the register's width.
 
         Only safe for unsigned types — signed ordered comparisons need
         the V flag, which only the signed compare's SBC sets.

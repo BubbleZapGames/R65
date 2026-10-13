@@ -665,8 +665,20 @@ NZ_PRESERVING_MNEMONICS = frozenset({
     'BRA', 'BRL', 'BEQ', 'BNE', 'BCC', 'BCS', 'BMI', 'BPL', 'BVC', 'BVS',
     'JMP',
     'CLC', 'SEC', 'CLI', 'SEI', 'CLD', 'SED', 'CLV',
-    'REP', 'SEP',  # Only affect M/X bits (#$20/#$10) in compiler usage
 })
+
+
+def rep_sep_preserves_nz(mask: "int | None", reg: str) -> bool:
+    """Whether a REP/SEP of *mask* leaves N/Z valid for *reg*.
+
+    REP/SEP leave N/Z alone unless the mask names N ($80) or Z ($02), but
+    they change the width *reg*'s flags were computed at: M ($20) for A,
+    X ($10) for X/Y. An unknown mask (None) preserves nothing.
+    """
+    if not isinstance(mask, int):
+        return False
+    width_bit = 0x20 if reg == 'A' else 0x10
+    return not mask & (0x82 | width_bit)
 
 
 def nz_register(op: Opcode, m16: "bool | None" = None) -> "str | None":

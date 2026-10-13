@@ -81,7 +81,7 @@ def test_instructions():
     emitter.emit_instr(Opcode.STA_DP, Address(0x20))
 
     # Absolute
-    emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x7E2000))
+    emitter.emit_instr(Opcode.STA_ABSOLUTE, Address(0x2000))
 
     # Indexed
     emitter.emit_instr(Opcode.LDA_DP_X, Address(0x20))
@@ -161,3 +161,12 @@ def test_small_address_keeps_its_mode(opcode, address, text):
     """WLA-DX shrinks `$0010` and `$000010` to direct page, which under D = S
     addresses the stack frame; a sized mnemonic keeps the mode."""
     assert _emit_instruction(opcode, Address(address)) == text
+
+
+def test_bool_constant_equ_is_numeric():
+    """WLA-DX has no True/False: a bool const is written as 1/0."""
+    emitter = AssemblyEmitter()
+    emitter.emit_equ("DBG", False)
+    emitter.emit_equ("T", True)
+    assert ".EQU DBG 0" in emitter.to_string()
+    assert ".EQU T 1" in emitter.to_string()

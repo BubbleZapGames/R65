@@ -106,3 +106,18 @@ def test_widening_still_correct(e2e):
     ''', ExpectedState(memory={0x7E0010: 0x80, 0x7E0011: 0x00,
                                0x7E0012: 0xFD, 0x7E0013: 0xFF}))
     assert result.success, f"Failures: {result.failures}"
+
+
+def test_narrowed_compare_after_width_switch(e2e):
+    """`(v as u8) == 0` after a u16 sum: the SEP between the add and the
+    branch changes the width, so the 16-bit flags must be recomputed."""
+    result = e2e.run('''
+        #[zeropage(0x10)] static mut R: u8;
+        #[lowram] static mut W: u16;
+        #[entry] fn main() {
+            W = 0x00FF;
+            let v: u16 = W + 1;
+            if (v as u8) == 0 { R = 1; } else { R = 2; }
+        }
+    ''', ExpectedState(memory={0x7E0010: 0x01}))
+    assert result.success, f"Failures: {result.failures}"

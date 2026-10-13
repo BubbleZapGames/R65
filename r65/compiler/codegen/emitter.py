@@ -15,9 +15,11 @@ from datetime import datetime
 if TYPE_CHECKING:
     from r65.compiler.errors import SourceLocation
 
+from r65.compiler.errors import InternalCompilerError
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, addressing_mode, BRANCH_OPCODES, MEMORY_WRITE_OPCODES,
     ACCUMULATOR_OPCODES, NZ_PRESERVING_MNEMONICS, nz_register, registers_written,
+    rep_sep_preserves_nz,
 )
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Comment, Directive, ModeChange, BlankLine,
@@ -254,7 +256,8 @@ def _emit_instruction(opcode: Opcode, operand: Operand | None) -> str:
             return f"{mnem} {BlockMove._fmt(bm.src_bank)}, {BlockMove._fmt(bm.dst_bank)}"
 
         case _:
-            # Fallback for unhandled cases
+            # A raw operand string, printed verbatim. A bare int never gets
+            # here: emit_instr refuses it rather than print it as an address.
             return f"{mnem} {operand}"
 
 
@@ -313,8 +316,10 @@ class AssemblyEmitter:
         # Track current processor modes for optimization
         self._current_accu_mode = 8  # Default m8 mode
         self._current_index_mode = 16  # Default x16 mode
-        # Track which register (if any) the N/Z flags currently reflect.
-        # Used to elide redundant CMP/CPX/CPY #0 when flags are already valid.
+        # Track which register (if any) the N/Z flags currently reflect, at
+        # the width that register had when they were set: a REP/SEP that
+        # changes that width (M for A, X for X/Y) invalidates it. Used to
+        # elide redundant CMP/CPX/CPY #0 when flags are already valid.
         self.nz_valid_for: str | None = None  # 'A', 'X', 'Y', or None
         # True while X and Y are known to hold the same value — set by
         # TYX/TXY, cleared by anything that writes X or Y and at labels.
@@ -366,9 +371,24 @@ class AssemblyEmitter:
             operand: The operand (Immediate, Address, StackOffset, etc.)
             comment: Optional comment
             source_loc: Optional source location for debug info
+
+        A bare int is not an operand: it would print as an address, so an
+        intended immediate would become a memory read. Wrap it in Immediate
+        or Address. A 24-bit address needs a LONG opcode: WLA-DX would
+        assemble it long anyway, a byte longer than OPCODE_SIZES counts.
         """
+        if isinstance(operand, int):
+            raise InternalCompilerError(
+                f"{opcode.name}: bare int operand {operand!r}; "
+                f"pass Immediate(...) or Address(...)", source_loc)
+        if (isinstance(operand, Address) and isinstance(operand.value, int)
+                and operand.value > 0xFFFF
+                and addressing_mode(opcode) in ('ABSOLUTE', 'ABSOLUTE_X', 'ABSOLUTE_Y')):
+            raise InternalCompilerError(
+                f"{opcode.name}: 24-bit address ${operand.value:06X} in a 16-bit "
+                f"absolute opcode; select the LONG form", source_loc)
         self.nodes.append(Instruction(opcode, operand, comment, source_loc))
-        self._update_nz_tracking(opcode)
+        self._update_nz_tracking(opcode, operand)
         self._update_xy_copy_tracking(opcode, operand)
         self._update_slot_tracking(opcode, operand)
 
@@ -777,18 +797,26 @@ class AssemblyEmitter:
                 or mn in self._MAY_WRITE_XY):
             self.x_slot = None
 
-    def _update_nz_tracking(self, opcode: Opcode):
+    def _update_nz_tracking(self, opcode: Opcode, operand: Operand | None = None):
         """
         Update N/Z flag tracking after emitting an instruction.
 
         Tracks which register (A, X, or Y) the processor N/Z flags currently
-        reflect. Used to elide redundant CMP/CPX/CPY #0 instructions when
-        the flags are already valid from a prior load, transfer, or ALU op.
+        reflect, at that register's width when they were set. Used to elide
+        redundant CMP/CPX/CPY #0 instructions when the flags are already
+        valid from a prior load, transfer, or ALU op.
         """
+        mn = mnemonic(opcode)
+        if mn in ('REP', 'SEP'):
+            mask = operand.value if isinstance(operand, Immediate) else None
+            if (self.nz_valid_for is not None
+                    and not rep_sep_preserves_nz(mask, self.nz_valid_for)):
+                self.nz_valid_for = None
+            return
         reg = nz_register(opcode, {16: True, 8: False}.get(self._current_accu_mode))
         if reg is not None:
             self.nz_valid_for = reg
-        elif mnemonic(opcode) not in NZ_PRESERVING_MNEMONICS:
+        elif mn not in NZ_PRESERVING_MNEMONICS:
             # CMP/CPX/CPY, BIT, PLP, a call, a memory read-modify-write...
             self.nz_valid_for = None
 
@@ -827,8 +855,10 @@ class AssemblyEmitter:
 
         Generated:
             .EQU SCREEN_WIDTH 256   ; Constant
+
+        A bool value is written as 1/0: WLA-DX has no True/False.
         """
-        line = f".EQU {name} {value}"
+        line = f".EQU {name} {int(value)}"
 
         if comment:
             padding = max(1, COMMENT_COLUMN - len(line))

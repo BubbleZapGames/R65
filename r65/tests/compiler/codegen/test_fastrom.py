@@ -215,3 +215,20 @@ far fn way_out_there() {
 """
         with pytest.raises(CodegenError, match="fastrom"):
             compile_source(program(LOROM_FAST, extra, "way_out_there();"))
+
+
+@pytest.mark.parametrize("header", [LOROM_FAST, HIROM_FAST])
+def test_dbg_function_symbols_get_their_segment(header, tmp_path):
+    """Segments carry the CPU bank ($80/$C0 + n); a function in WLA bank 0
+    must still find its segment in the .dbg."""
+    ast = parse(program(header))
+    hir_program = HIRBuilder().build_program(ast)
+    TypeChecker(hir_program).check()
+    mir_program = MIRBuilder().build_program(hir_program)
+    gen = ProgramCodeGenerator()
+    gen.generate(mir_program, debug=True)
+    gen.write_outputs(str(tmp_path / "game.asm"), debug=True)
+    dbg = (tmp_path / "game.dbg").read_text()
+    main_sym = next(l for l in dbg.splitlines()
+                    if l.startswith("sym") and 'name="main"' in l)
+    assert "seg=0" in main_sym

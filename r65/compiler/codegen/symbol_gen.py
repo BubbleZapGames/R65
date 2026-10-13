@@ -11,6 +11,16 @@ from r65.compiler.codegen.memory_alloc import MemoryAllocator, AllocationInfo
 from r65.compiler.codegen.emitter import AssemblyEmitter
 
 
+def rom_static_bank(static_decl) -> Optional[int]:
+    """The WLA bank a static's ROM data goes in: its #[bank(n)], or None
+    under #[bank(auto)] (the caller picks the auto bank). A static with no
+    bank attribute (RAM, extern) has its data in bank 0."""
+    bank_attr = getattr(static_decl, 'bank_attr', None)
+    if bank_attr is None:
+        return 0
+    return bank_attr.bank_number
+
+
 class SymbolDefinitionGenerator:
     """
     Generates symbol definition sections in assembly.
@@ -263,6 +273,7 @@ class SymbolDefinitionGenerator:
                 value = 0
 
             # Skip struct/dict constants — WLA-DX .EQU only accepts integers
+            # (a bool is one, written as 1/0 by emit_equ)
             if not isinstance(value, int):
                 continue
 
@@ -314,16 +325,10 @@ class SymbolDefinitionGenerator:
                         except OSError:
                             file_size = 0
 
-                        # Check for bank attribute
-                        if hasattr(static_decl, 'bank_attr') and static_decl.bank_attr:
-                            bank_num = static_decl.bank_attr.bank_number
-                            if bank_num is not None:
-                                bank_data[bank_num].append((alloc, static_decl, file_size))
-                            else:
-                                # Auto-placement mode
-                                auto_bank_data.append((alloc, static_decl, file_size))
+                        bank_num = rom_static_bank(static_decl)
+                        if bank_num is not None:
+                            bank_data[bank_num].append((alloc, static_decl, file_size))
                         else:
-                            # No bank attribute - use auto-placement
                             auto_bank_data.append((alloc, static_decl, file_size))
 
         if not bank_data and not auto_bank_data:

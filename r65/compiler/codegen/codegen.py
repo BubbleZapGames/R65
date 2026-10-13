@@ -11,7 +11,7 @@ from r65.compiler.mir import MIRProgram, MIRFunction
 from r65.compiler.mir.nodes import SymbolByte
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator
+from r65.compiler.codegen.symbol_gen import SymbolDefinitionGenerator, rom_static_bank
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.optimize.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
@@ -213,6 +213,10 @@ class ProgramCodeGenerator:
 
         # Organize functions by bank first to determine bank count
         functions_by_bank = self._organize_functions_by_bank(mir_program.functions)
+        # ROM data goes in its static's bank; open a window for each such bank.
+        rom_data_by_bank = self._rom_data_by_bank(mir_program)
+        for data_bank in rom_data_by_bank:
+            functions_by_bank.setdefault(data_bank, [])
         max_bank = max(functions_by_bank.keys()) if functions_by_bank else 0
         bank_count = max_bank + 1  # Banks are 0-indexed
 
@@ -378,11 +382,11 @@ class ProgramCodeGenerator:
                     reset=reset_h, **handlers
                 )
 
+            # ROM static data and initializer tables placed in this bank
+            self._emit_rom_data_sections(rom_data_by_bank.get(bank_num, []))
+
         # Trait dispatch tables (jump tables and wrapper functions)
         self._emit_trait_dispatch_tables(mir_program)
-
-        # ROM data sections (for array literal initialization)
-        self._emit_rom_data_sections(mir_program)
 
         # Interrupt vectors
         self._emit_interrupt_vectors(mir_program)
@@ -691,14 +695,19 @@ class ProgramCodeGenerator:
                 auto_bank_funcs.append(func)
 
         if auto_bank_funcs:
-            # Place auto-bank functions in the bank above the highest explicit bank,
-            # mirroring the data-side convention (auto-bank statics start at max+1
-            # with a floor of bank 4 — see symbol_gen.py).
-            explicit_max = max(by_bank.keys()) if by_bank else -1
-            auto_bank_num = max(explicit_max + 1, 4)
-            by_bank.setdefault(auto_bank_num, []).extend(auto_bank_funcs)
+            by_bank.setdefault(self._auto_bank_number(functions), []).extend(auto_bank_funcs)
 
         return by_bank
+
+    @staticmethod
+    def _auto_bank_number(functions: List[MIRFunction]) -> int:
+        """The bank #[bank(auto)] code and ROM data go in: the one above the
+        highest explicit function bank, at least bank 4 (the data-side
+        convention of symbol_gen.py)."""
+        explicit = [0 if f.bank_attr is None else f.bank_attr.bank_number
+                    for f in functions
+                    if f.bank_attr is None or f.bank_attr.bank_number is not None]
+        return max(max(explicit, default=-1) + 1, 4)
 
     def _program_needs_interrupt_vectors(self, mir_program: MIRProgram) -> bool:
         """True iff the program needs an SNES vector table (and a
@@ -829,22 +838,44 @@ class ProgramCodeGenerator:
         for rom_data in mir_func.local_rom_data:
             self._emit_rom_data_table(rom_data)
 
-    def _emit_rom_data_sections(self, mir_program: MIRProgram):
-        """
-        Emit ROM data sections for array literal initialization.
+    def _rom_data_by_bank(self, mir_program: MIRProgram) -> Dict[int, List[Any]]:
+        """Group the program's ROM data tables by the WLA bank they belong in.
 
-        Creates labeled data sections in ROM that will be copied to RAM
-        during initialization using BlockCopy (MVN instruction).
+        A ROM static's table (`__NAME_data`) goes in the static's own bank -
+        the rule include_bytes! data follows too (symbol_gen.rom_static_bank):
+        its #[bank(n)], or the auto bank under #[bank(auto)]. A near `&T`
+        reads through DBR, so a bank-0 static's bytes must be in bank 0.
+        Everything else - a RAM static's initializer, an inline string -
+        goes in bank 0.
+        """
+        auto_bank = self._auto_bank_number(mir_program.functions)
+        bank_of_label: Dict[str, int] = {}
+        for decl in mir_program.statics:
+            label = getattr(getattr(decl, 'symbol', None), 'rom_label', None)
+            if label:
+                bank = rom_static_bank(decl)
+                bank_of_label[label] = auto_bank if bank is None else bank
+        by_bank: Dict[int, List[Any]] = {}
+        for rom_data in mir_program.rom_data_sections:
+            by_bank.setdefault(bank_of_label.get(rom_data.label, 0), []).append(rom_data)
+        return by_bank
+
+    def _emit_rom_data_sections(self, rom_data_tables: List[Any]):
+        """
+        Emit ROM data tables into the open bank window.
+
+        These hold ROM statics' bytes and the initializer data that
+        __init_start copies to RAM with BlockCopy (MVN).
 
         Args:
-            mir_program: MIR program
+            rom_data_tables: ROMDataRef tables placed in this bank
         """
-        if not mir_program.rom_data_sections:
+        if not rom_data_tables:
             return
 
         self.emitter.emit_section_header("ROM Data Sections (array literal init data)")
 
-        for rom_data in mir_program.rom_data_sections:
+        for rom_data in rom_data_tables:
             self._emit_rom_data_table(rom_data)
 
     def _emit_symbol_exports(self, mir_program: MIRProgram):
@@ -990,18 +1021,23 @@ class ProgramCodeGenerator:
             # Output file offset (bank * bank_size for LoROM)
             ooffs = bank_num * bank_size
 
-            # Report the 65816 bank the CPU actually executes, not the WLA
-            # bank index: .BASE $80 (LoROM FastROM) / $C0 (HiROM) shifts it.
-            cpu_bank = getattr(self.emitter, 'rom_base', 0) + bank_num
-
             self.debug_info.add_segment(
                 name=f"BANK{bank_num}",
                 start=start,
                 size=bank_size,
-                bank=cpu_bank,
+                bank=self._cpu_bank(bank_num),
                 ooffs=ooffs,
                 seg_type="ro"
             )
+
+    def _cpu_bank(self, bank_num: int) -> int:
+        """The 65816 bank the CPU executes WLA bank `bank_num` from.
+
+        `.BASE $80` (LoROM FastROM) / `$C0` (HiROM) shifts it off the WLA
+        bank index. DbgSegment.bank holds this CPU bank, so a lookup by WLA
+        bank index goes through here too.
+        """
+        return getattr(self.emitter, 'rom_base', 0) + bank_num
 
     def _collect_symbols(self, mir_program: MIRProgram, nodes: list, base_address: int):
         """
@@ -1032,10 +1068,11 @@ class ProgramCodeGenerator:
             if func.bank_attr and func.bank_attr.bank_number is not None:
                 bank_num = func.bank_attr.bank_number
 
-            # Find segment ID for this bank
+            # Find segment ID for this bank (segments carry the CPU bank)
             seg_id = None
+            cpu_bank = self._cpu_bank(bank_num)
             for seg in self.debug_info.segments:
-                if seg.bank == bank_num:
+                if seg.bank == cpu_bank:
                     seg_id = seg.id
                     break
 

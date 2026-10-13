@@ -28,7 +28,7 @@ class DbgSegment:
     name: str
     start: int      # Start address in CPU address space
     size: int       # Size in bytes
-    bank: int       # Bank number
+    bank: int       # 65816 bank the CPU runs it from (rom_base + WLA bank)
     ooffs: int      # Output file offset
     addrsize: str = "absolute"
     seg_type: str = "ro"  # "ro" for ROM or "rw" for RAM
@@ -130,7 +130,7 @@ class DebugInfoCollector:
             name: Segment name (e.g., "BANK0")
             start: Start address in CPU space
             size: Size in bytes
-            bank: Bank number
+            bank: 65816 bank the CPU runs it from (rom_base + WLA bank)
             ooffs: Output file offset
             seg_type: "ro" for ROM or "rw" for RAM
 

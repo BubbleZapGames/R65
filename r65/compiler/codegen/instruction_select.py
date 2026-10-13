@@ -573,9 +573,11 @@ class InstructionSelector:
 
         # Load source value into A
         if isinstance(source, MIRImmediate):
-            # Constant folding: evaluate at compile time
+            # Constant folding: evaluate at compile time. A bool is one
+            # byte: load and store it in m8.
             result = 1 if source.value != 0 else 0
-            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, result, comment="ToBool constant")
+            self._ensure_m8_mode()
+            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(result), comment="ToBool constant")
         else:
             # Load the source value
             src_loc = self._get_operand_location(source)
@@ -1817,16 +1819,25 @@ class InstructionSelector:
         return is_16bit_scalar(type_info)
 
     def _emit_indexed_store(self, base_addr: int, index_reg: str, comment: str = None):
-        """Emit a store with indexed addressing: STA base,X or STA base,Y."""
-        is_dp = base_addr < DP_BOUNDARY
+        """Emit a store with indexed addressing: STA base,X or STA base,Y.
+
+        A 24-bit base (WRAM at $7E2000+) takes STA long,X, which ignores DBR;
+        there is no long,Y form.
+        """
         if index_reg == 'X':
-            opcode = Opcode.STA_DP_X if is_dp else Opcode.STA_ABSOLUTE_X
+            if base_addr < DP_BOUNDARY:
+                opcode = Opcode.STA_DP_X
+            elif base_addr > WORD_MASK:
+                opcode = Opcode.STA_LONG_X
+            else:
+                opcode = Opcode.STA_ABSOLUTE_X
         else:  # 'Y'
-            opcode = Opcode.STA_ABSOLUTE_Y  # No STA dp,Y on 65816
+            opcode = Opcode.STA_ABSOLUTE_Y  # No STA dp,Y or long,Y on 65816
         self.emitter.emit_instr(opcode, Address(base_addr), comment)
 
     def _emit_indexed_stz(self, base_addr: int, comment: str = None):
-        """Emit STZ with X-indexed addressing. Only valid for DP/absolute addresses (not WRAM)."""
+        """Emit STZ with X-indexed addressing. DP/absolute bases only: STZ has
+        no long form, so a WRAM base is stored through A instead."""
         opcode = Opcode.STZ_DP_X if base_addr < DP_BOUNDARY else Opcode.STZ_ABSOLUTE_X
         self.emitter.emit_instr(opcode, Address(base_addr), comment)
 
@@ -1836,7 +1847,8 @@ class InstructionSelector:
 
         Picks a countdown BPL loop for <=256 bytes, else a forward DEY/BNE
         loop. `use_stz` selects STZ base,X over STA base,X; the per-element
-        step (and extra DEX/INX) follows element_size.
+        step (and extra DEX/INX) follows element_size. The caller sets the
+        accumulator width to element_size first.
         """
         def store():
             if use_stz:
@@ -1874,7 +1886,7 @@ class InstructionSelector:
 
         is_wram = base_addr >= WRAM_BANK_START
 
-        # Seed first byte with zero
+        # Seed first byte with zero (the caller put A in m8)
         if is_wram:
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 0x00)
             self.emitter.emit_instr(Opcode.STA_LONG, Address(base_addr), "Seed zero byte")
@@ -1917,9 +1929,13 @@ class InstructionSelector:
 
         1. Zero fill, large (>32 bytes): MVN self-copy (7 cycles/byte)
         2. Zero fill, small, non-WRAM: STZ loop (~6 cycles/byte)
-        3. Zero fill, small, WRAM: LDA #0 + STA loop (no STZ long on 65816)
+        3. Zero fill, small, WRAM: LDA #0 + STA long,X loop (no STZ long)
         4. Non-zero u16 fill: 16-bit A mode STA loop (~13 cycles/element)
         5. Non-zero u8 fill: 8-bit LDA + STA loop
+
+        A WRAM base (24-bit, $7E2000+) is stored with long,X, so the loop
+        does not depend on DBR. Byte fills run in m8, word fills in m16,
+        and the fill ends in m8.
 
         Args:
             instr: MemoryFill instruction
@@ -1939,6 +1955,10 @@ class InstructionSelector:
 
         base_addr = dest_loc.memory_addr if dest_loc.kind == LocationKind.MEMORY else dest_loc.scratch_addr
         is_wram = base_addr >= WRAM_BANK_START
+
+        # Byte stores and the MVN seed need m8; word fills switch to m16
+        # and come back.
+        self._ensure_m8_mode()
 
         if fill_value == 0 and total_bytes > self._MVN_ZERO_FILL_THRESHOLD:
             # === Large zero fill: MVN self-copy ===
@@ -2168,11 +2188,13 @@ class InstructionSelector:
             # No-op for branchable flags - branch instruction handles it
             self.emitter.emit_comment(f"StatusFlagTest {instr.flag_name} (direct branch)")
         else:
-            # Non-branchable flag - need to test via PHP; PLA; AND #mask
+            # Non-branchable flag - need to test via PHP; PLA; AND #mask.
+            # PHP pushes one byte, so the PLA must run in m8.
             self.emitter.emit_comment(f"StatusFlagTest {instr.flag_name}")
+            self._ensure_m8_mode()
             self.emitter.emit_instr(Opcode.PHP, comment="Push STATUS to stack")
             self.emitter.emit_instr(Opcode.PLA, comment="Pull STATUS into A")
-            self.emitter.emit_instr(Opcode.AND_IMMEDIATE, instr.bit_mask,
+            self.emitter.emit_instr(Opcode.AND_IMMEDIATE, Immediate(instr.bit_mask),
                                     comment=f"Test {instr.flag_name} flag")
 
     def select_status_flag_set(self, instr: StatusFlagSet):
@@ -2249,16 +2271,18 @@ class InstructionSelector:
         Generate code for StatusFlagRead instruction.
 
         Reads a STATUS flag into a virtual register as boolean (0/1).
-        Emits: PHP; PLA; AND #mask; (normalize to 0/1 if needed)
+        Emits, in m8: PHP; PLA; AND #mask; (normalize to 0/1 if needed).
+        PHP pushes one byte, so an m16 PLA would pull a byte too many.
         """
         from r65.compiler.codegen.opcodes import Opcode
 
         self.emitter.emit_comment(f"StatusFlagRead {instr.flag_name}")
 
         # Get STATUS into A
+        self._ensure_m8_mode()
         self.emitter.emit_instr(Opcode.PHP, comment="Push STATUS to stack")
         self.emitter.emit_instr(Opcode.PLA, comment="Pull STATUS into A")
-        self.emitter.emit_instr(Opcode.AND_IMMEDIATE, instr.bit_mask,
+        self.emitter.emit_instr(Opcode.AND_IMMEDIATE, Immediate(instr.bit_mask),
                                 comment=f"Isolate {instr.flag_name} flag")
 
         # Normalize to 0/1 (result is 0 if flag clear, or bit_mask if flag set)
@@ -2268,7 +2292,7 @@ class InstructionSelector:
             # Use BEQ to skip if already 0, otherwise load 1
             norm_label = self._get_unique_label()
             self.emitter.emit_instr(Opcode.BEQ, norm_label, comment="Skip if flag clear")
-            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, 1, comment="Normalize to 1")
+            self.emitter.emit_instr(Opcode.LDA_IMMEDIATE, Immediate(1), comment="Normalize to 1")
             self.emitter.emit_label(norm_label)
 
         # Store result to destination

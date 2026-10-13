@@ -358,3 +358,62 @@ def test_select_set_mode_combined_mx_mask_updates_accu():
     emitter.emit_accu_mode(16)
     selector.select_instruction(SetMode(mask=0x30, is_set=True))
     assert emitter.get_accu_mode() == 8
+
+
+def test_status_flag_read_uses_immediates_in_m8():
+    """`STATUS.Decimal as u8` after u16 work: PHP pushes one byte, so the
+    PLA runs in m8, and the mask and the normalized 1 are immediates."""
+    from r65.compiler.main import compile_string
+    asm = compile_string('''
+        #[zeropage(0x10)] static mut R: u8;
+        #[zeropage(0x12)] static mut W: u16;
+        #[entry] fn main() { W = W + 1; R = STATUS.Decimal as u8; }
+    ''', cfg_options=["snes"])
+    body = asm.split("; StatusFlagRead Decimal", 1)[1]
+    lines = [l.split(";")[0].strip() for l in body.splitlines()]
+    lines = [l for l in lines if l and not l.startswith(".")]
+    assert lines[:4] == ["SEP #$20", "PHP", "PLA", "AND #$08"]
+    assert "LDA #$01" in lines
+
+
+def test_emit_instr_rejects_bare_int_operand():
+    """A bare int would print as an address (`AND 8`), so it is refused."""
+    import pytest
+    from r65.compiler.codegen.opcodes import Opcode
+    from r65.compiler.errors import InternalCompilerError
+    with pytest.raises(InternalCompilerError):
+        AssemblyEmitter().emit_instr(Opcode.AND_IMMEDIATE, 8)
+
+
+def test_memory_fill_stores_wram_long_and_bytes_in_m8():
+    """A #[ram] fill stores through long,X (4 bytes, as WLA-DX assembles a
+    24-bit operand), and a byte fill after u16 work runs in m8."""
+    from r65.compiler.frontend import parse
+    from r65.compiler.hir import HIRBuilder
+    from r65.compiler.typeck import TypeChecker
+    from r65.compiler.mir import MIRBuilder
+    from r65.compiler.codegen import ProgramCodeGenerator
+    from r65.compiler.codegen.asm_nodes import Address, Instruction
+    from r65.compiler.codegen.opcodes import Opcode, instruction_size
+    hir = HIRBuilder().build_program(parse('''
+        #[ram] static mut BUF: [u8; 16] = [5; 16];
+        #[lowram] static mut W: u16;
+        #[zeropage(0x12)] static mut Q: u16;
+        #[zeropage(0x10)] static mut R: u8;
+        fn work(i @ X: u16) -> u8 {
+            Q = W + 1;
+            let mut buf: [u8; 8] = [7; 8];
+            buf[i] = 3;
+            return buf[1] + buf[i];
+        }
+        #[entry] fn main() { R = BUF[3] + work(2); }
+    '''))
+    TypeChecker(hir).check()
+    gen = ProgramCodeGenerator()
+    asm = gen.generate(MIRBuilder().build_program(hir), opt_level=0)
+    store = next(n for n in gen._last_final_nodes if isinstance(n, Instruction)
+                 and n.operand == Address(0x7E2000))
+    assert store.opcode == Opcode.STA_LONG_X
+    assert instruction_size(store.opcode) == 4
+    fill = asm.split("; Fill 8 x 1B elements with #7", 1)[1].splitlines()
+    assert fill[1].split(";")[0].strip() == "SEP #$20"
