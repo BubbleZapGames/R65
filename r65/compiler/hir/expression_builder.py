@@ -606,12 +606,10 @@ class ExpressionBuilder:
 
                     # Const math builtins - try to fold if all args are const
                     if builtin and builtin.kind.value == "const_math":
-                        try:
-                            const_value = self.const_evaluator.eval(expr)
-                            if isinstance(const_value, int):
-                                return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
-                        except HIRError:
-                            pass  # Args may be runtime vars inside a const fn
+                        # Args may be runtime vars inside a const fn.
+                        folded = self._fold_to_literal(expr, src_loc)
+                        if folded is not None:
+                            return folded
 
                     # Mark this as a built-in function call
                     builtin_name = func_name
@@ -625,20 +623,10 @@ class ExpressionBuilder:
                 symbol = self.symbol_table.lookup(expr.func.name)
                 if (symbol and symbol.kind == SymbolKind.FUNCTION and
                         hasattr(symbol.definition, 'is_const') and symbol.definition.is_const):
-                    try:
-                        const_value = self.const_evaluator.eval(expr)
-                        if isinstance(const_value, bool):
-                            return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
-                        elif isinstance(const_value, int):
-                            return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
-                        elif isinstance(const_value, list):
-                            elements = [
-                                hir.HIRIntegerLiteral(value=v, source_loc=src_loc)
-                                for v in const_value
-                            ]
-                            return hir.HIRArrayLiteralExpr(elements=elements, source_loc=src_loc)
-                    except HIRError:
-                        pass  # Args not all const — fall through to runtime call
+                    # Args not all const: fall through to the runtime call.
+                    folded = self._fold_to_literal(expr, src_loc, arrays=True)
+                    if folded is not None:
+                        return folded
 
             # Build func expression
             # For built-ins, create a dummy symbol to avoid "undefined identifier" errors
@@ -677,32 +665,21 @@ class ExpressionBuilder:
             return hir.HIRBooleanLiteral(value=result, source_loc=src_loc)
 
         elif isinstance(expr, ast.ArrayIndex):
-            # Try const-folding: CONST_ARRAY[0] → literal
-            try:
-                const_value = self.const_evaluator.eval(expr)
-                if isinstance(const_value, bool):
-                    return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
-                elif isinstance(const_value, int):
-                    return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
-                # dict/list results: fall through (wrapping FieldAccess will resolve)
-            except HIRError:
-                pass
+            # CONST_ARRAY[0] -> literal. A dict/list element falls through:
+            # the wrapping FieldAccess resolves it.
+            folded = self._fold_to_literal(expr, src_loc)
+            if folded is not None:
+                return folded
 
             array = self.build_expression(expr.array)
             index = self.build_expression(expr.index)
             return hir.HIRArrayIndex(array=array, index=index, original_ast=expr, source_loc=src_loc)
 
         elif isinstance(expr, ast.FieldAccess):
-            # Try const-folding: CONST_STRUCT.field → literal
-            try:
-                const_value = self.const_evaluator.eval(expr)
-                if isinstance(const_value, bool):
-                    return hir.HIRBooleanLiteral(value=const_value, source_loc=src_loc)
-                elif isinstance(const_value, int):
-                    return hir.HIRIntegerLiteral(value=const_value, source_loc=src_loc)
-                # dict/list results: fall through to normal handling
-            except HIRError:
-                pass
+            # CONST_STRUCT.field -> literal
+            folded = self._fold_to_literal(expr, src_loc)
+            if folded is not None:
+                return folded
 
             plane = self._soa_payload_access(expr, src_loc)
             if plane is not None:
@@ -892,6 +869,23 @@ class ExpressionBuilder:
         for enum_name, (pool_symbol, _loc, prefix) in self.enum_storage.items():
             if pool_symbol is symbol and prefix == f"{field_name}__":
                 return enum_name
+        return None
+
+    def _fold_to_literal(self, expr, src_loc, arrays: bool = False):
+        """*expr* as a literal when it evaluates at compile time to a bool or an
+        int (or, with *arrays*, a list of ints); None otherwise."""
+        try:
+            value = self.const_evaluator.eval(expr)
+        except HIRError:
+            return None
+        if isinstance(value, bool):
+            return hir.HIRBooleanLiteral(value=value, source_loc=src_loc)
+        if isinstance(value, int):
+            return hir.HIRIntegerLiteral(value=value, source_loc=src_loc)
+        if arrays and isinstance(value, list):
+            return hir.HIRArrayLiteralExpr(
+                elements=[hir.HIRIntegerLiteral(value=v, source_loc=src_loc) for v in value],
+                source_loc=src_loc)
         return None
 
     def _tagged_enum_static(self, name: str):

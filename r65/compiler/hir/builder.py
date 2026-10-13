@@ -735,6 +735,49 @@ class HIRBuilder:
                 return candidate
         return None
 
+    def _bank_attr_for(self, is_far: bool, not_far_error) -> BankAttribute:
+        """The bank a declaration lands in: the current #[bank(n)] context, or
+        None (placed at link time) under #[bank(auto)] - where it must be far,
+        else *not_far_error()* is raised."""
+        if self.auto_bank_mode:
+            if not is_far:
+                raise not_far_error()
+            return BankAttribute(name='bank', bank_number=None)
+        return BankAttribute(name='bank', bank_number=self.current_bank)
+
+    def _check_vector_bank(self, name: str, is_entry: bool, interrupt_attr, loc):
+        """The reset and interrupt vectors are 16-bit addresses the CPU reads
+        in bank $00, so whatever they name must be there. A #[bank] directive
+        carries on to every later declaration, the entry too."""
+        if (is_entry or interrupt_attr) and (self.auto_bank_mode or self.current_bank != 0):
+            where = ("#[bank(auto)]" if self.auto_bank_mode
+                     else f"bank {self.current_bank}")
+            what = "entry function" if is_entry else "interrupt handler"
+            raise HIRError(
+                f"{what} '{name}' must be in bank 0, but an earlier #[bank] "
+                f"directive places it in {where}",
+                source_loc=loc,
+                hint="the CPU's vectors point into bank 0: declare it before the "
+                     "#[bank] directive, or put #[bank(0)] above it"
+            )
+
+    def _check_databank_far(self, name: str, mode_attr, is_far: bool, loc, keyword: str = "far fn"):
+        """DBR management saves and restores the bank across a JSL/RTL pair."""
+        if mode_attr and mode_attr.databank != DataBankMode.NONE and not is_far:
+            raise HIRError(
+                f"'{name}' uses databank={mode_attr.databank.value} but is not a far "
+                f"function; DBR management requires '{keyword}'.",
+                source_loc=loc
+            )
+
+    def _signature_modes(self, hir_params, return_type, name: str, loc):
+        """(entry_m_mode, return type, exit_m_mode). The entry mode comes first:
+        a multi-value return type is laid out by it."""
+        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, name, loc)
+        ret_type = (self._resolve_function_return_type(return_type, entry_m_mode)
+                    if return_type else None)
+        return entry_m_mode, ret_type, self._infer_exit_mode(ret_type)
+
     def _build_extern_function(self, func: ast.FunctionDecl) -> hir.HIRFunctionDecl:
         """Build HIR for an `extern fn` declaration (no body).
 
@@ -768,22 +811,11 @@ class HIRBuilder:
                 source_loc=func.source_loc,
             )
 
-        if self.auto_bank_mode:
-            if not func.is_far:
-                raise HIRError(
-                    f"extern fn '{func.name}' in auto-bank mode must be declared `extern far fn`",
-                    source_loc=func.source_loc,
-                )
-            bank_attr = BankAttribute(name='bank', bank_number=None)
-        else:
-            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
-
-        if mode_attr and mode_attr.databank != DataBankMode.NONE and not func.is_far:
-            raise HIRError(
-                f"extern fn '{func.name}' uses databank={mode_attr.databank.value} "
-                "but is not a far function; DBR management requires `extern far fn`.",
-                source_loc=func.source_loc,
-            )
+        bank_attr = self._bank_attr_for(func.is_far, lambda: HIRError(
+            f"extern fn '{func.name}' in auto-bank mode must be declared `extern far fn`",
+            source_loc=func.source_loc))
+        self._check_databank_far(func.name, mode_attr, func.is_far, func.source_loc,
+                                 keyword="extern far fn")
 
         self.symbol_table.enter_scope(ScopeKind.FUNCTION)
         try:
@@ -792,11 +824,8 @@ class HIRBuilder:
         finally:
             self.symbol_table.exit_scope()
 
-        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
-        ret_type = None
-        if func.return_type:
-            ret_type = self._resolve_function_return_type(func.return_type, entry_m_mode)
-        exit_m_mode = self._infer_exit_mode(ret_type)
+        entry_m_mode, ret_type, exit_m_mode = self._signature_modes(
+            hir_params, func.return_type, func.name, func.source_loc)
 
         func_symbol = self.symbol_table.lookup(func.name)
         return hir.HIRFunctionDecl(
@@ -849,34 +878,11 @@ class HIRBuilder:
         inline_attr = attrs['inline']
         is_entry = attrs['is_entry']
 
-        # The reset and interrupt vectors are 16-bit addresses the CPU reads
-        # in bank $00, so whatever they name must be there. A #[bank]
-        # directive carries on to every later declaration, the entry too.
-        if (is_entry or interrupt_attr) and (self.auto_bank_mode or self.current_bank != 0):
-            where = ("#[bank(auto)]" if self.auto_bank_mode
-                     else f"bank {self.current_bank}")
-            what = "entry function" if is_entry else "interrupt handler"
-            raise HIRError(
-                f"{what} '{func.name}' must be in bank 0, but an earlier #[bank] "
-                f"directive places it in {where}",
-                source_loc=func.source_loc,
-                hint="the CPU's vectors point into bank 0: declare it before the "
-                     "#[bank] directive, or put #[bank(0)] above it"
-            )
-
-        # Bank comes from current bank context (set by #[bank(n)] directive)
-        # In auto-bank mode, use None to indicate automatic placement
-        if self.auto_bank_mode:
-            bank_attr = BankAttribute(name='bank', bank_number=None)
-            # Validate: functions in auto-bank mode must be far
-            if not func.is_far:
-                raise HIRError(
-                    f"function '{func.name}' in auto-bank mode must be declared as 'far fn'",
-                    source_loc=func.source_loc,
-                    hint="use 'far fn " + func.name + "(...)' or place in explicit bank with #[bank(n)]"
-                )
-        else:
-            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+        self._check_vector_bank(func.name, is_entry, interrupt_attr, func.source_loc)
+        bank_attr = self._bank_attr_for(func.is_far, lambda: HIRError(
+            f"function '{func.name}' in auto-bank mode must be declared as 'far fn'",
+            source_loc=func.source_loc,
+            hint="use 'far fn " + func.name + "(...)' or place in explicit bank with #[bank(n)]"))
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -899,26 +905,10 @@ class HIRBuilder:
         # Exit function scope
         self.symbol_table.exit_scope()
 
-        # Infer entry mode from parameters and validate X/Y are u16
-        # Must happen before return type resolution (MultiReturnType needs m_mode)
-        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, func.name, func.source_loc)
-
-        # Resolve return type (MultiReturnType uses entry_m_mode to derive element types)
-        ret_type = None
-        if func.return_type:
-            ret_type = self._resolve_function_return_type(func.return_type, entry_m_mode)
-
-        # Get function symbol
+        entry_m_mode, ret_type, exit_m_mode = self._signature_modes(
+            hir_params, func.return_type, func.name, func.source_loc)
         func_symbol = self.symbol_table.lookup(func.name)
-
-        # Validate: DBR management modes require far functions
-        if mode_attr and mode_attr.databank != DataBankMode.NONE:
-            if not func.is_far:
-                raise HIRError(
-                    f"Function '{func.name}' uses databank={mode_attr.databank.value} "
-                    f"but is not a far function. DBR management requires 'far fn'.",
-                    source_loc=func.source_loc
-                )
+        self._check_databank_far(func.name, mode_attr, func.is_far, func.source_loc)
 
         # Detect STATUS flag return pattern for optimized branch generation at call sites
         returns_status_flag = self._detect_status_flag_return(hir_body)
@@ -931,9 +921,6 @@ class HIRBuilder:
             not is_entry and
             self._is_trivial_getter_or_setter(hir_body)):
             inline_attr = InlineAttribute(name='inline')
-
-        # Infer exit mode from return type
-        exit_m_mode = self._infer_exit_mode(ret_type)
 
         # Eagerly validate const fn body at definition time
         if func.is_const:
@@ -1947,6 +1934,21 @@ class HIRBuilder:
                                (data.name, offsets[(variant, field_name)])))
         return planes
 
+    def _declare_plane_symbol(self, name: str, element_type, count: int,
+                              is_mutable: bool = True) -> Symbol:
+        """Declare the static symbol for one plane: `[element_type; count]`.
+        Its `HIRStaticDecl` is built in pass 3 by `_expand_soa_statics`."""
+        symbol = Symbol(
+            name=name,
+            kind=SymbolKind.STATIC_VAR,
+            definition=None,
+            scope_id=0,
+            var_type=ArrayTypeInfo(element_type=element_type, size=count),
+            is_mutable=is_mutable,
+        )
+        self.symbol_table.declare(name, symbol)
+        return symbol
+
     def _make_soa_plane(self, parent, field_decl, count, stride, address):
         """Build one field plane of an `#[soa]` static, and declare its symbol."""
         name = f"{parent.name}__{field_decl.name}"
@@ -1969,15 +1971,8 @@ class HIRBuilder:
             symbol.var_type = plane_type
             symbol.is_mutable = parent.is_mutable
         else:
-            symbol = Symbol(
-                name=name,
-                kind=SymbolKind.STATIC_VAR,
-                definition=None,
-                scope_id=0,
-                var_type=plane_type,
-                is_mutable=parent.is_mutable,
-            )
-            self.symbol_table.declare(name, symbol)
+            symbol = self._declare_plane_symbol(
+                name, field_decl.field_type, count, parent.is_mutable)
         child = hir.HIRStaticDecl(
             name=name,
             is_mutable=parent.is_mutable,
@@ -2106,17 +2101,10 @@ class HIRBuilder:
         # Bank applies only to ROM statics (storage_attr=None means ROM)
         bank_attr = None
         if storage_attr is None:  # ROM static
-            if self.auto_bank_mode:
-                bank_attr = BankAttribute(name='bank', bank_number=None)
-                # Validate: ROM statics in auto-bank mode must be far
-                if not static.is_far:
-                    raise HIRError(
-                        f"ROM static '{static.name}' in auto-bank mode must be declared as 'far static'",
-                        source_loc=static.source_loc,
-                        hint="use 'far static " + static.name + ": ...' or place in explicit bank with #[bank(n)]"
-                    )
-            else:
-                bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+            bank_attr = self._bank_attr_for(static.is_far, lambda: HIRError(
+                f"ROM static '{static.name}' in auto-bank mode must be declared as 'far static'",
+                source_loc=static.source_loc,
+                hint="use 'far static " + static.name + ": ...' or place in explicit bank with #[bank(n)]"))
 
         # Create HIR node
         hir_static = hir.HIRStaticDecl(
@@ -2645,17 +2633,8 @@ class HIRBuilder:
             ('data', StructTypeInfo(name=union.name, definition=union,
                                     symbol=union.symbol)),
         ):
-            name = f"{pool_symbol.name}__{prefix}{suffix}"
-            symbol = Symbol(
-                name=name,
-                kind=SymbolKind.STATIC_VAR,
-                definition=None,  # filled in by _expand_soa_statics
-                scope_id=0,
-                var_type=ArrayTypeInfo(element_type=element_type, size=count),
-                is_mutable=True,
-            )
-            self.symbol_table.declare(name, symbol)
-            planes[suffix] = symbol
+            planes[suffix] = self._declare_plane_symbol(
+                f"{pool_symbol.name}__{prefix}{suffix}", element_type, count)
 
         # An all-#[soa] enum also has one plane per variant field, laid over
         # the data region. Declared here for the same reason as tag and data:
@@ -2664,17 +2643,8 @@ class HIRBuilder:
         if self._tagged_enums.get(enum_name, False):
             for variant_name, field_name, field_type in self._soa_payload_fields(enum_name):
                 suffix = f"{variant_name}__{field_name}"
-                name = f"{pool_symbol.name}__{prefix}{suffix}"
-                symbol = Symbol(
-                    name=name,
-                    kind=SymbolKind.STATIC_VAR,
-                    definition=None,
-                    scope_id=0,
-                    var_type=ArrayTypeInfo(element_type=field_type, size=count),
-                    is_mutable=True,
-                )
-                self.symbol_table.declare(name, symbol)
-                planes[suffix] = symbol
+                planes[suffix] = self._declare_plane_symbol(
+                    f"{pool_symbol.name}__{prefix}{suffix}", field_type, count)
         self._enum_planes[enum_name] = planes
 
     def _build_newtype(self, decl: ast.NewtypeDecl) -> hir.HIRNewtypeDecl:
@@ -2782,7 +2752,12 @@ class HIRBuilder:
             self._declare_trait_impl(impl)
             return
 
-        # Declare associated constants with qualified names: StructName::CONSTANT
+        self._declare_impl_consts(impl)
+        for method in impl.methods:
+            self._register_method(impl.struct_name, method, overwrite=True)
+
+    def _declare_impl_consts(self, impl):
+        """Declare an impl's associated constants as `StructName::CONSTANT`."""
         for const in impl.constants:
             qualified_name = f"{impl.struct_name}::{const.name}"
             const_type = self.type_resolver.resolve_type(const.const_type)
@@ -2798,36 +2773,32 @@ class HIRBuilder:
             )
             self.symbol_table.declare(qualified_name, symbol)
 
-        # Declare methods with mangled names: StructName__method
-        for method in impl.methods:
-            mangled_name = f"{impl.struct_name}__{method.name}"
+    def _register_method(self, struct_name: str, method, trait_name: str = None,
+                         overwrite: bool = False) -> str:
+        """Declare `Struct__method` and the `Struct.method` lookup the type
+        checker resolves calls through; returns the mangled name.
 
-            # Create function symbol for method
-            symbol = Symbol(
-                name=mangled_name,
-                kind=SymbolKind.METHOD,
-                definition=method,
-                scope_id=0
-            )
-            self.symbol_table.declare(mangled_name, symbol)
-
-            # Also register method lookup: struct_name + method_name -> mangled_name
-            # This allows type checker to resolve method calls
-            method_key = f"{impl.struct_name}.{method.name}"
-            method_info_symbol = Symbol(
-                name=method_key,
-                kind=SymbolKind.METHOD,
-                definition=method,
-                scope_id=0,
-                # Store impl block info for self type resolution.
+        An inherent impl's method takes the lookup (*overwrite*); a trait's
+        sets it only when nothing has, so an inherent method of the same name
+        wins.
+        """
+        mangled_name = f"{struct_name}__{method.name}"
+        self.symbol_table.declare(mangled_name, Symbol(
+            name=mangled_name, kind=SymbolKind.METHOD, definition=method, scope_id=0))
+        method_key = f"{struct_name}.{method.name}"
+        if overwrite or self.symbol_table.lookup(method_key) is None:
+            info = {
+                'struct_name': struct_name,
+                'mangled_name': mangled_name,
                 # Near/far comes from the method's own self pointer.
-                type_info={
-                    'struct_name': impl.struct_name,
-                    'mangled_name': mangled_name,
-                    'method_self_is_far': method.self_is_far
-                }
-            )
-            self.symbol_table.declare(method_key, method_info_symbol)
+                'method_self_is_far': method.self_is_far,
+            }
+            if trait_name is not None:
+                info['trait_name'] = trait_name
+            self.symbol_table.declare(method_key, Symbol(
+                name=method_key, kind=SymbolKind.METHOD, definition=method,
+                scope_id=0, type_info=info))
+        return mangled_name
 
     def _is_newtype(self, name: str) -> bool:
         """True if `name` names a newtype."""
@@ -3104,7 +3075,7 @@ class HIRBuilder:
             self._declare_clone_impl(impl)
 
         for method in impl.methods:
-            self._register_lang_item_method(impl.struct_name, method, impl.trait_name)
+            self._register_method(impl.struct_name, method, impl.trait_name)
 
     def _declare_clone_impl(self, impl: ast.ImplDecl):
         """Validate and record a `Clone` impl. Empty body => auto bitwise copy."""
@@ -3140,35 +3111,6 @@ class HIRBuilder:
                 type_info={
                     'clone_auto': is_auto,
                     'clone_mangled': info['mangled'],
-                }
-            ))
-
-    def _register_lang_item_method(self, struct_name: str, method, trait_name: str):
-        """Register `Struct__method` + the `Struct.method` lookup symbol.
-
-        Mirrors trait-impl method registration (without the `*dyn` dispatch-key,
-        which lang-item traits never need).
-        """
-        mangled_name = f"{struct_name}__{method.name}"
-        self.symbol_table.declare(mangled_name, Symbol(
-            name=mangled_name,
-            kind=SymbolKind.METHOD,
-            definition=method,
-            scope_id=0
-        ))
-
-        method_key = f"{struct_name}.{method.name}"
-        if self.symbol_table.lookup(method_key) is None:
-            self.symbol_table.declare(method_key, Symbol(
-                name=method_key,
-                kind=SymbolKind.METHOD,
-                definition=method,
-                scope_id=0,
-                type_info={
-                    'struct_name': struct_name,
-                    'mangled_name': mangled_name,
-                    'method_self_is_far': method.self_is_far,
-                    'trait_name': trait_name,
                 }
             ))
 
@@ -3284,52 +3226,9 @@ class HIRBuilder:
         self._trait_impls[impl.trait_name].append(impl.struct_name)
         self._trait_impl_locs[(impl.trait_name, impl.struct_name)] = impl.source_loc
 
-        # Declare associated constants with qualified names
-        for const in impl.constants:
-            qualified_name = f"{impl.struct_name}::{const.name}"
-            const_type = self.type_resolver.resolve_type(const.const_type)
-            const_value = self.const_evaluator.eval(const.value)
-
-            symbol = Symbol(
-                name=qualified_name,
-                kind=SymbolKind.IMPL_CONST,
-                definition=const,
-                scope_id=0,
-                var_type=const_type,
-                const_value=const_value
-            )
-            self.symbol_table.declare(qualified_name, symbol)
-
-        # Declare methods with mangled names (same pattern as regular impl)
+        self._declare_impl_consts(impl)
         for method in impl.methods:
-            mangled_name = f"{impl.struct_name}__{method.name}"
-
-            symbol = Symbol(
-                name=mangled_name,
-                kind=SymbolKind.METHOD,
-                definition=method,
-                scope_id=0
-            )
-            self.symbol_table.declare(mangled_name, symbol)
-
-            # Register method lookup for struct.method
-            method_key = f"{impl.struct_name}.{method.name}"
-            # Check if already registered (from a non-trait impl)
-            existing = self.symbol_table.lookup(method_key)
-            if existing is None:
-                method_info_symbol = Symbol(
-                    name=method_key,
-                    kind=SymbolKind.METHOD,
-                    definition=method,
-                    scope_id=0,
-                    type_info={
-                        'struct_name': impl.struct_name,
-                        'mangled_name': mangled_name,
-                        'method_self_is_far': method.self_is_far,
-                        'trait_name': impl.trait_name
-                    }
-                )
-                self.symbol_table.declare(method_key, method_info_symbol)
+            mangled_name = self._register_method(impl.struct_name, method, impl.trait_name)
 
             # Register trait dispatch lookup: TraitName.method.StructName -> mangled_name
             dispatch_key = f"{impl.trait_name}.{method.name}.{impl.struct_name}"
@@ -3499,17 +3398,13 @@ class HIRBuilder:
         inline_attr = attrs['inline']
         is_entry = attrs['is_entry']
 
-        # Bank comes from current bank context
-        if self.auto_bank_mode:
-            bank_attr = BankAttribute(name='bank', bank_number=None)
-            if not method.is_far:
-                raise HIRError(
-                    f"method '{impl.struct_name}::{method.name}' in auto-bank mode cannot be 'near fn'",
-                    source_loc=method.source_loc,
-                    hint="drop 'near' (methods are far by default) or place it in an explicit bank with #[bank(n)]"
-                )
-        else:
-            bank_attr = BankAttribute(name='bank', bank_number=self.current_bank)
+        self._check_vector_bank(mangled_name, is_entry, interrupt_attr, method.source_loc)
+        bank_attr = self._bank_attr_for(method.is_far, lambda: HIRError(
+            f"method '{impl.struct_name}::{method.name}' in auto-bank mode cannot be 'near fn'",
+            source_loc=method.source_loc,
+            hint="drop 'near' (methods are far by default) or place it in an explicit bank with #[bank(n)]"))
+        self._check_databank_far(f"{impl.struct_name}::{method.name}", mode_attr,
+                                 method.is_far, method.source_loc)
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -3630,13 +3525,8 @@ class HIRBuilder:
         # Exit function scope
         self.symbol_table.exit_scope()
 
-        # Infer entry mode from parameters first (MultiReturnType needs m_mode)
-        entry_m_mode = self._infer_entry_mode_and_validate(hir_params, mangled_name, method.source_loc)
-
-        # Resolve return type
-        ret_type = None
-        if method.return_type:
-            ret_type = self._resolve_function_return_type(method.return_type, entry_m_mode)
+        entry_m_mode, ret_type, exit_m_mode = self._signature_modes(
+            hir_params, method.return_type, mangled_name, method.source_loc)
 
         # Get method symbol
         method_symbol = self.symbol_table.lookup(mangled_name)
@@ -3653,9 +3543,6 @@ class HIRBuilder:
             not is_entry and
             self._is_trivial_getter_or_setter(hir_body)):
             inline_attr = InlineAttribute(name='inline')
-
-        # Infer exit mode from return type
-        exit_m_mode = self._infer_exit_mode(ret_type)
 
         # Eagerly validate const fn body at definition time
         if method.is_const:
@@ -3678,6 +3565,7 @@ class HIRBuilder:
             inline_attr=inline_attr,
             is_entry=is_entry,
             is_used=attrs['is_used'],
+            allow_lints=attrs['allow'],
             symbol=method_symbol,
             returns_status_flag=returns_status_flag,
             entry_m_mode=entry_m_mode,
@@ -4240,7 +4128,12 @@ class HIRBuilder:
         return self._build_expression(expr)
 
     def _try_const_eval(self, expr: ast.Expression) -> Optional[int]:
-        """Try to const-evaluate an expression, returning None if not possible."""
+        """Try to const-evaluate an expression, returning None if not possible.
+
+        Deliberately narrower than ConstEvaluator: a for-loop counter's type is
+        inferred from this, and folding `N as u16` would type an explicitly
+        u16 range as u8.
+        """
         try:
             if isinstance(expr, ast.IntegerLiteral):
                 return expr.value
