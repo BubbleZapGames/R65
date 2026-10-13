@@ -2379,3 +2379,18 @@ class TestFarFunctionInlining:
             if isinstance(i, Call)
         ]
         assert remaining == []
+
+
+def test_inline_never_holds_for_constant_args_at_o2(tmp_path):
+    """#[inline(never)] must also stop the -O2 constant-argument bypass."""
+    from r65.compiler.main import compile_source
+    source = """
+    #[lowram] static mut ARR: [u8; 16];
+    #[inline(never)]
+    fn h(a: u8, b: u16) -> u8, u16 { return a + 1, b + 2; }
+    #[entry]
+    fn main() -> ! { let v, j = h(3, 4); ARR[j] = v; loop {} }
+    """
+    out = tmp_path / "never.asm"
+    compile_source(source, "never.r65", output_file=str(out), quiet=True, opt_level=2)
+    assert "JSR h" in out.read_text()

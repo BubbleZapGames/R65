@@ -27,6 +27,8 @@ from r65.compiler.mir.nodes import (
 )
 from r65.compiler.hir import RegisterBinding, VariableBinding
 from r65.compiler.hir.attributes import InlineMode
+from r65.compiler.hir.types import MultiReturnTypeInfo
+from r65.compiler.codegen.constants import get_return_registers
 from r65.compiler.analysis.loop_analysis import compute_block_nesting
 from r65.compiler.analysis.call_graph import build_call_graph
 from r65.compiler.optimize.far_to_near import compute_auto_bank_num, effective_bank
@@ -89,6 +91,11 @@ _LOOP_DEPTH_MULTIPLIER = [1, 3, 6]
 # substitute HardwareRegister('A') for the vreg source, sparing the
 # caller a redundant Move (often nothing emits at all once the codegen
 # coalesces both endpoints to A).
+# Order in which the inliner writes return values bound for ABI registers:
+# A last, because B is its high byte and moves into X/Y may pass through A.
+_HW_RETURN_WRITE_ORDER = ('Y', 'X', 'B', 'A')
+
+
 def _value_is_in_a_at_end_of(instrs: List[MIRInstruction],
                               vreg: VirtualRegister) -> bool:
     """Conservative check: does A hold `vreg` after `instrs` execute?
@@ -121,7 +128,8 @@ class InlinabilityChecker:
     """
     Determines whether a function can and should be inlined.
 
-    Hard requirements: see `can_inline` (recursion, interrupt, entry,
+    Hard requirements: see `can_inline` (`#[inline(never)]`, recursion,
+    interrupt, entry,
     `__init_start`, asm!, trait methods, `#[preserves]`, ...) and, per
     (caller, callee) pair, `_bank_compatible`: a far callee in another bank
     must have a bank-independent body (`_far_body_is_bank_safe`); a
@@ -351,6 +359,12 @@ class InlinabilityChecker:
 
         func = self.func_map[func_name]
 
+        # #[inline(never)] is a directive, checked here rather than in
+        # should_inline() so every inlining path honours it — including the
+        # constant-argument bypass in FunctionInliner._should_inline_at_site.
+        if func.inline_attr is not None and func.inline_attr.mode == InlineMode.NEVER:
+            return False
+
         # Not recursive
         if func_name in self.recursive_functions:
             return False
@@ -465,10 +479,6 @@ class InlinabilityChecker:
             return False
 
         func = self.func_map[func_name]
-
-        # #[inline(never)] - never inline these functions
-        if func.inline_attr is not None and func.inline_attr.mode == InlineMode.NEVER:
-            return False
 
         # #[inline(always)] bypasses the cycle budget entirely — matches
         # Rust/LLVM semantics where ALWAYS is a directive, not a hint.
@@ -802,6 +812,64 @@ class FunctionInliner:
 
         return inlined_count
 
+    def _plan_return_destinations(
+        self,
+        call: Call,
+        callee: MIRFunction,
+        merge_block: BasicBlock,
+    ) -> Tuple[List[object], List[object]]:
+        """Map each of the callee's return values to a caller-side
+        destination, returning `(dests, types)` indexed by value.
+
+        `dests[i]` is a caller VirtualRegister, a HardwareRegister, or
+        None (value discarded). A single-value callee — or any Call whose
+        `returns` is populated — uses `call.returns`, positionally.
+
+        A multi-return Call carries no `returns`: the MIR builder captures
+        each value from its ABI register after the call (`%v = Move A`,
+        `%j = Move X`, a Store from the register, register-to-register
+        shuffles). Splicing the body in place of the call leaves nothing
+        in those registers, so:
+          - the leading run of `Move %vreg, <return reg>` in the merge
+            block is consumed: each Move is deleted and its vreg becomes
+            the value's destination. A Move to a vreg writes no hardware
+            register, so every capture in the run reads the pristine
+            return register, and each register is captured at most once.
+          - every value left uncaptured is moved into its ABI register at
+            the Return, so the rest of the capture code reads exactly what
+            a real call would have left there.
+        """
+        ret_type = callee.return_type
+        if not isinstance(ret_type, MultiReturnTypeInfo):
+            return list(call.returns), [ret_type] * len(call.returns)
+
+        types = list(ret_type.element_types)
+        count = len(types)
+        if call.returns:
+            dests: List[object] = list(call.returns[:count])
+            return dests + [None] * (count - len(dests)), types
+
+        regs = get_return_registers(ret_type, getattr(callee, 'entry_m_mode', None))
+        regs = regs[:count]
+        dests = [None] * count
+        consumed = 0
+        for instr in merge_block.instructions:
+            if not (isinstance(instr, Move)
+                    and isinstance(instr.dest, VirtualRegister)
+                    and isinstance(instr.source, HardwareRegister)
+                    and instr.source.name in regs):
+                break
+            i = regs.index(instr.source.name)
+            if dests[i] is not None:
+                break
+            dests[i] = instr.dest
+            consumed += 1
+        del merge_block.instructions[:consumed]
+        for i in range(count):
+            if dests[i] is None:
+                dests[i] = HardwareRegister(regs[i])
+        return dests, types
+
     def _reverse_topo_order(self, checker: InlinabilityChecker) -> List[str]:
         """Return function names in reverse-topological order on the call
         graph.
@@ -1060,10 +1128,15 @@ class FunctionInliner:
             tag = f"inline {callee.name}"
             first.comment = f"{first.comment}; {tag}" if first.comment else tag
 
-        # Result vregs in the caller's space — one per return value.
-        # Multi-return callees (e.g. `-> u8, u8` or `-> u8, u16`) plumb each
-        # Return.values[i] into call.returns[i].
-        result_vregs = list(call.returns)
+        # Caller-side destination of each return value, and its type.
+        # A single-value Call names its result in call.returns. A
+        # multi-return Call (`-> u8, u16`) has none: the caller captures
+        # each value from its ABI register (A, then B or X, then Y) with
+        # the instructions that follow the call, which now open the merge
+        # block. _plan_return_destinations maps each Return.values[i] to a
+        # caller vreg or, failing that, to its ABI register.
+        result_dests, result_types = self._plan_return_destinations(
+            call, callee, merge_block)
 
         # Exit-boundary SetMode: switches back to the caller's mode at
         # every Return so the merge block has a single predecessor mode
@@ -1082,31 +1155,49 @@ class FunctionInliner:
             for instr in cloned_block.instructions:
                 if isinstance(instr, Return):
                     # Pair each Return value with its caller-side
-                    # destination. The A-substitution optimization
-                    # (return-value still in A from the tail instruction)
-                    # applies only to the primary return; subsequent
-                    # values live in B/X/Y per the ABI's multi-return
-                    # convention and aren't "in A" at the Return point.
-                    # And it's disabled when an exit-boundary SetMode is
-                    # pending: the mode change between this block and the
-                    # merge can re-interpret A's width, and the codegen
-                    # for the substituted Move may emit its own bracket
-                    # SEP/REP that interacts badly. Falling back to the
-                    # vreg path (LDA slot / STA dst) is always sound —
-                    # the slot holds the producer's full-width result.
-                    pairs = list(zip(result_vregs, instr.values))
-                    for i, (dst, src) in enumerate(pairs):
+                    # destination; a value with none is dropped. Vreg
+                    # destinations are written first, then ABI registers
+                    # in Y, X, B, A order (as a real Return marshals
+                    # them), so moving a later value cannot clobber an
+                    # earlier register — A last, since B is its high byte
+                    # and loads into X/Y may pass through it.
+                    #
+                    # The A-substitution (return value still in A from
+                    # the tail instruction) applies only to value 0 bound
+                    # for a vreg, whose Move comes first; the other values
+                    # are not "in A" at the Return point. It's disabled
+                    # when an exit-boundary SetMode is pending: the mode
+                    # change between this block and the merge can
+                    # re-interpret A's width, and the codegen for the
+                    # substituted Move may emit its own bracket SEP/REP
+                    # that interacts badly. Falling back to the vreg path
+                    # (LDA slot / STA dst) is always sound — the slot
+                    # holds the producer's full-width result.
+                    tail = list(new_instructions)
+                    pairs = [
+                        (i, dst, src) for i, (dst, src)
+                        in enumerate(zip(result_dests, instr.values))
+                        if dst is not None
+                    ]
+                    vreg_pairs = [p for p in pairs
+                                  if isinstance(p[1], VirtualRegister)]
+                    hw_pairs = [p for p in pairs
+                                if isinstance(p[1], HardwareRegister)]
+                    hw_pairs.sort(key=lambda p: _HW_RETURN_WRITE_ORDER.index(
+                        p[1].name))
+                    for i, dst, src in vreg_pairs + hw_pairs:
                         return_value = src
                         if (i == 0
+                                and isinstance(dst, VirtualRegister)
                                 and exit_setmode is None
                                 and isinstance(return_value, VirtualRegister)
                                 and _value_is_in_a_at_end_of(
-                                    new_instructions, return_value)):
+                                    tail, return_value)):
                             return_value = HardwareRegister('A')
                         new_instructions.append(Move(
                             dest=dst,
                             source=return_value,
-                            type_info=callee.return_type,
+                            type_info=result_types[i],
                         ))
                     if exit_setmode is not None:
                         new_instructions.append(exit_setmode)
