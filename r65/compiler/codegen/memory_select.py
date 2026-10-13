@@ -274,7 +274,7 @@ class MemoryOperationSelector(BaseSelector):
         if is_far_ptr and not dest_loc.is_hw():
             self.parent._emit_16bit_immediate_store(value & 0xFFFF, dest_loc)
             self._ensure_m8_mode()
-            bank_loc = self._offset_location(dest_loc, 2)
+            bank_loc = self.parent._offset_location(dest_loc, 2)
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> 16) & 0xFF))
             self._emit_load_store('STA', bank_loc)
             return

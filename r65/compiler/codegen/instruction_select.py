@@ -559,57 +559,6 @@ class InstructionSelector:
         return self.hw_tracker.find_register_containing(vreg)
 
     # ========================================================================
-    # Temporary Storage Management
-    # ========================================================================
-
-    def _get_temp_location(self) -> PhysicalLocation:
-        """
-        Get a safe temporary location for instruction selection.
-
-        Returns a scratch register location if available, otherwise a stack slot.
-        This is used when we need to temporarily store a hardware register value
-        for operations that can't use hardware registers directly.
-
-        Returns:
-            PhysicalLocation for temporary storage
-        """
-        # First, try to find a free scratch register
-        if hasattr(self.reg_alloc, 'scratch_pool'):
-            for scratch in self.reg_alloc.scratch_pool.scratches:
-                if scratch.is_free:
-                    # Use this scratch register (mark temporarily busy)
-                    return PhysicalLocation(
-                        kind=LocationKind.SCRATCH,
-                        scratch_addr=scratch.address,
-                        size=scratch.size
-                    )
-
-        # No scratch available - require user to define scratch registers
-        raise InstructionSelectionError(
-            "No scratch register available for temporary storage. "
-            "Define a scratch register using: #[zeropage(addr, register)] static mut SCRATCH: u8;",
-            source_loc=self._current_source_loc
-        )
-
-    def _get_temp_address(self) -> Address:
-        """
-        Get an Address object for the temp location.
-
-        This is a convenience method for cases where we need an Address
-        rather than a PhysicalLocation.
-
-        Returns:
-            Address for the temp location
-        """
-        temp_loc = self._get_temp_location()
-        if temp_loc.kind == LocationKind.SCRATCH:
-            return Address(temp_loc.scratch_addr)
-        else:
-            # Stack-relative - return as stack offset address
-            # Note: This requires stack-relative addressing mode
-            return StackOffset(temp_loc.stack_offset)
-
-    # ========================================================================
     # Main Dispatch
     # ========================================================================
 
@@ -2253,7 +2202,7 @@ class InstructionSelector:
             self.emitter.emit_comment(f"Clone copy {count} bytes (unrolled)")
 
             def loc_at(base, off):
-                return base if off == 0 else ms._offset_location(base, off)
+                return base if off == 0 else self._resolver.offset_location(base, off)
 
             off = 0
             if count - off >= 2:

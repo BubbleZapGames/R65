@@ -1670,20 +1670,7 @@ class PeepholeOptimizer:
         if not hoists:
             return nodes
 
-        # Rebuild node list with hoisted LDAs
-        optimized = []
-        for i, node in enumerate(nodes):
-            if i in hoists:
-                # Skip — already hoisted before the label
-                self.stats.loop_invariant_loads_hoisted += 1
-                continue
-            optimized.append(node)
-            # If this is a label that has a hoist, insert the LDA after it...
-            # Actually, we need to insert BEFORE the label.
-            # Let me rethink: collect all hoists per label_idx, insert before label
-            pass
-
-        # Redo: build insert-before map
+        # Move each hoisted LDA to just before its loop's label.
         optimized = []
         insert_before: dict[int, list] = {}  # label_idx -> [instructions to insert]
         for lda_idx, label_idx in hoists.items():
@@ -1767,10 +1754,10 @@ class PeepholeOptimizer:
             if isinstance(node, Label):
                 label_positions[node.name] = i
 
-        optimized = []
-        skip_until = -1
-        # Track which init instructions to replace (idx -> new_value)
-        init_replacements: dict[int, int] = {}
+        # One entry per loop to turn around: the LDX/LDY #0, INX/INY, CPX/CPY
+        # and BCC positions, and the bound.
+        transforms = []
+        claimed: set[int] = set()
 
         # Find bottom-tested loops: scan for BCC that targets a label before it
         # with trailing INX/CPX or INY/CPY pattern
@@ -1840,85 +1827,22 @@ class PeepholeOptimizer:
                                             elif isinstance(n, Label):
                                                 break
 
-                                        if init_idx is not None:
-                                            # Replace init value with bound
-                                            init_replacements[init_idx] = bound
-                                            # Replace INX->DEX, remove CPX, replace BCC->BNE
-                                            # We'll rebuild from inc_idx
-                                            # Output everything up to inc_idx as-is
-                                            # Then: DEX/DEY, BNE label
-                                            # Skip cmp_instr and original BCC
-
-                                            # Emit everything from current optimized position to inc_idx
-                                            # (handled by the normal append below)
-                                            # Actually, we need to handle this inline
-                                            # Mark the nodes to transform
-                                            # For simplicity, rebuild by replacing nodes in-place
-                                            pass  # Will handle below with node replacement
-
-            optimized.append(node)
+                                        if init_idx is not None and init_idx not in claimed:
+                                            claimed.add(init_idx)
+                                            transforms.append({
+                                                'init_idx': init_idx,
+                                                'inc_idx': inc_idx,
+                                                'cmp_idx': cmp_idx,
+                                                'bcc_idx': i,
+                                                'bound': bound,
+                                            })
             i += 1
-
-        if not init_replacements:
-            return nodes
-
-        # Second pass: apply transformations
-        optimized = []
-        # Rebuild loop structures
-        # For each identified count-down loop, track (init_idx, inc_idx, cmp_idx, bcc_idx, bound, reg)
-        # Re-scan to collect full info
-        transforms = []
-        for i, node in enumerate(nodes):
-            if isinstance(node, Instruction) and node.opcode == Opcode.BCC:
-                if (isinstance(node.operand, Address) and
-                        isinstance(node.operand.value, str)):
-                    target = node.operand.value
-                    if target in label_positions:
-                        label_idx = label_positions[target]
-                        if label_idx < i:
-                            cmp_idx = i - 1
-                            while cmp_idx > label_idx and isinstance(nodes[cmp_idx], (Directive, Comment)):
-                                cmp_idx -= 1
-                            inc_idx = cmp_idx - 1
-                            while inc_idx > label_idx and isinstance(nodes[inc_idx], (Directive, Comment)):
-                                inc_idx -= 1
-
-                            if (inc_idx > label_idx and
-                                    isinstance(nodes[inc_idx], Instruction) and
-                                    isinstance(nodes[cmp_idx], Instruction)):
-                                inc_instr = nodes[inc_idx]
-                                cmp_instr = nodes[cmp_idx]
-
-                                if (inc_instr.opcode in INC_TO_DEC and
-                                        cmp_instr.opcode == CMP_OPCODES.get(INC_REG.get(inc_instr.opcode))):
-                                    reg = INC_REG[inc_instr.opcode]
-                                    init_opcode = INIT_OPCODES[reg]
-                                    # Find init (may be separated by hoisted instrs)
-                                    search_depth_2 = 0
-                                    for j in range(label_idx - 1, -1, -1):
-                                        n = nodes[j]
-                                        if isinstance(n, Instruction):
-                                            if j in init_replacements:
-                                                transforms.append({
-                                                    'init_idx': j,
-                                                    'inc_idx': inc_idx,
-                                                    'cmp_idx': cmp_idx,
-                                                    'bcc_idx': i,
-                                                    'bound': init_replacements[j],
-                                                    'reg': reg,
-                                                    'target': target,
-                                                })
-                                                break
-                                            search_depth_2 += 1
-                                            if search_depth_2 > 3:
-                                                break
-                                        elif isinstance(n, Label):
-                                            break
 
         if not transforms:
             return nodes
 
         # Build sets of indices to skip/replace
+        optimized = []
         skip_indices = set()
         replace_map = {}  # idx -> replacement instruction
 
@@ -2126,13 +2050,6 @@ class PeepholeOptimizer:
 
         TERMINAL_OPCODES = ({Opcode.RTS, Opcode.RTI, Opcode.RTL, Opcode.BRA} |
                             JUMP_OPCODES)
-
-        # Build set of referenced labels
-        referenced = set()
-        for node in nodes:
-            if isinstance(node, Instruction):
-                if hasattr(node.operand, 'value') and isinstance(node.operand.value, str):
-                    referenced.add(node.operand.value)
 
         optimized = []
         skipping = False

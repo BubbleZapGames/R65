@@ -189,23 +189,6 @@ class ASTBuilder(Transformer):
                 result.append(item)
         return result
 
-    def _validate_identifier_not_register(self, identifier: str, token: LarkToken):
-        """
-        Validate identifier (currently a no-op).
-
-        Lowercase and mixed-case identifiers are valid variable names, even if they
-        match register names case-insensitively. Only uppercase names (A, X, Y,
-        STATUS, D, DBR, PBR, S) are treated as registers by the grammar.
-
-        Examples of valid variable names:
-        - let x: u8 = 0;      // 'x' is a variable, not register X
-        - let status: u8 = 1; // 'status' is a variable, not register STATUS
-        - let Status: u8 = 2; // Mixed case also valid
-        """
-        # No validation needed - the grammar's REGISTER terminal only matches
-        # uppercase register names. All other identifiers are valid variable names.
-        pass
-
     def _collect_attributes(self, items: list, start_idx: int):
         """
         Collect attributes from items list starting at index.
@@ -2141,8 +2124,6 @@ class ASTBuilder(Transformer):
         items = tree.children
         token = items[0]
         identifier = token.value
-        # Validate that this isn't a wrong-case register name
-        self._validate_identifier_not_register(identifier, token)
         return ast.Identifier(name=identifier, source_loc=self._make_source_loc(tree.meta))
 
     @v_args(tree=True)
@@ -2691,9 +2672,6 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         token = items[0]
         identifier = token.value if isinstance(token, LarkToken) else token
-        # Validate that this isn't a wrong-case register name
-        if isinstance(token, LarkToken):
-            self._validate_identifier_not_register(identifier, token)
         return ast.Identifier(
             name=identifier,
             source_loc=self._source_loc_from_token(token),
@@ -2752,8 +2730,6 @@ class ASTBuilder(Transformer):
         items = self._filter_tokens(items)
         token = items[0]
         identifier = token.value if isinstance(token, LarkToken) else token
-        if isinstance(token, LarkToken):
-            self._validate_identifier_not_register(identifier, token)
         return ast.Identifier(name=identifier)
 
     def tuple_target_register(self, items):

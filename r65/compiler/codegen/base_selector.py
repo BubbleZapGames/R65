@@ -81,57 +81,7 @@ class BaseSelector(ABC):
         """Emit a branch instruction to a label."""
         self.emitter.emit_instr(opcode, Address(label), comment, self.parent._current_source_loc)
 
-    def _emit_jump(self, opcode: Opcode, label: str, comment: str | None = None):
-        """Emit a jump instruction to a label."""
-        self.emitter.emit_instr(opcode, Address(label), comment, self.parent._current_source_loc)
-
-    # ========================================================================
-    # Location Resolution Helpers
-    # ========================================================================
-
-    def _get_opcode_for_location(self, mnemonic: str, location: PhysicalLocation) -> tuple[Opcode, Address]:
-        """
-        Get opcode and operand for a mnemonic and location.
-
-        Convenience wrapper around resolver methods.
-
-        Args:
-            mnemonic: Base instruction mnemonic
-            location: Physical location
-
-        Returns:
-            Tuple of (Opcode, operand)
-        """
-        return self._resolver.resolve_and_get_opcode(mnemonic, location)
-
-    def _offset_location(self, location: PhysicalLocation, offset: int) -> PhysicalLocation:
-        """
-        Create a new location offset by the given number of bytes.
-
-        Args:
-            location: Original location
-            offset: Byte offset to add
-
-        Returns:
-            New PhysicalLocation with offset applied
-        """
-        return self._resolver.offset_location(location, offset)
-
-    # ========================================================================
-    # Load/Store Helpers with Workaround Support
-    # ========================================================================
-
-    def _emit_load(self, mnemonic: str, location: PhysicalLocation, comment: str = None):
-        """
-        Emit a load instruction with the appropriate addressing mode.
-
-        Args:
-            mnemonic: Load mnemonic (LDA, LDX, LDY)
-            location: Source location
-            comment: Optional comment
-        """
-        opcode, operand = self._resolver.resolve_and_get_opcode(mnemonic, location)
-        self._emit_instr(opcode, operand, comment)
+    _emit_jump = _emit_branch  # the same encoding: an opcode and a label
 
     def _emit_store_from_reg(self, reg: str, dest_loc: PhysicalLocation,
                              is_u16: bool, value_bytes: int,
@@ -268,7 +218,7 @@ class BaseSelector(ABC):
 
         Routes through parent._get_opcode_for_location, which applies the
         D=S / SET_DBR / spill-offset addressing adjustments. (The resolver-only
-        path in _emit_load/_emit_store bypasses those, so callers must use this.)
+        path bypasses those, so callers must use this.)
         """
         opcode, operand = self.parent._get_opcode_for_location(mnemonic, location)
         self._emit_instr(opcode, operand, comment)

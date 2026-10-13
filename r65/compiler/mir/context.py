@@ -99,36 +99,6 @@ class LoweringContext:
         """Add a hardware register alias for a symbol."""
         self.current_function.alias_tracker.add_alias(symbol, hw_reg)
 
-    def push_loop(self, continue_target: int, break_target: int, label: Optional[str] = None, result_vreg=None):
-        """Push loop targets onto the stack."""
-        self.loop_stack.append((continue_target, break_target, label, result_vreg))
-
-    def pop_loop(self):
-        """Pop loop targets from the stack."""
-        return self.loop_stack.pop()
-
-    def get_loop_targets(self):
-        """Get current loop's (continue_target, break_target, label, result_vreg)."""
-        if not self.loop_stack:
-            raise RuntimeError("No active loop for break/continue")
-        return self.loop_stack[-1]
-
-    # ========================================================================
-    # Function Setup/Teardown
-    # ========================================================================
-
-    def begin_function(self, mir_func: MIRFunction):
-        """Initialize context for lowering a new function."""
-        self.current_function = mir_func
-        self.cfg_builder = CFGBuilder(mir_func)
-        self.symbol_to_vreg.clear()
-        self.memloc_cached_symbols.clear()
-        self.loop_stack.clear()
-
-    def end_function(self):
-        """Finalize function lowering."""
-        self.current_function.exit_block_ids = self.cfg_builder.find_exit_blocks()
-
     def set_current_block(self, block: BasicBlock):
         """Set the current block for instruction emission.
 
