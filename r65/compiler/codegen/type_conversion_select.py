@@ -396,248 +396,76 @@ class TypeConversionSelector(BaseSelector):
         source_size = scalar_width(source_type) or 2
         target_size = scalar_width(target_type) or 2
 
-        # Near to far pointer: copy 2 bytes, add bank 0
+        # Near to far: the two bytes, then a bank byte. Narrowing (far to
+        # near, a pointer to u8) and a same-size copy keep the low bytes.
         if source_size == 2 and target_size == 3:
-            self._emit_near_to_far_pointer(src_operand, dest_loc)
-
-        # Far to near pointer: truncate to 2 bytes
-        elif source_size == 3 and target_size == 2:
-            self._emit_far_to_near_pointer(src_operand, dest_loc)
-
-        # Far pointer to u8: extract low byte
-        elif source_size == 3 and target_size == 1:
-            self._emit_pointer_to_u8(src_operand, dest_loc)
-
-        # Same size: direct copy
-        elif source_size == target_size:
-            self._emit_pointer_copy(src_operand, dest_loc, source_size)
-
+            self._emit_pointer_bytes(src_operand, dest_loc, 2, add_bank=True)
+        elif target_size <= source_size:
+            self._emit_pointer_bytes(src_operand, dest_loc, target_size)
         else:
             raise InstructionSelectionError(
                 f"Unsupported pointer conversion: {source_type} to {target_type}",
                 source_loc=self.parent._current_source_loc
             )
 
-    def _emit_near_to_far_pointer(self, src_operand, dest_loc):
-        """Convert near pointer (2 bytes) to far pointer (3 bytes).
+    def _emit_pointer_bytes(self, src_operand, dest_loc, count: int,
+                            add_bank: bool = False):
+        """Copy the low *count* bytes of a pointer to dest, then with
+        *add_bank* a bank byte: the ROM bank when the source names ROM data
+        (`&TABLE`), else 0.
 
-        Forces m8 mode before emitting so the byte-by-byte LDA/STA pairs
-        below stay single-byte. If we entered with m16 active (e.g. after
-        a 16-bit near-pointer Move), each LDA/STA would read/write two
-        bytes and the high-byte store at dest+1 would (a) be redundant
-        with the first store, and (b) overlap dest+2 with src+2 — which
-        for variable sources is uninitialized memory, clobbering what
-        should become the bank byte.
+        Byte by byte in m8: in m16 each LDA/STA widens and the per-byte
+        stores overlap. A pointer in X or Y is moved with one 16-bit transfer
+        and store - TXA in m8 copies only the low byte, and B would supply a
+        stale high one.
         """
-        self.parent._ensure_m8_mode()
+        symbol = getattr(src_operand, 'symbol', None)
+        rom_label = getattr(symbol, 'rom_label', None) if symbol else None
 
-        if isinstance(src_operand, MIRImmediate):
-            # Immediate: load and store each byte
-            value = src_operand.value & 0xFFFF
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFF))
-            self._emit_load_store('STA', dest_loc)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> 8) & 0xFF))
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_load_store('STA', dest_high)
-        elif isinstance(src_operand, HardwareRegister):
-            # Hardware register source: X or Y (16-bit)
-            if src_operand.name == 'X':
-                self._emit_instr(Opcode.TXA, comment="Near ptr from X")
-            elif src_operand.name == 'Y':
-                self._emit_instr(Opcode.TYA, comment="Near ptr from Y")
-            # Store low byte
-            self._emit_load_store('STA', dest_loc)
-            # High byte is in B for 16-bit, need to use XBA
-            self._emit_instr(Opcode.XBA, comment="Get high byte")
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_load_store('STA', dest_high)
-            self._emit_instr(Opcode.XBA, comment="Restore A")
-        else:
-            # Variable: copy 2 bytes
-            src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.is_hw():
-                # Hardware register location
-                if src_loc.hw_register == 'X':
-                    self._emit_instr(Opcode.TXA, comment="Near ptr from X")
-                elif src_loc.hw_register == 'Y':
-                    self._emit_instr(Opcode.TYA, comment="Near ptr from Y")
-                self._emit_load_store('STA', dest_loc)
-                self._emit_instr(Opcode.XBA, comment="Get high byte")
-                dest_high = self.parent._offset_location(dest_loc, 1)
-                self._emit_load_store('STA', dest_high)
-                self._emit_instr(Opcode.XBA, comment="Restore A")
-            else:
-                self._emit_load_store('LDA', src_loc)
-                self._emit_load_store('STA', dest_loc)
-                src_high = self.parent._offset_location(src_loc, 1)
-                dest_high = self.parent._offset_location(dest_loc, 1)
-                self._emit_load_store('LDA', src_high)
-                self._emit_load_store('STA', dest_high)
-
-        # Set bank byte - use symbol's ROM bank if available, else 0
-        dest_bank = self.parent._offset_location(dest_loc, 2)
-        bank_ref = 0x00
-        symbol = None
-        # Check if source has a symbol with ROM label (for address-of ROM data)
-        # Symbol can be on Immediate or VirtualRegister (propagated from address-of)
-        if hasattr(src_operand, 'symbol') and src_operand.symbol:
-            symbol = src_operand.symbol
-            if hasattr(symbol, 'rom_label') and symbol.rom_label:
-                bank_ref = f":{symbol.rom_label}"
-        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref),
-                        f"Bank byte{' of ' + symbol.rom_label if isinstance(bank_ref, str) else ' = 0'}")
-        self._emit_load_store('STA', dest_bank)
-
-    def _emit_far_to_near_pointer(self, src_operand, dest_loc):
-        """Convert far pointer (3 bytes) to near pointer (2 bytes).
-
-        Forces m8 mode — same rationale as _emit_near_to_far_pointer: the
-        byte-by-byte LDA/STA pairs below silently widen in m16 and overlap.
-        """
-        self.parent._ensure_m8_mode()
-        if isinstance(src_operand, MIRImmediate):
-            value = src_operand.value & 0xFFFF
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value & 0xFF))
-            self._emit_load_store('STA', dest_loc)
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> 8) & 0xFF))
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_load_store('STA', dest_high)
-        elif isinstance(src_operand, HardwareRegister):
-            # Truncate from hardware register (unlikely but handle it)
-            if src_operand.name == 'X':
-                self._emit_instr(Opcode.TXA, comment="Far ptr from X (truncate)")
-            elif src_operand.name == 'Y':
-                self._emit_instr(Opcode.TYA, comment="Far ptr from Y (truncate)")
-            self._emit_load_store('STA', dest_loc)
-            self._emit_instr(Opcode.XBA, comment="Get high byte")
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_load_store('STA', dest_high)
-            self._emit_instr(Opcode.XBA, comment="Restore A")
-        else:
-            # Copy low 2 bytes only
-            src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.is_hw():
-                if src_loc.hw_register == 'X':
-                    self._emit_instr(Opcode.TXA, comment="Far ptr from X (truncate)")
-                elif src_loc.hw_register == 'Y':
-                    self._emit_instr(Opcode.TYA, comment="Far ptr from Y (truncate)")
-                self._emit_load_store('STA', dest_loc)
-                self._emit_instr(Opcode.XBA, comment="Get high byte")
-                dest_high = self.parent._offset_location(dest_loc, 1)
-                self._emit_load_store('STA', dest_high)
-                self._emit_instr(Opcode.XBA, comment="Restore A")
-            else:
-                self._emit_load_store('LDA', src_loc)
-                self._emit_load_store('STA', dest_loc)
-                src_high = self.parent._offset_location(src_loc, 1)
-                dest_high = self.parent._offset_location(dest_loc, 1)
-                self._emit_load_store('LDA', src_high)
-                self._emit_load_store('STA', dest_high)
-
-    def _emit_pointer_to_u8(self, src_operand, dest_loc):
-        """Convert pointer to u8 (extract low byte).
-
-        Forces m8 — a stray m16 leftover would widen the LDA #imm and the
-        STA dest, writing two bytes where only one was intended.
-        """
-        self.parent._ensure_m8_mode()
-        if isinstance(src_operand, MIRImmediate):
-            value = src_operand.value & 0xFF
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-        elif isinstance(src_operand, HardwareRegister):
-            if src_operand.name == 'X':
-                self._emit_instr(Opcode.TXA, comment="Ptr to u8 from X")
-            elif src_operand.name == 'Y':
-                self._emit_instr(Opcode.TYA, comment="Ptr to u8 from Y")
+        if isinstance(src_operand, HardwareRegister):
+            src_reg, src_loc = src_operand.name, None
+        elif isinstance(src_operand, MIRImmediate):
+            src_reg, src_loc = None, None
         else:
             src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.is_hw():
-                if src_loc.hw_register == 'X':
-                    self._emit_instr(Opcode.TXA, comment="Ptr to u8 from X")
-                elif src_loc.hw_register == 'Y':
-                    self._emit_instr(Opcode.TYA, comment="Ptr to u8 from Y")
-            else:
-                self._emit_load_store('LDA', src_loc)
+            src_reg = src_loc.hw_register if src_loc.is_hw() else None
 
-        self._emit_load_store('STA', dest_loc)
+        def dest_at(i):
+            return dest_loc if i == 0 else self.parent._offset_location(dest_loc, i)
 
-    def _emit_pointer_copy(self, src_operand, dest_loc, size: int):
-        """Copy pointer of given size.
-
-        Forces m8 — the per-byte LDA #imm / LDA src / STA dest loop only
-        works correctly in 8-bit accumulator mode. In m16 each load/store
-        widens to two bytes and the per-byte iterations overlap.
-        """
-        self.parent._ensure_m8_mode()
-        if isinstance(src_operand, MIRImmediate):
-            value = src_operand.value
-            # Check if source has a symbol with ROM label (for address-of ROM data)
-            symbol = None
-            if hasattr(src_operand, 'symbol') and src_operand.symbol:
-                symbol = src_operand.symbol
-                if hasattr(symbol, 'rom_label') and symbol.rom_label:
-                    pass  # Will use symbol.rom_label for bank byte
-                else:
-                    symbol = None  # No ROM label, use numeric value
-
-            for i in range(size):
-                if i == 2 and symbol and hasattr(symbol, 'rom_label') and symbol.rom_label:
-                    # Use symbol's ROM bank for byte 2 (bank byte)
-                    bank_ref = f":{symbol.rom_label}"
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref),
-                                    f"Bank byte of {symbol.rom_label}")
-                else:
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> (i * 8)) & 0xFF))
-                if i == 0:
-                    self._emit_load_store('STA', dest_loc)
-                else:
-                    dest_byte = self.parent._offset_location(dest_loc, i)
-                    self._emit_load_store('STA', dest_byte)
-        elif isinstance(src_operand, HardwareRegister):
-            # Copy from hardware register (X or Y)
-            if src_operand.name == 'X':
-                self._emit_instr(Opcode.TXA, comment="Ptr copy from X")
-            elif src_operand.name == 'Y':
-                self._emit_instr(Opcode.TYA, comment="Ptr copy from Y")
-            self._emit_load_store('STA', dest_loc)
-            if size > 1:
-                self._emit_instr(Opcode.XBA, comment="Get high byte")
-                dest_high = self.parent._offset_location(dest_loc, 1)
-                self._emit_load_store('STA', dest_high)
-                self._emit_instr(Opcode.XBA, comment="Restore A")
-            if size > 2:
-                # Bank byte - X/Y registers are only 16-bit so we can't get bank from them
-                # Default to 0 (caller should use near-to-far conversion for ROM addresses)
-                dest_bank = self.parent._offset_location(dest_loc, 2)
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0 (register has no bank)")
-                self._emit_load_store('STA', dest_bank)
-        else:
-            src_loc = self.parent._get_operand_location(src_operand)
-            if src_loc.is_hw():
-                # Copy from hardware register location
-                if src_loc.hw_register == 'X':
-                    self._emit_instr(Opcode.TXA, comment="Ptr copy from X")
-                elif src_loc.hw_register == 'Y':
-                    self._emit_instr(Opcode.TYA, comment="Ptr copy from Y")
+        if src_reg in ('X', 'Y'):
+            transfer = Opcode.TXA if src_reg == 'X' else Opcode.TYA
+            if count >= 2:
+                self.parent._ensure_m16_mode()
+                self._emit_instr(transfer, comment=f"Pointer from {src_reg}")
                 self._emit_load_store('STA', dest_loc)
-                if size > 1:
-                    self._emit_instr(Opcode.XBA, comment="Get high byte")
-                    dest_high = self.parent._offset_location(dest_loc, 1)
-                    self._emit_load_store('STA', dest_high)
-                    self._emit_instr(Opcode.XBA, comment="Restore A")
-                if size > 2:
-                    # Bank byte - X/Y registers are only 16-bit so we can't get bank from them
-                    # Default to 0 (caller should use near-to-far conversion for ROM addresses)
-                    dest_bank = self.parent._offset_location(dest_loc, 2)
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Bank byte = 0 (register has no bank)")
-                    self._emit_load_store('STA', dest_bank)
+                self.parent._ensure_m8_mode()
             else:
-                for i in range(size):
-                    if i == 0:
-                        self._emit_load_store('LDA', src_loc)
-                        self._emit_load_store('STA', dest_loc)
+                self.parent._ensure_m8_mode()
+                self._emit_instr(transfer, comment=f"Pointer low byte from {src_reg}")
+                self._emit_load_store('STA', dest_loc)
+            if count > 2:
+                # X and Y hold 16 bits; the bank is not in them.
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00),
+                                 "Bank byte = 0 (register has no bank)")
+                self._emit_load_store('STA', dest_at(2))
+        else:
+            self.parent._ensure_m8_mode()
+            for i in range(count):
+                if isinstance(src_operand, MIRImmediate):
+                    if i == 2 and rom_label:
+                        self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":{rom_label}"),
+                                         f"Bank byte of {rom_label}")
                     else:
-                        src_byte = self.parent._offset_location(src_loc, i)
-                        dest_byte = self.parent._offset_location(dest_loc, i)
-                        self._emit_load_store('LDA', src_byte)
-                        self._emit_load_store('STA', dest_byte)
+                        self._emit_instr(Opcode.LDA_IMMEDIATE,
+                                         Immediate((src_operand.value >> (i * 8)) & 0xFF))
+                else:
+                    src = src_loc if i == 0 else self.parent._offset_location(src_loc, i)
+                    self._emit_load_store('LDA', src)
+                self._emit_load_store('STA', dest_at(i))
+
+        if add_bank:
+            bank_ref = f":{rom_label}" if rom_label else 0x00
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref),
+                             f"Bank byte of {rom_label}" if rom_label else "Bank byte = 0")
+            self._emit_load_store('STA', dest_at(2))
