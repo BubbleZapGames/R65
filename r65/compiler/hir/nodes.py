@@ -93,6 +93,18 @@ class HIRProgram(HIRNode):
         """Filter declarations by type."""
         return [d for d in self.declarations if isinstance(d, decl_type)]
 
+    def all_functions(self):
+        """Every function body: top-level functions and impl methods alike.
+
+        Impl methods are HIRFunctionDecls named ``Struct__method`` that live in
+        their HIRImplDecl rather than at top level.
+        """
+        for decl in self.declarations:
+            if isinstance(decl, HIRFunctionDecl):
+                yield decl
+            elif isinstance(decl, HIRImplDecl):
+                yield from decl.methods
+
     @property
     def functions(self) -> List['HIRFunctionDecl']:
         """Get all function declarations."""

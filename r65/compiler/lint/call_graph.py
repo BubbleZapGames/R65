@@ -19,38 +19,13 @@ from typing import Dict, Iterable, List, Optional, Set
 
 from r65.compiler.errors import SourceLocation
 from r65.compiler.hir import (
-    HIRAddressOf,
-    HIRArrayFillExpr,
-    HIRArrayIndex,
-    HIRArrayLiteralExpr,
-    HIRAssignment,
-    HIRBinaryOp,
-    HIRBlock,
-    HIRBreakStmt,
-    HIRContinueStmt,
-    HIRDereference,
-    HIRExprStmt,
-    HIRExpression,
-    HIRFieldAccess,
-    HIRFunctionAddress,
-    HIRFunctionCall,
-    HIRFunctionDecl,
-    HIRImplDecl,
-    HIRIdentifier,
-    HIRIfStmt,
-    HIRLetStmt,
-    HIRMethodCall,
-    HIRMultiAssignment,
-    HIRProgram,
-    HIRReturnStmt,
-    HIRStatement,
-    HIRStaticDecl,
-    HIRStructLiteralExpr,
-    HIRMultiLetStmt,
-    HIRTupleLetStmt,
-    HIRTypeCast,
-    HIRUnaryOp,
-    HIRWhileStmt,
+    HIRAddressOf, HIRArrayFillExpr, HIRArrayIndex, HIRArrayLiteralExpr,
+    HIRAssignment, HIRBinaryOp, HIRBlock, HIRBreakStmt, HIRContinueStmt,
+    HIRDereference, HIRExprStmt, HIRExpression, HIRFieldAccess,
+    HIRFunctionAddress, HIRFunctionCall, HIRFunctionDecl, HIRIdentifier,
+    HIRIfStmt, HIRLetStmt, HIRMethodCall, HIRMultiAssignment, HIRProgram,
+    HIRReturnStmt, HIRStatement, HIRStaticDecl, HIRStructLiteralExpr,
+    HIRMultiLetStmt, HIRTupleLetStmt, HIRTypeCast, HIRUnaryOp, HIRWhileStmt,
 )
 from r65.compiler.hir.nodes import (
     HIRBlockExpression,
@@ -196,11 +171,11 @@ def build_call_graph(program: HIRProgram) -> CallGraph:
     """Build a :class:`CallGraph` by walking every function body in ``program``."""
     graph = CallGraph()
 
-    for func in _all_functions(program):
+    for func in program.all_functions():
         graph.nodes[func.name] = func
 
     builder = _CallGraphBuilder(graph)
-    for func in _all_functions(program):
+    for func in program.all_functions():
         builder.walk_function(func)
 
     # Static initializers can name functions too — a ROM jump table such as
@@ -212,22 +187,6 @@ def build_call_graph(program: HIRProgram) -> CallGraph:
             builder.walk_static_initializer(decl)
 
     return graph
-
-
-def _all_functions(program: HIRProgram):
-    """Every function body in the program, impl methods included.
-
-    Impl methods are desugared to HIRFunctionDecls named ``Struct__method``
-    but live inside their HIRImplDecl rather than at top level. Skipping them
-    would leave every method body outside the call graph, so nothing reachable
-    only through a method call could be analysed.
-    """
-    for decl in program.declarations:
-        if isinstance(decl, HIRFunctionDecl):
-            yield decl
-        elif isinstance(decl, HIRImplDecl):
-            yield from decl.methods
-
 
 class _CallGraphBuilder:
     """Walks HIR bodies collecting call sites and function-address references."""

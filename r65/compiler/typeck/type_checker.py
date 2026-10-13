@@ -180,16 +180,9 @@ class TypeChecker:
         Raises:
             TypeCheckError: If function not found
         """
-        from r65.compiler.hir import HIRImplDecl
-
-        for decl in self.program.declarations:
-            if isinstance(decl, HIRFunctionDecl) and decl.name == func_name:
+        for decl in self.program.all_functions():
+            if decl.name == func_name:
                 return decl
-            # Also search inside impl blocks for methods
-            if isinstance(decl, HIRImplDecl):
-                for method in decl.methods:
-                    if method.name == func_name:
-                        return method
 
         raise TypeCheckError(
             f"Function '{func_name}' not found",
@@ -714,16 +707,9 @@ class TypeChecker:
         # Pre-pass: promote near pointer params to far when called with WRAM args
         self._promote_far_pointer_params()
 
-        # Type check all functions
-        from r65.compiler.hir import HIRImplDecl
-
-        for decl in self.program.declarations:
-            if isinstance(decl, HIRFunctionDecl):
-                self.check_function(decl)
-            # Also check methods inside impl blocks
-            elif isinstance(decl, HIRImplDecl):
-                for method in decl.methods:
-                    self.check_function(method)
+        # Type check every function body, impl methods included
+        for func in self.program.all_functions():
+            self.check_function(func)
 
     def _promote_far_pointer_params(self):
         """Pre-pass: promote near pointer params to far when called with WRAM address args.
@@ -734,17 +720,9 @@ class TypeChecker:
 
         Must run before function body type checking so all callers see the promoted type.
         """
-        from r65.compiler.hir import HIRImplDecl
         from r65.compiler.typeck.pointer_validator import PointerValidator
 
-        # Build map of function_name -> HIRFunctionDecl
-        func_map = {}
-        for decl in self.program.declarations:
-            if isinstance(decl, HIRFunctionDecl):
-                func_map[decl.name] = decl
-            elif isinstance(decl, HIRImplDecl):
-                for method in decl.methods:
-                    func_map[method.name] = method
+        func_map = {f.name: f for f in self.program.all_functions()}
 
         # Walk all function bodies, find HIRFunctionCall nodes with HIRAddressOf args
         # Scan all function bodies for calls that pass far pointers to near params
