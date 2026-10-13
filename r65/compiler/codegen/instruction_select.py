@@ -1979,6 +1979,11 @@ class InstructionSelector:
         # below would read `Q10` and conclude 8-bit.
         from r65.compiler.hir.types import strip_newtype
         type_info = strip_newtype(type_info)
+        # An enum's name says nothing about its width: it is two bytes once a
+        # variant exceeds 255.
+        from r65.compiler.hir.types import EnumTypeInfo
+        if isinstance(type_info, EnumTypeInfo):
+            return type_info.size_bytes == 2
         if hasattr(type_info, 'name'):
             return type_info.name in ('u16', 'i16')
         # Near pointers are 16-bit (far pointers are 24-bit)

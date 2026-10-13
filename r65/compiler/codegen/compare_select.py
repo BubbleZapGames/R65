@@ -345,6 +345,10 @@ class CompareSelector(BaseSelector):
         type_info = strip_newtype(type_info)
         if isinstance(type_info, BasicTypeInfo):
             return type_info.name in ('u16', 'i16')
+        # An enum is two bytes once a variant exceeds 255.
+        from r65.compiler.hir.types import EnumTypeInfo
+        if isinstance(type_info, EnumTypeInfo):
+            return type_info.size_bytes == 2
         return False
 
     def _prepare_right_operand(self, right, is_16bit: bool = False):
