@@ -111,7 +111,6 @@ class TypeChecker:
             self._call_validator = CallValidator(
                 self.symbol_table, self.relations, self._lookup_function_decl,
                 self.check_expression, self.check_element_base,
-                lambda: self.current_mode,
                 lambda: self.current_function
             )
         return self._call_validator
@@ -431,9 +430,10 @@ class TypeChecker:
             TypeCheckError: If types don't match
         """
         # Every caller here is assignment-shaped (let / static / const /
-        # assignment / if-arm / break value), so `expected_type` is the place
-        # being written and the directional `assignable` rule applies. A newtype
-        # takes it even without `use_compatible`: transparent in, opaque out.
+        # assignment / multi-assignment / struct-literal field), so
+        # `expected_type` is the place being written and the directional
+        # `assignable` rule applies. A newtype takes it even without
+        # `use_compatible`: transparent in, opaque out.
         if (use_compatible or isinstance(expected_type, NewtypeTypeInfo)
                 or isinstance(actual_type, NewtypeTypeInfo)):
             types_match = self.relations.assignable(actual_type, expected_type)
@@ -723,7 +723,8 @@ class TypeChecker:
         if func.body is None:
             return  # External function
 
-        # The mode is fixed for the whole body (asm! SEP/REP is not tracked).
+        # Registers are typed by the entry mode throughout the body; a mode
+        # change inside it (asm! SEP/REP, `A = <u16 value>`) is not tracked.
         self.check_block(func.body)
 
         # Validate XY16 (x8) regions — reject unsafe patterns inside

@@ -87,3 +87,22 @@ def test_inlined_constant_is_not_bit_tested_as_an_immediate(e2e):
         fn main() { A = 0; OUT[0] = sign8(0x90); A = 0; OUT[1] = sign16(0x9000); }
     ''', ExpectedState(memory={0x7E0310: [1, 1]}))
     assert result.success, f"Failures: {result.failures}"
+
+
+def test_top_bits_of_an_index_register(e2e):
+    """A value in X or Y tests bit 15 by CPX/CPY #0 and bit 7 through TXA/TYA."""
+    result = e2e.run('''
+        #[lowram(0x0310)] static mut OUT: [u8; 4];
+
+        #[inline(never)]
+        fn probe(x @ X: u16, y @ Y: u16) {
+            if (x & 0x8000) != 0 { OUT[0] = 1; } else { OUT[0] = 2; }
+            if (x & 0x80) != 0 { OUT[1] = 1; } else { OUT[1] = 2; }
+            if (y & 0x8000) != 0 { OUT[2] = 1; } else { OUT[2] = 2; }
+            if (y & 0x80) != 0 { OUT[3] = 1; } else { OUT[3] = 2; }
+        }
+
+        #[entry]
+        fn main() { probe(0x8001, 0x0080); }
+    ''', ExpectedState(memory={0x7E0310: [1, 2, 2, 1]}))
+    assert result.success, f"Failures: {result.failures}"

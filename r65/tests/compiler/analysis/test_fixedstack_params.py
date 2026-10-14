@@ -211,6 +211,20 @@ class TestFixedStackRecursionRejection:
         assert "countdown:" in result
 
 
+def test_address_taken_function_with_stack_params_rejected():
+    """A call through a pointer cannot know where a promotion put each
+    parameter, so an address-taken function must bind them all."""
+    source = """
+    #[zeropage(0x20, register)] static mut S0: u8;
+    fn put(v: u8, w: u8) { }
+    static HP: fn(u8, u8) = put;
+    #[entry]
+    fn main() { HP(7, 8); }
+    """
+    with pytest.raises(CodegenError, match="has its address taken but has stack parameters"):
+        compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
+
+
 def test_dispatch_reserves_the_dispatched_methods_param_bytes(monkeypatch):
     """A caller of `wide` reserves both bytes of its u16 scratch param,
     sized from `wide`'s signature, not from the first impl (`small`)."""

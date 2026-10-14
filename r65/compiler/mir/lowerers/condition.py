@@ -437,7 +437,7 @@ class ConditionLowerer:
         if not self._is_bitwise_expr(expr):
             return False
 
-        # Check all operands are safe (non-volatile, no side effects)
+        # Check all operands are safe (no side effects)
         if not self._all_operands_safe(expr):
             return False
 

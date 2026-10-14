@@ -473,7 +473,11 @@ class StackSlotAllocator:
         interfere.
 
         Must run BEFORE hw-coalescence so the hw pass sees simplified MIR.
+        A merge extends src's range, so the instruction-level liveness every
+        later decision reads (call spanning, scratch eligibility, register
+        hints) is rebuilt once the MIR has changed.
         """
+        merged = False
         changed = True
         while changed:
             changed = False
@@ -542,8 +546,12 @@ class StackSlotAllocator:
                             # looking at another Move.
                             self.liveness_analyzer = LivenessAnalyzer(self.func)
                             self.liveness_analyzer.analyze()
+                            merged = True
                             continue  # re-examine same index
                     i += 1
+        if merged and self.instr_liveness is not None:
+            from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
+            self.instr_liveness = InstructionLivenessAnalyzer(self.func)
 
     def _has_other_defs(self, vreg: VirtualRegister, move_block_id: int,
                         move_idx: int) -> bool:
@@ -1412,7 +1420,14 @@ class StackSlotAllocator:
         - LoadIndirect/StoreIndirect (`LDY #offset` unless Y is already the
           index at offset 0)
         - Calls that don't preserve X/Y (handled in caller)
+        - A def of another vreg pinned to that register (a loop-promoted
+          counter in `pre_allocated_hw`): its value is written there
         """
+        for d in self.liveness_analyzer._get_defs(instr):
+            if (type(d) is VirtualRegister and d.id != vreg_id
+                    and self.pre_allocated_hw.get(d.id) == hw_reg):
+                return True
+
         instr_type = type(instr)
 
         if instr_type is Move:

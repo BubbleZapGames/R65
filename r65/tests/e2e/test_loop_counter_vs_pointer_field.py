@@ -102,3 +102,33 @@ class TestCounterOutlivesItsLoop:
             0x7E0040: [0x89, 0x00],     # 151 - 14 shifts
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_counter_does_not_share_x_with_a_bound_param(self, e2e):
+        """`v` copies a parameter that arrives in X; the counter moved off Y
+        (the stores' `LDY`) is pinned to X. `v` then must not stay in X too:
+        `e = 151` would be an `LDX` over it."""
+        result = e2e.run('''
+            struct Rec { a: u16, b: u16 }
+
+            #[lowram(0x0300)]
+            static mut R: Rec;
+
+            #[inline(never)]
+            fn norm(p: far *Rec, start @ X: u16) {
+                let mut v: u16 = start;
+                let mut e: u16 = 151;
+                loop {
+                    if (v & 0x4000) != 0 { break; }
+                    v = v + v;
+                    e = e - 1;
+                }
+                p.a = v;
+                p.b = e;
+            }
+
+            #[entry]
+            fn main() { norm(&R, 7); }
+        ''', ExpectedState(memory={
+            0x7E0300: [0x00, 0x70, 0x8B, 0x00],     # 7 << 12, 151 - 12
+        }))
+        assert result.success, f"Failures: {result.failures}"

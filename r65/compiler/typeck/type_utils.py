@@ -318,7 +318,7 @@ class TypeRelations:
         self.symbol_table = symbol_table
 
     def types_compatible(self, t1: TypeInfo, t2: TypeInfo) -> bool:
-        """Symmetric compatibility: a value of either type may flow into the other.
+        """Symmetric compatibility: either type is assignable to the other.
 
         For sites with no destination: comparison operands and the arms of an
         `if` or `loop` expression. A newtype pairs only with itself here, since

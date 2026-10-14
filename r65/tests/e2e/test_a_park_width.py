@@ -54,3 +54,20 @@ class TestAParkWidth:
             0x7E0038: [0x00, 0x02],      # vx
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestBParamSurvivesPrologue:
+    def test_b_param_survives_d_equals_s_setup(self, e2e):
+        """TSC writes all of C, so a `@ B` parameter is parked with A across
+        the far-pointer D=S prologue (an m8 TYA would restore A alone)."""
+        result = e2e.run('''
+            struct P { a: u8, b: u8 }
+            #[lowram(0x0300)] static mut Q: P;
+            impl P {
+                #[inline(never)]
+                fn set(far *self, x @ A: u8, y @ B: u8) { self.a = x; self.b = y; }
+            }
+            #[entry]
+            fn main() { Q.set(0x11, 0x22); }
+        ''', ExpectedState(memory={0x7E0300: [0x11, 0x22]}))
+        assert result.success, f"Failures: {result.failures}"

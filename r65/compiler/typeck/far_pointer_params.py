@@ -6,8 +6,9 @@ A `*T` parameter is near: 16 bits, read through the data bank. When any
 direct call passes it an address a near pointer cannot reach (`&BUF` on a
 `#[ram]` static, a ROM static in another bank or under HiROM; see
 PointerValidator._needs_far_pointer), the parameter is retyped to `far *T`
-for the whole program. Its other callers then pass a 24-bit pointer too, and the MIR builder takes the
-D=S path (indirect long addressing) for the function's dereferences.
+for the whole program. Its other callers then pass a 24-bit pointer too, and
+the MIR builder takes the D=S path (indirect long addressing) for the
+function's dereferences.
 
 This is the one place type checking changes a declaration: it runs as an
 explicit step before any body is checked, so every call and the callee's own

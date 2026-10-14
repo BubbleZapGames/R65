@@ -126,9 +126,10 @@ class InstructionSelector:
         # Constant pointer map: vreg.id → known integer address (for inlined constant ptrs)
         self._vreg_const_map = self._build_vreg_const_map()
 
-        # The MIR instruction after the one being selected (set by the block
-        # loop), and one this selector has decided not to emit — see
-        # _skip_scaled_index_reload.
+        # The (block_id, index) of the MIR instruction being selected and the
+        # MIR instruction after it (both set by the block loop), and one this
+        # selector has decided not to emit — see _skip_scaled_index_reload.
+        self._current_pos = None
         self._next_instr = None
         self._skip_instr_id = None
         self._vreg_reads = None
@@ -460,7 +461,8 @@ class InstructionSelector:
     # ========================================================================
 
     def _init_hw_tracker(self, mir_func: 'MIRFunction'):
-        """Find where each register-bound parameter (`idx @ X`) is last read."""
+        """Record, per instruction in emission order, which register-bound
+        parameters (`idx @ X`) are still read at or after it."""
         self.hw_tracker.initialize_from_parameters(mir_func)
 
     def _advance_instruction(self):
@@ -1316,10 +1318,13 @@ class InstructionSelector:
         """
         Get a scratch for transient use within a single MIR instruction.
 
-        No call must occur between save and read, so the FixedStack global
-        reservation (other functions' scratch-promoted params) is not
-        load-bearing here and may be borrowed. The function's OWN
-        scratch-promoted params are still considered live and excluded.
+        No call must occur between save and read, so the global reservation
+        (every function's scratch-promoted params) may be borrowed where its
+        owner cannot be running: the function's OWN scratch-promoted params
+        are excluded, and so are the scratch bytes of the functions that may
+        be on the call stack below it (`caller_scratch_bytes`), and a scratch
+        the allocator placed one of its locals in while that local is live
+        here (read or written by this instruction, or live after it).
 
         Returns None when no suitable scratch can be borrowed.
 
@@ -1338,20 +1343,26 @@ class InstructionSelector:
                     size=size,
                 )
 
-        # Pass 2: borrow a globally-reserved scratch, but never overlap this
-        # function's own live scratch-promoted params.
+        # Pass 2: borrow a globally-reserved scratch, but never overlap a
+        # scratch this function's own values live in.
         from r65.compiler.codegen.type_utils import get_type_size
-        own_param_bytes = set()
+        own_bytes = set()
         if self.current_function and self.current_function.scratch_param_addrs:
             for idx, addr in self.current_function.scratch_param_addrs.items():
                 param_size = get_type_size(self.current_function.parameters[idx].param_type)
-                own_param_bytes.update(range(addr, addr + param_size))
+                own_bytes.update(range(addr, addr + param_size))
+        if self.current_function:
+            own_bytes |= self.current_function.caller_scratch_bytes
+        live_ids = self._vregs_live_at_current_instr()
+        for vreg_id, loc in self.reg_alloc.allocations.items():
+            if loc.kind == LocationKind.SCRATCH and (live_ids is None or vreg_id in live_ids):
+                own_bytes.update(range(loc.scratch_addr, loc.scratch_addr + loc.size))
 
         for scratch in self.reg_alloc.scratch_pool.scratches:
             if scratch.size < size:
                 continue
             scratch_bytes = set(range(scratch.address, scratch.address + scratch.size))
-            if scratch_bytes & own_param_bytes:
+            if scratch_bytes & own_bytes:
                 continue
             return PhysicalLocation(
                 kind=LocationKind.SCRATCH,
@@ -1360,6 +1371,19 @@ class InstructionSelector:
             )
 
         return None
+
+    def _vregs_live_at_current_instr(self):
+        """Ids of the vregs the current MIR instruction reads or writes, or
+        that are live after it; None when the position is unknown."""
+        liveness = self.reg_alloc.instr_liveness
+        if self._current_pos is None or liveness is None:
+            return None
+        block_id, idx = self._current_pos
+        instr = self.current_function.blocks[block_id].instructions[idx]
+        from r65.compiler.mir.nodes import iter_operands
+        ids = {v.id for _, v in iter_operands(instr) if isinstance(v, VirtualRegister)}
+        ids.update(v.id for v in liveness._get_live_after(block_id, idx))
+        return ids
 
     def _get_temp_address(self) -> Address | None:
         """
@@ -1573,8 +1597,8 @@ class InstructionSelector:
                 self._ensure_xba_state_swapped("Transfer B to A")
                 return
             elif src_reg == 'A' and dest_reg == 'B':
-                # A to B: XBA puts the value in B. That is B's home, so the
-                # state is NORMAL afterwards (a toggle would leave SWAPPED,
+                # A to B: XBA puts the value in B. That is B's home, so a
+                # known state ends NORMAL (a toggle would leave SWAPPED,
                 # and a later read of B would skip the XBA it needs and take
                 # A instead).
                 self._store_to_b_from_a()

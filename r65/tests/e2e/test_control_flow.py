@@ -5,6 +5,8 @@ End-to-end tests for control flow operations.
 Tests while loops, nested if/else, enum comparisons, and boundary comparisons.
 """
 
+import pytest
+
 from r65.tests.e2e import ExpectedState
 
 
@@ -667,6 +669,7 @@ class TestLoopExpression:
         assert result.success, f"Failures: {result.failures} {result.error}"
 
 
+@pytest.mark.requires_recursion
 class TestRecursion:
     """Test recursive function calls with stack parameters.
 
@@ -784,6 +787,7 @@ class TestBinaryOpCallResult:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    @pytest.mark.requires_recursion
     def test_non_tail_recursive_sum(self, e2e):
         """Test n + sum_to(n-1): the original bug pattern."""
         result = e2e.run('''

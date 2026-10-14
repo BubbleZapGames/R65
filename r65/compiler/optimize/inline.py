@@ -86,17 +86,17 @@ INLINE_COST_NO_ATTR      = 12   # break-even for unmarked implicit inlining
 _LOOP_DEPTH_MULTIPLIER = [1, 3, 6]
 
 
+# Order in which the inliner writes return values bound for ABI registers:
+# A last, because B is its high byte and moves into X/Y may pass through A.
+_HW_RETURN_WRITE_ORDER = ('Y', 'X', 'B', 'A')
+
+
 # Instructions that produce their result in the A register. When the
 # Return is preceded by such an instruction whose dest is the same vreg
 # we're about to return, A still holds that value and the inliner can
 # substitute HardwareRegister('A') for the vreg source, sparing the
 # caller a redundant Move (often nothing emits at all once the codegen
 # coalesces both endpoints to A).
-# Order in which the inliner writes return values bound for ABI registers:
-# A last, because B is its high byte and moves into X/Y may pass through A.
-_HW_RETURN_WRITE_ORDER = ('Y', 'X', 'B', 'A')
-
-
 def _value_is_in_a_at_end_of(instrs: List[MIRInstruction],
                               vreg: VirtualRegister) -> bool:
     """Conservative check: does A hold `vreg` after `instrs` execute?
@@ -130,11 +130,10 @@ class InlinabilityChecker:
     Determines whether a function can and should be inlined.
 
     Hard requirements: see `can_inline` (`#[inline(never)]`, recursion,
-    interrupt, entry,
-    `__init_start`, asm!, trait methods, `#[preserves]`, ...) and, per
-    (caller, callee) pair, `_bank_compatible`: a far callee in another bank
-    must have a bank-independent body (`_far_body_is_bank_safe`); a
-    same-bank caller may inline any far fn, exactly as it would a near one.
+    interrupt, entry, `__init_start`, asm!, trait methods, `#[preserves]`,
+    ...) and, per (caller, callee) pair, `_bank_compatible`: a far callee in
+    another bank must have a bank-independent body (`_far_body_is_bank_safe`);
+    a same-bank caller may inline any far fn, exactly as it would a near one.
 
     Heuristics for inlining decisions (cycle budgets):
     - `#[inline(always)]`: always (hard requirements still apply).
@@ -1385,8 +1384,9 @@ class FunctionInliner:
                         type_info=param.param_type
                     ))
 
-        # Register loads in the call lowering's order, A last: the other
-        # loads go through A and would clobber an A param set before them.
+        # Register loads in a real call's order (`register_arg_rank`), A
+        # last: the other loads go through A and would clobber an A param
+        # set before them.
         register_instrs.sort(key=lambda m: register_arg_rank(m.dest.name))
 
         return register_instrs, stack_instrs

@@ -2762,11 +2762,11 @@ class HIRBuilder:
     def _validate_self_register_conflict(self, impl, method, params, self_binding):
         """Reject a parameter that binds the register a by-value `self` occupies.
 
-        *self_binding* is None when there is no register receiver (a pointer
-        `self`, or an associated function with no `self`), and params[0] is
-        then not a receiver. A by-value `self` rides in A (newtype/enum) or X (planed index). In A,
-        neither A nor B is available to a parameter: B is the accumulator's high
-        byte, not a register of its own. Sharing either
+        *self_binding* is None unless `self` rides in a register (so for a
+        pointer `self` and for an associated function); when set, params[0] is
+        that `self`. A by-value `self` rides in A (newtype/enum) or X (planed
+        index). In A, neither A nor B is available to a parameter: B is the
+        accumulator's high byte, not a register of its own. Sharing either
         with `self` is an entanglement the author did not ask for, and codegen
         routes B/X/Y argument setup *through* A, so it is also a live hazard.
 

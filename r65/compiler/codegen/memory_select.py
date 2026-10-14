@@ -616,17 +616,7 @@ class MemoryOperationSelector(BaseSelector):
 
         # Handle stack-located pointers
         if ptr_loc.kind == LocationKind.STACK:
-            # Load source value into A first
-            if isinstance(instr.source, MIRImmediate):
-                value = instr.source.value & 0xFF
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-            elif src_loc.is_hw('A'):
-                pass  # Already in A
-            elif src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
-                transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
-                self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
-            else:
-                self._emit_load_store('LDA', src_loc)
+            self._load_byte_into_a(src_loc, instr.source)
 
             if instr.is_far:
                 # Far pointer on stack: choose approach based on prologue setup
@@ -649,17 +639,7 @@ class MemoryOperationSelector(BaseSelector):
 
         opcode, operand = self._get_indirect_opcode('STA', ptr_loc, instr.is_far, instr_index)
 
-        # Load source value into A
-        if isinstance(instr.source, MIRImmediate):
-            value = instr.source.value & 0xFF
-            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-        elif src_loc.is_hw('A'):
-            pass  # Already in A
-        elif src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
-            transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
-            self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
-        else:
-            self._emit_load_store('LDA', src_loc)
+        self._load_byte_into_a(src_loc, instr.source)
 
         self._emit_instr(opcode, operand, "Store through pointer")
         if will_clobber_y_s and self._has_y_self():
@@ -735,13 +715,8 @@ class MemoryOperationSelector(BaseSelector):
             self.parent.emitter.emit_accu_mode(8)
         else:
             # 8-bit store: load into A, STA abs,Y
-            if isinstance(source, MIRImmediate):
-                value = source.value & 0xFF
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-            elif src_loc.is_hw('A'):
-                pass  # Already in A
-            else:
-                self._emit_load_store('LDA', src_loc)
+            self._ensure_m8_mode()
+            self._load_byte_into_a(src_loc, source)
             self.parent.emitter.emit_raw(f"    STA ${offset:04X},Y")
 
     # ========================================================================
@@ -1069,6 +1044,21 @@ class MemoryOperationSelector(BaseSelector):
         self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
         store(1)
         self._emit_instr(Opcode.XBA, None, "Restore A low byte")
+
+    def _load_byte_into_a(self, src_loc, source):
+        """A = the 8-bit store value, in m8 (caller's mode). A value in B is
+        swapped in, one in X/Y transferred (its low byte)."""
+        if isinstance(source, MIRImmediate):
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(source.value & 0xFF))
+        elif src_loc.is_hw('A'):
+            pass
+        elif src_loc.is_hw('B'):
+            self.parent._access_b_value_in_a()
+        elif src_loc.is_hw('X') or src_loc.is_hw('Y'):
+            transfer = Opcode.TXA if src_loc.is_hw('X') else Opcode.TYA
+            self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A for store")
+        else:
+            self._emit_load_store('LDA', src_loc)
 
     def _load_word_into_a(self, src_loc, source):
         """A = the 16-bit store value, in m16 (caller's mode)."""
@@ -1637,13 +1627,5 @@ class MemoryOperationSelector(BaseSelector):
             # 8-bit store through constant pointer
             direct_loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=effective_addr,
                                           size=1, index_register=idx)
-            if isinstance(instr.source, MIRImmediate):
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(instr.source.value & 0xFF))
-            elif src_loc.is_hw('A'):
-                pass  # Already in A
-            elif src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
-                transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
-                self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A")
-            else:
-                self._emit_load_store('LDA', src_loc)
+            self._load_byte_into_a(src_loc, instr.source)
             self._emit_load_store('STA', direct_loc)

@@ -57,7 +57,8 @@ class MacroExpander:
         self.warnings: List[str] = []
         self._expansion_depth = 0
         self._expanding: Set[str] = set()  # Track currently expanding macros
-        # The program's items, for symbol!/format! declaration lookups
+        # The program's items, for declaration lookups (symbol!, format!
+        # buffers, impl-macro receivers)
         self._program_items: List[ast.Declaration] = []
         # Declarations macros add to the program (format!'s ROM literal
         # statics), appended after the expanded items

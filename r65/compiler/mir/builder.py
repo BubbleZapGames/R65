@@ -516,11 +516,6 @@ class MIRBuilder:
                     bank_attr=None   # __init_start is always near, no DBR management
                 ))
 
-        # Generate interrupt handler mode setup if needed
-        # Note: Register saves (PHP, PHA, PHX, PHY, PHD, PHB) are emitted by codegen
-        # in emit_prologue BEFORE frame allocation. This is critical because stack
-        # frame allocation uses stack-relative addressing that would corrupt saved
-        # registers if the pushes came after frame allocation.
         # Lower function body
         if hir_func.body:
             self.lower_block(hir_func.body)

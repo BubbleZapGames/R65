@@ -439,9 +439,9 @@ def _body_is_safe(func: MIRFunction, body_block_ids: List[int],
                     return False
 
     # Reject nested loops: a back-edge from the body to anything but our
-    # header. Back-edges come from the DFS in `find_back_edges`; a jump to
-    # a lower block ID is not one (an inner `if` reaching an outer `if`'s
-    # merge block does that).
+    # header. Back-edges come from the DFS in `find_back_edges`, not block
+    # IDs: an inner `if` jumping to an outer `if`'s merge block can target
+    # a lower ID without closing a loop.
     for source, target in find_back_edges(func):
         if source in body_set and target != header_id:
             return False

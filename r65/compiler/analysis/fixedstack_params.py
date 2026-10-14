@@ -20,7 +20,7 @@ from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.param_utils import (
     find_composite_scratch, find_trait_impl_groups,
-    clear_far_ptr_flag_if_all_promoted, reserve_scratch_param_bytes,
+    clear_far_ptr_flag_if_all_promoted, reserve_scratch_param_bytes, param_bytes,
 )
 from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 from r65.compiler.analysis.far_ptr_strategy import far_self_needs_save
@@ -205,6 +205,11 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
     _allocate_far_self_scratches(mir_program, scratch_pool, trait_impl_groups,
                                   func_by_name, global_scratch_param_addrs)
 
+    # Step 4d: A caller's scratch params and far-self slot may be live across
+    # its calls, so even a one-instruction borrow in a callee
+    # (instruction_select._get_transient_temp_location) must leave them.
+    _record_caller_scratch_bytes(mir_program, cg)
+
     # Step 5: Update call sites
     for func in mir_program.functions:
         _update_call_sites(func, all_promotions, trait_method_promos)
@@ -217,6 +222,47 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         if total_scratch > 0:
             parts.append(f"{total_scratch} to scratch")
         print(f"FixedStack parameter promotion: {total} parameter(s) promoted ({', '.join(parts)})", file=sys.stderr)
+
+
+def _record_caller_scratch_bytes(mir_program: MIRProgram, cg: CallGraph):
+    """Set each function's `caller_scratch_bytes`: the scratch bytes owned by
+    every function from which a chain of calls reaches it.
+
+    A call through a pointer has no edge in `cg`, so a function containing
+    one counts as a caller of every address-taken function.
+    """
+    owned: Dict[str, Set[int]] = {}
+    for func in mir_program.functions:
+        bytes_: Set[int] = set()
+        for param_idx, base_addr in func.scratch_param_addrs.items():
+            bytes_.update(param_bytes(func, param_idx, base_addr))
+        if func.self_far_uses_scratch and func.self_scratch_addr is not None:
+            bytes_.update(range(func.self_scratch_addr, func.self_scratch_addr + 3))
+        owned[func.name] = bytes_
+    if not any(owned.values()):
+        return
+
+    callers: Dict[str, Set[str]] = {f.name: set() for f in mir_program.functions}
+    for caller, callees in cg.edges.items():
+        for callee in callees:
+            callers.setdefault(callee, set()).add(caller)
+    indirect_callers = {
+        func.name for func in mir_program.functions
+        if any(isinstance(instr, Call) and not isinstance(instr.function, str)
+               for block in func.blocks.values() for instr in block.instructions)
+    }
+    for name in cg.address_taken:
+        callers.setdefault(name, set()).update(indirect_callers)
+
+    for func in mir_program.functions:
+        seen: Set[str] = set()
+        frontier = [func.name]
+        while frontier:
+            for caller in callers.get(frontier.pop(), ()):
+                if caller not in seen:
+                    seen.add(caller)
+                    frontier.append(caller)
+        func.caller_scratch_bytes = set().union(*(owned.get(c, set()) for c in seen))
 
 
 def _reject_recursive_functions(mir_program: MIRProgram, cg: CallGraph):

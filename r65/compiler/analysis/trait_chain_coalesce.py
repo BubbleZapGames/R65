@@ -618,12 +618,14 @@ def _instr_redefines_vreg(instr, vreg):
 
 
 def _uses_dbr(mem, d_equals_s: bool) -> bool:
-    """True if codegen addresses `mem` through DBR (16-bit absolute).
+    """True if codegen may address `mem` through DBR (16-bit absolute).
 
-    RAM and lowram are emitted absolute. A `#[hw]` register at a 16-bit
-    address is absolute too: it lives in bank $00 (and its mirrors), not
-    in a RAM or ROM object's bank. A ROM label is emitted LONG except
-    when indexed by Y, which has no long form and falls back to absolute.
+    Lowram is emitted absolute; RAM is too unless its address resolves
+    above $FFFF, which is not told apart here, so all RAM counts. A `#[hw]`
+    register at a 16-bit address is absolute too: it lives in bank $00 (and
+    its mirrors), not in a RAM or ROM object's bank. A ROM label is emitted
+    LONG except when indexed by Y, which has no long form and falls back to
+    absolute.
     Zeropage goes through DP, except in a function that runs with D=S
     (`d_equals_s`), where it is absolute as well: under a self bank of
     $40-$7D, $7F or $C0-$FF that reaches ROM or high WRAM, not page 0.

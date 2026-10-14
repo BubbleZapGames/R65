@@ -522,6 +522,7 @@ class TestCallReturnValueAcrossCall:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    @pytest.mark.requires_recursion
     def test_call_result_survives_recursive_call(self, e2e):
         """Call result used after recursive call must survive on stack.
 

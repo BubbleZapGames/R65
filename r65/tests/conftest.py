@@ -23,6 +23,33 @@ def pytest_addoption(parser):
     )
 
 
+# What the FixedStack ABI rules out by design: each marker skips its tests
+# under --abi FixedStack, with the limit as the reason. The compiler rejects
+# these programs there with a compile error.
+FIXEDSTACK_LIMITS = {
+    "requires_recursion": (
+        "FixedStack ABI rejects recursion: a parameter lives in one fixed "
+        "scratch or register, not a per-call frame"),
+    "requires_stack_params": (
+        "FixedStack ABI has no stack parameters: an address-taken function "
+        "must bind every parameter to a register"),
+}
+
+
+def pytest_configure(config):
+    for name, reason in FIXEDSTACK_LIMITS.items():
+        config.addinivalue_line("markers", f"{name}: skipped under --abi FixedStack ({reason})")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--abi") != "FixedStack":
+        return
+    for item in items:
+        for name, reason in FIXEDSTACK_LIMITS.items():
+            if item.get_closest_marker(name):
+                item.add_marker(pytest.mark.skip(reason=reason))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _configure_abi(request):
     abi = request.config.getoption("--abi")

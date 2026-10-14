@@ -14,6 +14,8 @@ Two passes each had their own idea of "address taken", and each missed one:
   read its arguments from scratch while the call through `HP` pushed them.
 """
 
+import pytest
+
 from r65.tests.e2e import ExpectedState
 
 
@@ -42,6 +44,7 @@ def test_far_fn_called_directly_and_through_a_pointer(e2e):
     assert result.success, f"Failures: {result.failures}"
 
 
+@pytest.mark.requires_stack_params
 def test_fn_in_a_rom_static_keeps_stack_params(e2e):
     result = e2e.run('''
         #[zeropage(0x20, register)] static mut S0: u8;

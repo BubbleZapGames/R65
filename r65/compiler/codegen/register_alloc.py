@@ -497,10 +497,13 @@ class RegisterAllocator:
 
     def _hint_conflicts_with_hw_defs(self, vreg: VirtualRegister, hw_reg: str) -> bool:
         """
-        Check if allocating vreg to hw_reg conflicts with explicit writes.
+        Check if allocating vreg to hw_reg conflicts with a write to it.
 
         More precise than _has_explicit_hw_defs: only reports a conflict if
-        the vreg is actually live at a point where the hw register is written.
+        the vreg is actually live at a point where the hw register is written,
+        explicitly (a Move to it) or by an access's own use of it
+        (`index_clobbers`: `LDY #offset`, MVN, `TAX`). The vreg as that
+        access's pointer is no conflict: a pointer in Y is read `abs,Y`.
 
         Args:
             vreg: Virtual register with the hint
@@ -514,9 +517,22 @@ class RegisterAllocator:
         if not self.instr_liveness:
             return self._has_explicit_hw_defs(hw_reg)  # conservative fallback
 
-        from r65.compiler.mir.nodes import HardwareRegister, Move
+        from r65.compiler.mir.nodes import (
+            HardwareRegister, Move, LoadIndirect, StoreIndirect, index_clobbers,
+            iter_operands,
+        )
         for block_id, block in self.mir_func.blocks.items():
             for instr_idx, instr in enumerate(block.instructions):
+                if hw_reg in index_clobbers(instr):
+                    pointer = getattr(instr, 'pointer', None)
+                    is_own_pointer = (isinstance(instr, (LoadIndirect, StoreIndirect))
+                                      and isinstance(pointer, VirtualRegister)
+                                      and pointer.id == vreg.id)
+                    if not is_own_pointer and (
+                            any(isinstance(v, VirtualRegister) and v.id == vreg.id
+                                for _, v in iter_operands(instr))
+                            or self.instr_liveness.is_live_after(vreg, block_id, instr_idx)):
+                        return True
                 # Check explicit writes to the hardware register
                 if hasattr(instr, 'dest') and isinstance(instr.dest, HardwareRegister):
                     if instr.dest.name == hw_reg:
@@ -663,6 +679,9 @@ class RegisterAllocator:
                 pre_allocated_hw=pre_allocated_hw,
             )
             self.slot_allocation = self.slot_allocator.allocate()
+            # Move coalescing may have rewritten the MIR; its liveness is the
+            # current one.
+            self.instr_liveness = self.slot_allocator.instr_liveness
 
             # Pre-allocate param vregs with their final computed offsets
             for vreg, final_offset in self.slot_allocation.param_offsets.items():

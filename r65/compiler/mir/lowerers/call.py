@@ -496,7 +496,7 @@ class CallLowerer:
         return returns[0] if returns else None
 
     # ========================================================================
-    # Mode Transition Helpers
+    # Call Emission
     # ========================================================================
 
 

@@ -38,9 +38,10 @@ if TYPE_CHECKING:
 class RuntimeSlot:
     """A run-time element of a local aggregate literal (`[x, 1, 2]`).
 
-    Holds every byte position of its slot in the initializer's byte list, so
-    the slot's offset is where it first appears; the constant bytes around it
-    are laid out as usual and the builder stores *expr* there afterwards.
+    The one object fills each byte position of its slot in the initializer's
+    byte list, so the slot's offset is where it first appears; the constant
+    bytes around it are laid out as usual and the builder stores *expr* there
+    afterwards.
     One HIR expression shared by several slots (`[x; 4]` expands to the same
     node four times) is evaluated once.
     """

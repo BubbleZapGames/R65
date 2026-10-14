@@ -192,7 +192,7 @@ class OptimizationStats:
 
 
 # ============================================================================
-# RawAsm Classification
+# Mode Switch Helpers
 # ============================================================================
 
 def _mode_switch_residue(node):
@@ -227,8 +227,8 @@ def _mode_switch_residue(node):
 # position along every control-flow path, tracking three resources:
 #
 #   'A'  - the accumulator's low byte
-#   'B'  - its high byte (read by XBA, TAX/TAY in x16, TCD/TCS, and by
-#          every A read in m16)
+#   'B'  - its high byte (read by XBA, TAX/TAY in x16, TCD/TCS, the
+#          MVN/MVP count, and every A read in m16)
 #   'NZ' - the N and Z flags
 #
 # No flag crosses a call or a return in the R65 ABI, so JSR/JSL and
@@ -241,8 +241,9 @@ def _mode_switch_residue(node):
 # Straight-line inline asm is read line by line for the A and B it may
 # read; it is assumed to write neither and passes N/Z through. Inline asm
 # that branches, jumps, returns, pushes P, changes mode or holds a label
-# or data, an indirect jump, a branch out of the node list, and a walk
-# past `_LIVENESS_BUDGET` instructions all count as reading everything.
+# or data, an opcode missing from the tables below, an indirect jump, a
+# branch out of the node list, and a walk past `_LIVENESS_BUDGET`
+# instructions all count as reading everything.
 
 _NZ_WRITERS = frozenset({
     'LDA', 'LDX', 'LDY', 'AND', 'ORA', 'EOR', 'ADC', 'SBC',
@@ -1118,8 +1119,8 @@ class PeepholeOptimizer:
         or a `.ACCU`/`.INDEX` hint overwrites every bit `i` wrote —
         another SEP/REP whose mask covers `i`'s, or a PLP/RTI, which
         reload the whole of P from the stack. Anything else in between —
-        a real instruction, a label (which could be branched to), opaque
-        inline asm — makes the write observable and stops the rewrite.
+        a real instruction, a label (which could be branched to), inline
+        asm — makes the write observable and stops the rewrite.
         """
         from r65.compiler.codegen.asm_nodes import (
             Instruction, Immediate, Comment, ModeChange,

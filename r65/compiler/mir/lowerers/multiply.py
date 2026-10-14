@@ -131,7 +131,7 @@ def compute_scaled_index(
         index_type: The index expression's type; sizes a HardwareRegister index
         ctx: Lowering context for allocating virtual registers
         emit: Function to emit MIR instructions
-        call_lowerer: Emits the mul16 call for sizes over 16 bytes
+        call_lowerer: Emits the mul16 call (over 16 bytes, not a power of 2)
 
     Returns:
         Operand containing index * element_size

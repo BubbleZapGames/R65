@@ -49,8 +49,8 @@ class ActiveRegionState:
     """
     Tracks active clobber regions during code generation.
 
-    For X, Y (and A when it is bound to a vreg), tracks whether we're currently
-    inside a clobber region (have saved but not yet restored).
+    For X and Y, tracks whether we're currently inside a clobber region (have
+    saved but not yet restored).
 
     Also tracks the current "spill offset" - the number of bytes pushed onto
     the stack for spilling. This is used to adjust stack-relative accesses
@@ -232,11 +232,11 @@ class CallInstructionSelector(BaseSelector):
             self._emit_implied(opcode)
 
     def _emit_push(self, reg: str, comment: str = None):
-        """Emit a push instruction ('DBR' for PHB; 'B' is A's high byte)."""
+        """Emit a push of *reg*, a PUSH_OPCODES key ('DBR' for PHB; B has no push)."""
         self._emit_implied(PUSH_OPCODES[reg], comment)
 
     def _emit_pull(self, reg: str, comment: str = None):
-        """Emit a pull instruction ('DBR' for PLB; 'B' is A's high byte)."""
+        """Emit a pull into *reg*, a PULL_OPCODES key ('DBR' for PLB; B has no pull)."""
         self._emit_implied(PULL_OPCODES[reg], comment)
 
     def _emit_load_immediate(self, reg: str, value: int, comment: str = None):
@@ -347,8 +347,8 @@ class CallInstructionSelector(BaseSelector):
             self._emit_return_value_collection(instr)
 
         # Step 5.5: Caller cleanup of PHA-pushed stack args
-        # Done after return value collection so A/X/Y return values are safely
-        # stored in their virtual register destinations before we clobber A.
+        # Done after return value collection, so the cleanup knows which
+        # registers still hold a result and pulls into none of them.
         if stack_bytes_pushed > 0:
             self._emit_caller_arg_cleanup(stack_bytes_pushed, self._call_live_after_collection(instr))
 
@@ -499,10 +499,9 @@ class CallInstructionSelector(BaseSelector):
             if pos:
                 _, instr_idx = pos
 
-        # Determine return registers
-        return_regs = self._get_callee_return_registers(instr)
-        num_returns = self._call_num_returns(instr)
-        call_return_set = set(return_regs[:num_returns])
+        # Registers the dispatch defines (callee returns and their collected
+        # destinations): never spilled, so never reloaded over the result
+        call_return_set = self._call_result_registers(instr)
 
         for reg_name in ['A', 'X', 'Y']:
             if reg_name in call_return_set:
@@ -553,10 +552,8 @@ class CallInstructionSelector(BaseSelector):
         if not reg_alloc:
             return reloads
 
-        # Skip return registers — they hold the call result, not the spilled value
-        return_regs = self._get_callee_return_registers(instr)
-        num_returns = self._call_num_returns(instr)
-        call_return_set = set(return_regs[:num_returns])
+        # Skip registers holding a result: the same rule as the spill side
+        call_return_set = self._call_result_registers(instr)
 
         instr_idx = None
         if reg_alloc.instr_liveness:
@@ -866,9 +863,9 @@ class CallInstructionSelector(BaseSelector):
         """
         Compute which hardware registers need reloading after this call.
 
-        Region-based for X/Y, and for A when bound to a vreg: only returns
-        registers where this call is the LAST clobbering call in the region.
-        Otherwise A is per-call: reload if it was spilled for this call.
+        Region-based for X/Y: only returns registers where this call is the
+        LAST clobbering call in the region. A is per-call: reload it if it was
+        spilled for this call.
 
         Args:
             instr: The Call instruction
@@ -914,11 +911,8 @@ class CallInstructionSelector(BaseSelector):
                     # Clear active region
                     self.region_state.clear_active_region(hw_reg)
 
-        # A register per-call spilling fallback: reload if A was spilled for this call.
-        # This handles both: (a) A not bound to a vreg (always per-call), and
-        # (b) A bound to a vreg but this call has no clobber region (per-call fallback).
-        # If a region-based reload already handled A above, pending_a_spill was cleared
-        # by _emit_hw_reloads, so this won't double-reload.
+        # A is always spilled per call: reload it if it was spilled for this
+        # call, unless the call defines A (its spill was skipped).
         if self.region_state.pending_a_spill is not None:
             # Only add if not already handled by region reload above
             if 'A' not in call_return_set and not any(r.hw_reg == 'A' for r in reloads):
@@ -1172,8 +1166,9 @@ class CallInstructionSelector(BaseSelector):
         hold a result at this point; the cleanup writes none of them. Byte
         pairs are pulled into X, or into Y when X is live; an odd byte goes
         through PLA, with A parked in that index register when A is live.
-        When X and Y are both live, C (A and B) is stored over the topmost
-        argument bytes and pulled back last, so every register survives.
+        When X and Y are both live, C (A alone for a single byte) is stored
+        over the deepest argument bytes, SP steps past the rest, and C is
+        pulled back last, so every register survives.
 
         Also updates the stack tracker to reflect the removed bytes.
         """

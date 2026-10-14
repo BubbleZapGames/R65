@@ -169,3 +169,31 @@ fn main() { OUT = caller(7, 9); }
     def test_live_y_survives_argument_setup(self, e2e):
         r = e2e.run(self.SRC, ExpectedState(memory={0x7E0020: [0x34, 0x12]}))
         assert r.success, f"Failures: {r.failures}"
+
+
+class TestPointerSpillScratch:
+    def test_spill_does_not_reuse_a_live_local_scratch(self, e2e):
+        """`o` arrives in Y but meets the `LDY #1` of `s.hi`, so it lives in
+        a scratch; `s` stays in X and is spilled to a scratch for each `(dp)`
+        access. That spill must not borrow the scratch `o` lives in."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)] static mut SCR0: u16;
+            #[zeropage(0x12, register)] static mut SCR1: u16;
+            #[zeropage(0x14, register)] static mut SCR2: u16;
+            struct Acc { lo: u8, hi: u8 }
+            #[lowram(0x0300)] static mut SCORE: Acc;
+            #[lowram(0x0302)] static mut BONUS: Acc;
+
+            #[inline(never)]
+            fn add(s @ X: *Acc, o @ Y: *Acc) {
+                s.lo = s.lo + o.lo;
+                s.hi = s.hi + o.hi;
+            }
+
+            #[entry]
+            fn main() {
+                SCORE.lo = 1; SCORE.hi = 2; BONUS.lo = 10; BONUS.hi = 20;
+                add(&SCORE as *Acc, &BONUS as *Acc);
+            }
+        ''', ExpectedState(memory={0x7E0300: [11, 22]}))
+        assert result.success, f"Failures: {result.failures}"

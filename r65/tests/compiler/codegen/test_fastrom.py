@@ -273,6 +273,20 @@ fn go(p: far *dyn T) { p.put(); }
         assert "PHK" not in body
         assert "PEA $00\n" in body
 
+    def test_far_self_body_reading_lowram_gets_data_bank(self):
+        """A folded low-RAM operand (`ADC $0200`) is absolute too: through
+        self's bank it would miss when self lives in ROM or $7F."""
+        asm = compile_string("""
+struct P { n: u8 }
+trait Bump { fn bump(far *self); }
+impl Bump for P { fn bump(far *self) { self.n = self.n + LR; } }
+#[lowram] static mut LR: u8;
+#[ram] static mut PP: P;
+#[entry] fn main() -> ! { LR = 2; PP.n = 1; let b: far *dyn Bump = &PP; b.bump(); loop {} }
+""")
+        body = self._body(asm, "P__bump")
+        assert "Set DBR to the data bank" in body
+
     def test_lorom_bank0_far_self_keeps_phk(self):
         """In LoROM bank 0, PBR is the data bank: PHK/PLB is the cheap load."""
         asm = compile_string(LOROM_FAST + self.FAR_SELF)

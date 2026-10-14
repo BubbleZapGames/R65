@@ -16,7 +16,7 @@ SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
 """
 
 from r65.compiler.mir.nodes import (
-    CallBase,
+    CallBase, InlineAsm, iter_memory_operands,
     FarPtrStrategy, MIRFunction,
     Load, Store, LoadIndirect, StoreIndirect,
     MemoryLocation, VirtualRegister,
@@ -110,22 +110,21 @@ def far_self_body_needs_dbr(func: MIRFunction) -> bool:
 
     Self arrives as DBR:Y, so the body may keep that DBR only if nothing in it
     expects the program's: no call (the callee assumes a normal DBR) and no
-    ROM or `#[hw]` Load/Store (absolute addressing goes through DBR). Such a
+    ROM, `#[hw]` or `#[lowram]` operand (absolute addressing goes through DBR,
+    and a self in ROM or $7F has no I/O or low-RAM mirror) and no inline asm.
+    Such a
     method saves self first: D=S under the Default ABI
     (`self_far_uses_d_equals_s`), a zero-page slot under FixedStack
     (`self_far_uses_scratch`).
     """
     for block in func.blocks.values():
         for instr in block.instructions:
-            if isinstance(instr, CallBase):
+            # Inline asm is not analyzed: it may address I/O or low RAM.
+            if isinstance(instr, (CallBase, InlineAsm)):
                 return True
-            if isinstance(instr, Load):
-                loc = instr.source
-            elif isinstance(instr, Store):
-                loc = instr.dest
-            else:
-                continue
-            if isinstance(loc, MemoryLocation) and loc.storage_type in ('rom', 'hw'):
+            # Any operand may name memory: a load, a store, a folded operand.
+            if any(m.storage_type in ('rom', 'hw', 'lowram')
+                   for m in iter_memory_operands(instr)):
                 return True
     return False
 

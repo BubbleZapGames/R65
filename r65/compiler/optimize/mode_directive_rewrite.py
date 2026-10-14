@@ -282,7 +282,7 @@ def normalize_mode_directives(
       3. Run ``compute_modes`` on the stripped list, seeded with the
          anchored directives so the dataflow knows the runtime mode at
          function and block entries, and every other entry the passes
-         started from (``function_entry_seeds``) in an unknown mode.
+         started from with the passes' seed (``function_entry_seeds``).
       4. Walk the stripped list. Track WLA-DX's currently-believed mode
          (the value of the most-recently-emitted directive of each
          kind). Wherever the dataflow reports a unique mode that

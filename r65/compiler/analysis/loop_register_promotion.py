@@ -16,7 +16,7 @@ from r65.compiler.mir.nodes import (
     CallBase,
     MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate,
     Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, TypeConvert, ToBool, Rotate,
-    iter_operands, map_operands, fixed_clobbers,
+    iter_operands, map_operands, index_clobbers,
 )
 from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
@@ -371,7 +371,7 @@ def _enforce_index_clobber_safety(func: MIRFunction) -> int:
         clobbered: Set[str] = set()
         for bid in body:
             for instr in func.blocks[bid].instructions:
-                clobbered |= _index_clobbers(instr)
+                clobbered |= index_clobbers(instr)
         if clobbered == {'X', 'Y'}:
             xy_blocks |= body          # subsumes any table in the same loop
         elif clobbered == {'X'}:
@@ -485,25 +485,6 @@ def _enforce_alias_register_safety(func: MIRFunction) -> int:
     return dropped
 
 
-def _index_clobbers(instr) -> Set[str]:
-    """The index registers *instr*'s codegen overwrites: see
-    `_enforce_index_clobber_safety` for each case.
-
-    Beyond `fixed_clobbers`, an indirect access with no index register loads
-    Y with its own offset (`LDY #offset` before `(zp),Y` / `[zp],Y`), so a
-    counter pinned to Y does not survive it. `index_register` marks the other
-    shape, `PTR[i]`, where the index the access wants in Y *is* a value the
-    allocator places there, and pinning the counter to Y is right.
-    """
-    regs = set(fixed_clobbers(instr) & _XY)
-    if isinstance(instr, (LoadIndirect, StoreIndirect)) and instr.index_register is None:
-        regs.add('Y')
-    return regs
-
-
-_XY = frozenset('XY')
-
-
 def _enforce_live_range_clobber_safety(func: MIRFunction) -> int:
     """Drop or move an X/Y hint whose vreg is live across a clobber anywhere.
 
@@ -521,7 +502,7 @@ def _enforce_live_range_clobber_safety(func: MIRFunction) -> int:
     clobbers = []
     for block_id, block in func.blocks.items():
         for idx, instr in enumerate(block.instructions):
-            regs = _index_clobbers(instr)
+            regs = index_clobbers(instr)
             if regs:
                 clobbers.append((block_id, idx, instr, regs))
     if not clobbers:

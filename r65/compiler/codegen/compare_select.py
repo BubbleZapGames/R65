@@ -487,28 +487,43 @@ class CompareSelector(BaseSelector):
 
         Bits 7/6 are tested in m8, which reads the low byte of a wider value;
         bits 15/14 in m16. N is the top bit of any load, so a value on the
-        stack is just loaded and one in A is compared with 0, which leaves A
-        alone. V comes only from BIT on memory, and MIR builds a V test for
-        nothing else.
+        stack is just loaded, one in A is compared with 0, which leaves A
+        alone, and one in X/Y is compared with 0 (x16, so bit 15) or moved
+        to A (m8, so bit 7). One in B is swapped into A. V comes only from
+        BIT on memory, and MIR builds a V test for nothing else.
 
         Args:
             instr: BitTest instruction
         """
         value_loc = self.parent._get_operand_location(instr.value)
+        if instr.test_bit == 15 and value_loc.hw_register in ('X', 'Y'):
+            # CPX/CPY follow the index width (always x16), not M.
+            opcode = Opcode.CPX_IMMEDIATE if value_loc.is_hw('X') else Opcode.CPY_IMMEDIATE
+            self._emit_instr(opcode, Immediate(0), "Set N from bit 15")
+            return
         if instr.test_bit >= 8:
             self.parent._ensure_m16_mode()
         else:
             self.parent._ensure_m8_mode()
 
-        if value_loc.kind == LocationKind.STACK or value_loc.is_hw('A'):
+        if value_loc.kind == LocationKind.STACK or value_loc.is_hw():
             if instr.test_bit not in (7, 15):
                 raise InstructionSelectionError(
                     f"BitTest of bit {instr.test_bit} needs a memory operand",
                     source_loc=self.parent._current_source_loc)
             if value_loc.kind == LocationKind.STACK:
                 self._emit_load_store('LDA', value_loc)
-            else:
+            elif value_loc.is_hw('A'):
                 self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate(0), "Set N from A")
+            elif value_loc.hw_register in ('X', 'Y'):
+                self._emit_instr(Opcode.TXA if value_loc.is_hw('X') else Opcode.TYA,
+                                 comment="Set N from bit 7")
+            elif value_loc.is_hw('B'):
+                self.parent._access_b_value_in_a()
+            else:
+                raise InstructionSelectionError(
+                    f"BitTest of hardware register {value_loc.hw_register}",
+                    source_loc=self.parent._current_source_loc)
             return
 
         opcode, operand = self.parent._get_opcode_for_location('BIT', value_loc)

@@ -489,7 +489,7 @@ class ProgramCodeGenerator:
            indexes into a jump table
         2. A jump table with word-size entries pointing to concrete implementations
 
-        Near dispatch wrapper (self in Y, DBR = object's bank):
+        Dispatch wrapper, near and far alike (self in Y, DBR = object's bank):
             TraitName__method__dispatch:
               LDA.w $0000,Y        ; Load TypeId from *self (offset 0)
               REP #$20

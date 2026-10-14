@@ -152,8 +152,8 @@ class TypeConversionSelector(BaseSelector):
 
     def _emit_widening_into_index(self, src_operand, reg: str, source_signed: bool):
         """Widen into X or Y, which have no store form: extend in A (m16) and
-        transfer. Reached when a loop counter promoted to X/Y starts from a
-        u8 value."""
+        transfer - e.g. a loop counter promoted to X/Y that starts from a u8
+        value."""
         self.parent._ensure_m8_mode()
         self._load_byte_into_a(src_operand)
         self.parent._ensure_m16_mode()

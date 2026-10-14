@@ -3,7 +3,7 @@
 ABI model abstraction for the R65 compiler.
 
 Defines selectable ABI policies that control calling convention decisions:
-- Default: PHA-based argument passing with caller PLX cleanup (default)
+- Default: PHA-based argument passing with caller cleanup (default)
 - FixedStack: no stack params (hw registers + scratch only), minimal PHB-per-byte frames
 - Pascal: Apple IIGS/Pascal convention — all params on stack, callee cleanup, stack result space
 """
@@ -186,9 +186,9 @@ class ABIModel(ABC):
         A save is needed when:
           - any non-stack arg's value is in A (LDA in stack setup would
             clobber it), or
-          - a stack arg's value is in A but it isn't the last one (PHA path
-            processes args in reverse, so non-last A-resident args get
-            clobbered by prior LDAs).
+          - a stack arg's value is in A but it isn't the last one (args are
+            pushed in reverse, so the LDAs of the args after it clobber A
+            first).
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
 
@@ -541,16 +541,14 @@ class ABIModel(ABC):
         return stack_bytes_pushed
 
     def emit_return_values(self, selector, instr):
-        """Move a Return's values into their return registers.
+        """Move a Return's values into their return registers, then switch
+        to the exit mode.
 
         Concrete on the base class — Default and FixedStack share identical
         register-based logic. Pascal overrides to write to stack result space.
 
-        The values are one parallel move: each is read as it stood at the
-        Return, so no move may write a register that a pending move still
-        reads, nor one already holding its final value. _ReturnMarshaller
-        orders the moves to keep that, and parks a source on the stack where
-        no order does (X and Y swapped). The CPU leaves in the exit mode.
+        The values are one parallel move, each read as it stood at the Return;
+        _ReturnMarshaller orders it.
 
         Args:
             selector: ControlFlowInstructionSelector instance
@@ -983,7 +981,7 @@ class ABIDefault(ABIModel):
     """Default calling convention with PHA-based argument passing (--abi Default).
 
     Stack arguments are pushed via PHA before each call and cleaned up by
-    the caller via PLX after the call returns. Parameter passing uses a
+    the caller after the call returns. Parameter passing uses a
     hybrid mechanism (register, variable-bound, scratch-promoted, and
     stack).
 

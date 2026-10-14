@@ -30,7 +30,6 @@ class CallValidator:
     def __init__(self, symbol_table, relations: TypeRelations,
                  lookup_function_decl_fn: Callable,
                  check_expression_fn: Callable, check_element_base_fn: Callable,
-                 get_current_mode_fn: Callable,
                  get_current_function_fn: Callable):
         """
         Initialize with dependencies.
@@ -42,7 +41,6 @@ class CallValidator:
             check_expression_fn: Function to type check expressions
             check_element_base_fn: Function to type check a method receiver
                 (TypeChecker.check_element_base: a whole #[soa] element is legal)
-            get_current_mode_fn: Function to get current processor mode
             get_current_function_fn: Function to get current function being checked
         """
         self.symbol_table = symbol_table
@@ -50,7 +48,6 @@ class CallValidator:
         self.lookup_function_decl = lookup_function_decl_fn
         self.check_expression = check_expression_fn
         self.check_element_base = check_element_base_fn
-        self.get_current_mode = get_current_mode_fn
         self.get_current_function = get_current_function_fn
 
     def _validate_arguments(self, args, params, func_name: str, source_loc, is_indirect: bool = False):

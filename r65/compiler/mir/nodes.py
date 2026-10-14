@@ -1165,7 +1165,25 @@ def fixed_clobbers(instr) -> FrozenSet[str]:
     return frozenset()
 
 
+def index_clobbers(instr) -> FrozenSet[str]:
+    """The index registers *instr*'s codegen overwrites.
+
+    Beyond `fixed_clobbers`, an indirect access with no index register loads
+    Y with its own offset (`LDY #offset` before `(zp),Y` / `[zp],Y`), so a
+    value kept in Y does not survive it - unless that value is the access's
+    own pointer, which is read as `abs,Y` instead (the caller's to judge).
+    `index_register` marks the other shape, `PTR[i]`, where the index the
+    access wants in Y *is* a value the allocator places there.
+    """
+    regs = fixed_clobbers(instr) & _XY
+    if isinstance(instr, (LoadIndirect, StoreIndirect)) and instr.index_register is None:
+        regs = regs | _Y
+    return regs
+
+
 _A = frozenset('A')
+_Y = frozenset('Y')
+_XY = frozenset('XY')
 _AX = frozenset('AX')
 _AXY = frozenset('AXY')
 
@@ -1303,6 +1321,11 @@ class MIRFunction:
     # the bytes of the trait methods this function dispatches (FixedStack).
     global_scratch_param_bytes: Set[int] = field(default_factory=set)
     trait_dispatch_scratch_bytes: Set[int] = field(default_factory=set)
+    # The scratch bytes of the functions that may be on the call stack while
+    # this one runs - their scratch params and far-self slots (FixedStack,
+    # where those may be live across a call). Never borrowed, not even for
+    # one instruction.
+    caller_scratch_bytes: Set[int] = field(default_factory=set)
 
     # HW-promoted parameter registers (populated by fixedstack_params pre-pass)
     # Maps parameter index to hw register name for auto-promoted params

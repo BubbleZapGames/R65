@@ -404,6 +404,7 @@ class FunctionCodeGenerator:
 
             # Emit instructions in block
             for idx, instr in enumerate(block.instructions):
+                instr_selector._current_pos = (block_id, idx)
                 instr_selector._next_instr = (block.instructions[idx + 1]
                                               if idx + 1 < len(block.instructions) else None)
                 try:
@@ -742,7 +743,7 @@ class FunctionCodeGenerator:
         1. Stack pointer initialization (entry functions with custom stack)
         2. Entry function setup (SEI/CLC/XCE/REP - switch to native mode)
         3. Interrupt register and scratch-pool saves
-        4. Far-self pushes (PHB/PHY, then PHK/PLB)
+        4. Far-self pushes (PHB/PHY), then the data-bank load
         5. A-parameter save (TAY/TAX) when later steps clobber A
         6. Stack frame allocation (if needed)
         7. DBR management (databank=inline)
@@ -837,6 +838,7 @@ class FunctionCodeGenerator:
         # Detect which hardware registers hold parameters.
         from r65.compiler.hir import RegisterBinding
         a_has_param = False
+        b_has_param = False
         x_has_param = False
         y_has_param = False
         for param in mir_func.parameters:
@@ -844,39 +846,55 @@ class FunctionCodeGenerator:
                 reg = param.binding.register_name
                 if reg == 'A':
                     a_has_param = True
+                elif reg == 'B':
+                    b_has_param = True
                 elif reg == 'X':
                     x_has_param = True
                 elif reg == 'Y':
                     y_has_param = True
+        for reg in mir_func.hw_param_regs.values():
+            if reg == 'A':
+                a_has_param = True
+            elif reg == 'B':
+                b_has_param = True
+            elif reg == 'X':
+                x_has_param = True
+            elif reg == 'Y':
+                y_has_param = True
 
-        # Keep an `@ A` parameter alive through the prologue. The steps that
-        # write A are a TSC/SBC/TCS frame allocation, the databank=inline
-        # DBR load, and far-pointer setup (LDA bank,S or TSC/TCD). The DBR
-        # load switches to a PEA when A is live (_emit_dbr_inline_setup), so
-        # it never forces a save. For the other two, `a_save` says where A
-        # is kept:
+        # Keep an `@ A` or `@ B` parameter alive through the prologue. The
+        # steps that write A are a TSC/SBC/TCS frame allocation, the
+        # databank=inline DBR load, and far-pointer setup (LDA bank,S or
+        # TSC/TCD); TSC writes B as well. The DBR load switches to a PEA when
+        # A is live (_emit_dbr_inline_setup), so it never forces a save. For
+        # the other two, `a_save` says where A is kept:
         #   'Y' / 'X' - TAY/TYA (TAX/TXA) around the whole prologue;
-        #   'stack'   - X and Y hold parameters too: the frame is allocated
-        #               with register pushes, and the far-pointer setup
-        #               parks A on the stack around itself;
+        #   'stack'   - X and Y hold parameters too, or B does (an m8 TYA
+        #               restores only A): the frame is allocated with
+        #               register pushes, and the far-pointer setup parks C
+        #               on the stack around itself;
         #   None      - no prologue step writes A.
+        # A parameter register is either explicitly bound or promoted by the
+        # FixedStack pass (`hw_param_regs`).
         from r65.compiler.typeck.processor_mode import ModeState
         entry_m16 = mir_func.entry_m_mode == ModeState.M16
         force_direct = mir_func.interrupt_attr is not None
         a_save = None
-        if a_has_param:
+        if a_has_param or b_has_param:
             frame_clobbers_a = frame_size > 0 and (
                 frame_size > self.abi_model.frame_alloc_clobbers_a_threshold
                 or force_direct
             )
             if frame_clobbers_a or mir_func.has_far_ptr_stack_params:
-                if not y_has_param:
+                if b_has_param:
+                    a_save = 'stack'
+                elif not y_has_param:
                     a_save = 'Y'
                 elif not x_has_param:
                     a_save = 'X'
                 else:
                     a_save = 'stack'
-        a_live = a_has_param and a_save not in ('Y', 'X')
+        a_live = (a_has_param or b_has_param) and a_save not in ('Y', 'X')
 
         if a_save == 'Y':
             self._emit_instr(Opcode.TAY, comment="Save A param before prologue")

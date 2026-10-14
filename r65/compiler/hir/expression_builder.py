@@ -642,7 +642,8 @@ class ExpressionBuilder:
             return hir.HIRFunctionCall(func=func, args=args, builtin_name=builtin_name, source_loc=src_loc)
 
         elif isinstance(expr, ast.CfgFunctionCall):
-            # cfg!(flag) folds to the compiler's cfg options (shared with consts)
+            # cfg!(flag) folds against the compiler's cfg options, through the
+            # same evaluator as the `cfg(flag)` built-in
             result = self.const_evaluator.eval_cfg(expr.condition, src_loc)
             return hir.HIRBooleanLiteral(value=result, source_loc=src_loc)
 

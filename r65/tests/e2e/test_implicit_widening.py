@@ -16,8 +16,8 @@ def test_every_assignment_shaped_site_extends(e2e):
         #[zeropage(0x20)] static mut I: u8;
         #[zeropage(0x21)] static mut N: i8;
         #[zeropage(0x22)] static mut P: i8;
-        #[zeropage(0x30)] static mut O: [u16; 12];
-        #[zeropage(0x50)] static mut SO: [i16; 2];
+        #[zeropage(0x60)] static mut O: [u16; 12];
+        #[zeropage(0x80)] static mut SO: [i16; 2];
 
         struct Pair { w: u16 }
         struct Wide(u16);
@@ -48,7 +48,7 @@ def test_every_assignment_shaped_site_extends(e2e):
             B = 0xFF; O[11] = (I + 1) as u16;
         }
     ''', ExpectedState(memory={
-        0x7E0030: [0x05, 0x00] * 9 + [0x06, 0x00] * 3,
-        0x7E0050: [0xFD, 0xFF, 0x05, 0x00],
+        0x7E0060: [0x05, 0x00] * 9 + [0x06, 0x00] * 3,
+        0x7E0080: [0xFD, 0xFF, 0x05, 0x00],
     }))
     assert result.success, f"Failures: {result.failures}"
