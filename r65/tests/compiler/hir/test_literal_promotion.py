@@ -107,3 +107,25 @@ class TestLiteralPromotion:
         rhs = main_rhs(hir)
         assert rhs.expr_type.name == 'u16'
         assert rhs.left.expr_type.name == 'u16'
+
+
+class TestLiteralAdoptsOperandType:
+    """An unsuffixed literal takes the other operand's type, so a signed
+    operation is not turned unsigned by the same-width rule."""
+
+    def _rhs_type(self, statics, stmt):
+        hir = build_and_typecheck(f"{statics}\nfn main() {{ {stmt} }}")
+        return main_rhs(hir).expr_type.name
+
+    def test_signed_divide_stays_signed(self):
+        assert self._rhs_type("#[zeropage]\nstatic mut V: i8;", "V = V / 2;") == 'i8'
+
+    def test_literal_on_the_left(self):
+        assert self._rhs_type("#[zeropage]\nstatic mut V: i16;", "V = 4 - V;") == 'i16'
+
+    def test_oversized_divisor_divides_at_i16(self):
+        assert self._rhs_type("#[zeropage]\nstatic mut V: i8;", "V = V / 128;") == 'i16'
+
+    def test_literal_that_does_not_fit_keeps_its_type(self):
+        """`i8 & 0xFF` still pairs i8 with u8 — 0xFF is not an i8."""
+        assert self._rhs_type("#[zeropage]\nstatic mut V: i8;", "V = V & 0xFF;") == 'u8'

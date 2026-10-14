@@ -104,7 +104,7 @@ Things this shows that are easy to get wrong:
 | `x * 3`, `x / 10` | `mul8(x, 3)`, `div8(x, 10)`, or `(x << 1) + x` | Compile error. `*` and `/` take only power-of-2 constants (1–256). |
 | `x << n` with a variable `n` | `shl8(x, n)`, `shr8`, `shl16`, `shr16` | Compile error. Shift amounts must be constants. (The error hint says `shl()`, which does not exist.) |
 | `x % 16` | `x & 15`, or `mod8(x, n)` | Compile error at runtime; `%` exists only in a `const fn` or between constants. |
-| `v >> 1` on `i8`/`i16` | `shri8(v, 1)` for `i8` | **Compiles to a logical shift.** Signed `>>` and `/` do not sign-extend. |
+| `v >> 1` on `i8`/`i16` | fine as written | Arithmetic shift (sign-filling, floors); signed `/` rounds toward zero. Each signed bit costs 4 cycles, not 2. |
 | `let x = 0; x = 1;` | `let mut x` | Compile error. Locals and statics are immutable by default. |
 | `fn f(p: Player)`, `a = b` on structs | `fn f(p: *Player)`; copy fields | Compile error. Structs, unions and arrays are never passed or assigned by value. |
 | `fn f(i @ X: u8)` | `i @ X: u16` | Compile error. X and Y are always 16-bit. |

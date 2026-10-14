@@ -56,7 +56,7 @@ from r65.compiler.codegen.location_resolver import (
     default_resolver
 )
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
-from r65.compiler.codegen.type_utils import is_16bit_scalar, is_far_ptr, pointer_element_size
+from r65.compiler.codegen.type_utils import is_16bit_scalar, is_far_ptr, pointer_element_size, is_signed_scalar
 
 
 class InstructionSelector:
@@ -889,11 +889,13 @@ class InstructionSelector:
         elif op == '<<':
             self._emit_shift_left(right_operand, is_u16)
         elif op == '>>':
-            self._emit_shift_right(right_operand, is_u16)
+            self._emit_shift_right(right_operand, is_u16,
+                                   is_signed_scalar(instr.type_info))
         elif op == '*':
             self._emit_multiply(right_operand, is_u16)
         elif op == '/':
-            self._emit_divide(right_operand, is_u16)
+            self._emit_divide(right_operand, is_u16,
+                              is_signed_scalar(instr.type_info))
         else:
             raise unsupported_operation("binary operation", op, source_loc=self._current_source_loc)
 
@@ -1066,10 +1068,44 @@ class InstructionSelector:
         count = self._require_immediate(right_operand, "Shift")
         self._emit_shift_by(count, is_u16, left=True)
 
-    def _emit_shift_right(self, right_operand, is_u16: bool):
+    def _emit_shift_right(self, right_operand, is_u16: bool, signed: bool = False):
         """Emit right shift operation (A >> count)."""
         count = self._require_immediate(right_operand, "Shift")
-        self._emit_shift_by(count, is_u16, left=False)
+        if signed:
+            self._emit_arithmetic_shift_right(count, is_u16)
+        else:
+            self._emit_shift_by(count, is_u16, left=False)
+
+    def _emit_arithmetic_shift_right(self, count: int, is_u16: bool):
+        """Shift A right by *count*, copying the sign bit into the vacated
+        bits (i8/i16 `>>`, rounding toward negative infinity).
+
+        The 65816 has no arithmetic shift, so each step is `CMP #$80` (carry
+        = the sign bit, since A >= $80 exactly when it is set) and `ROR A`,
+        which rotates that carry back in at the top: 4 cycles a bit against
+        LSR's 2. A count of the width or more leaves only the sign, which is
+        what width - 1 steps produce.
+
+        A 16-bit count of 8 or more starts with XBA, the byte swap that is a
+        shift by 8, and then sign-extends the new low byte into the high one
+        before the remaining steps.
+        """
+        bit_width = 16 if is_u16 else 8
+        sign = 0x8000 if is_u16 else 0x80
+        count = min(count, bit_width - 1)
+
+        if is_u16 and count >= 8:
+            self._emit_implied(Opcode.XBA, "Swap bytes (shift right 8)")
+            self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Clear high byte")
+            self._emit_immediate(Opcode.BIT_IMMEDIATE, 0x0080, "Was the value negative?")
+            self._emit_branch(Opcode.BEQ, "+")
+            self._emit_immediate(Opcode.ORA_IMMEDIATE, 0xFF00, "Sign-extend the high byte")
+            self.emitter.emit_label("+")
+            count -= 8
+
+        for _ in range(count):
+            self._emit_immediate(Opcode.CMP_IMMEDIATE, sign, "Carry = sign bit")
+            self._emit_implied(Opcode.ROR, "Arithmetic shift right")
 
     def _emit_multiply(self, right_operand, is_u16: bool):
         """Emit multiply by power of 2 using ASL instructions."""
@@ -1084,8 +1120,14 @@ class InstructionSelector:
 
         self._emit_shift_by(shift_count, is_u16, left=True)
 
-    def _emit_divide(self, right_operand, is_u16: bool):
-        """Emit divide by power of 2 using LSR instructions."""
+    def _emit_divide(self, right_operand, is_u16: bool, signed: bool = False):
+        """Emit divide by power of 2 using shifts.
+
+        Signed division rounds toward zero, where an arithmetic shift rounds
+        toward negative infinity (-7 >> 1 is -4, -7 / 2 is -3). Adding
+        divisor - 1 to a negative dividend first makes the shift round the
+        other way; a non-negative one shifts as it is.
+        """
         value = self._require_immediate(right_operand, "Divide")
         shift_count = POWER_OF_2_SHIFTS.get(value)
 
@@ -1095,7 +1137,22 @@ class InstructionSelector:
                 f"Use div() for general division.",
                 source_loc=self._current_source_loc)
 
-        self._emit_shift_by(shift_count, is_u16, left=False)
+        if not signed:
+            self._emit_shift_by(shift_count, is_u16, left=False)
+            return
+        if shift_count == 0:
+            return
+        if shift_count >= (16 if is_u16 else 8):
+            # |dividend| < divisor, so the quotient rounds to zero
+            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0, "Quotient is 0")
+            return
+        sign = 0x8000 if is_u16 else 0x80
+        self._emit_immediate(Opcode.CMP_IMMEDIATE, sign, "Negative dividend?")
+        self._emit_branch(Opcode.BCC, "+")
+        self._emit_implied(Opcode.CLC)
+        self._emit_immediate(Opcode.ADC_IMMEDIATE, value - 1, "Round toward zero")
+        self.emitter.emit_label("+")
+        self._emit_arithmetic_shift_right(shift_count, is_u16)
 
     # ========================================================================
     # Control Flow (delegated to ControlFlowInstructionSelector)

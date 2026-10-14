@@ -191,8 +191,12 @@ let x = a * b;   // ERROR: Use mul8(a, b) for variable multiply
 
 **Behavior**:
 - Compiler error if divisor is not a power of 2 from 1 to 256
-- Implemented using logical shifts (LSR) for both signed and unsigned
-- **Note**: Signed division does not currently round toward zero — it uses the same LSR as unsigned
+- Unsigned: logical shifts (LSR)
+- Signed (`i8`/`i16`): rounds toward zero, like Rust (`-7 / 2 == -3`). A
+  negative dividend gets `n - 1` added first, then an arithmetic shift
+  (`CMP #$80` + `ROR` per bit, sign bit `$8000` in m16): ~6 cycles of bias
+  plus 4 per bit. A divisor too large for an `i8` dividend (`/ 128`,
+  `/ 256`) divides at `i16`.
 
 **Assembly Mapping**:
 ```rust
@@ -463,8 +467,11 @@ let x = a << n;   // ERROR: Use shl8(a, n) for variable shifts
 - Result type matches left operand
 
 **Behavior**:
-- Uses logical shift (LSR) for both signed and unsigned types (fills with 0)
-- **Note**: Arithmetic right shift (sign-preserving) is not currently implemented
+- Unsigned types: logical shift (LSR, fills with 0)
+- Signed types (`i8`/`i16`): arithmetic shift, filling with the sign bit and
+  rounding toward negative infinity (`-7 >> 1 == -4`). The 65816 has none, so
+  each bit is `CMP #$80` (carry = sign) + `ROR A`: 4 cycles a bit against 2.
+  An i16 shift of 8 or more starts with `XBA` and a sign-extend.
 - Shift by ≥ bit width is **undefined behavior**
 
 **Assembly Mapping**:
@@ -1184,4 +1191,4 @@ let overflow = STATUS & OVERFLOW_FLAG;
 
 **STATUS**: Implemented
 **Last Updated**: 2026-02-10
-**Not Yet Implemented**: `%` at runtime (use `mod8()`; it is allowed in const contexts), signed arithmetic right shift at runtime (uses logical shift for both; a `const fn` shifts arithmetically)
+**Not Yet Implemented**: `%` at runtime (use `mod8()`; it is allowed in const contexts)

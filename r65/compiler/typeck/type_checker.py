@@ -1391,6 +1391,44 @@ class TypeChecker:
         return left_nt or right_nt
 
     @staticmethod
+    def _literal_adopts_operand_type(expr: HIRBinaryOp, left_type: TypeInfo,
+                                     right_type: TypeInfo):
+        """Give an unsuffixed integer literal the other operand's type.
+
+        A literal typed on its own is the smallest unsigned type that holds
+        it, so `x / 2` with `x: i8` would pair i8 with u8, and the same-width
+        rule (unsigned wins) would turn a signed division into an unsigned
+        one. The literal has no type of its own to keep: it takes the
+        operand's, as long as its value fits.
+        """
+        for side, other_type in (('right', left_type), ('left', right_type)):
+            literal = getattr(expr, side)
+            if not (isinstance(literal, HIRIntegerLiteral) and literal.suffix is None):
+                continue
+            other = getattr(expr, 'left' if side == 'right' else 'right')
+            if isinstance(other, HIRIntegerLiteral):
+                continue  # two literals: nothing to adopt from
+            if not (isinstance(other_type, BasicTypeInfo)
+                    and TypeUtils.is_integer_type(other_type)):
+                continue
+            adopted = other_type
+            if not value_fits_type(literal.value, other_type.name):
+                # `i8 / 128`: a divisor too big for the signed dividend still
+                # divides as signed, at i16 (the quotient then fits i8 again).
+                if not (expr.op in ('/', '%') and side == 'right'
+                        and other_type.name == 'i8'
+                        and value_fits_type(literal.value, 'i16')):
+                    continue
+                adopted = BasicTypeInfo('i16')
+            literal.expr_type = adopted
+            other_type = adopted
+            if side == 'right':
+                right_type = other_type
+            else:
+                left_type = other_type
+        return left_type, right_type
+
+    @staticmethod
     def _widen_operands(expr: HIRBinaryOp, left_type: TypeInfo,
                         right_type: TypeInfo, promoted_type: TypeInfo) -> None:
         """Bring both operands of `expr` to `promoted_type`.
@@ -1513,6 +1551,8 @@ class TypeChecker:
                     expr.expr_type = right_type
                     return right_type
 
+            left_type, right_type = self._literal_adopts_operand_type(expr, left_type, right_type)
+
             # Arithmetic and bitwise: operands must match or be implicitly promotable
             if not TypeUtils.types_equal(left_type, right_type):
                 # Check for implicit integer promotion (u8 -> u16, i8 -> i16)
@@ -1557,6 +1597,8 @@ class TypeChecker:
                     source_loc=expr.source_loc,
                     hint="comparison requires compatible types"
                 )
+
+            left_type, right_type = self._literal_adopts_operand_type(expr, left_type, right_type)
 
             # Promote mismatched integer types (e.g., u16 >= u8 -> u16 >= u16)
             if not TypeUtils.types_equal(left_type, right_type):

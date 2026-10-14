@@ -42,6 +42,14 @@ def is_16bit_scalar(type_info) -> bool:
     return scalar_width(type_info) == 2
 
 
+def is_signed_scalar(type_info) -> bool:
+    """i8/i16, or a newtype over one: the types `>>` and `/` must shift
+    arithmetically, keeping the sign bit."""
+    from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
+    t = strip_newtype(type_info) if type_info is not None else None
+    return isinstance(t, BasicTypeInfo) and t.name in ('i8', 'i16')
+
+
 def is_far_ptr(type_info) -> bool:
     """True for the 3-byte pointer types: ``far *T`` and ``far fn()``.
 

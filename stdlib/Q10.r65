@@ -80,13 +80,7 @@ impl Q10 {
     /// to -1. Tile indices usually want this one.
     #[inline(always)]
     fn to_int(self) -> i16 {
-        // The negative branch is not decoration: `>>` is a logical shift for
-        // signed types too (see docs/operators.md), so a bare `self.0 >> 6`
-        // shifts the sign bit down and turns -2.0 into 1022. Floor of a negative
-        // is -ceil(|x| / 64), hence the +63 before shifting the magnitude.
-        if self.0 < 0 {
-            return 0 - (((0 - self.0) + 63) >> 6);
-        }
+        // `>>` on an i16 is an arithmetic shift, which is exactly floor.
         return self.0 >> 6;
     }
 
@@ -107,24 +101,16 @@ impl Q10 {
     /// 512 rather than saturating — that value fits the `i16` return.
     #[inline(always)]
     fn round(self) -> i16 {
-        // This is floor(x + 0.5), with the same signed-shift correction to_int
-        // needs.
+        // This is floor(x + 0.5): (x + 32) >> 6, the shift being arithmetic.
         //
-        // Exact over the whole range, top included, with nothing overflowing
-        // a signed compare:
-        //
-        //   * from -32 up the rounded value is (x + 32) >> 6 with x + 32 >= 0,
-        //     done in u16 - it peaks at 32799, so the add cannot wrap, and
-        //     -32..-1 wrap to 0..31 and round to 0 as they should;
-        //   * below -32 x + 32 fits i16 and is negative, and the magnitude
-        //     path's `+ 63` peaks at 32799 too, which `>>` (a logical shift)
-        //     reads as the unsigned value it is.
+        // Exact over the whole range, top included. Below -32, x + 32 fits i16
+        // and is negative. From -32 up it is done in u16 instead, where it
+        // peaks at 32799 without wrapping (in i16 the top values would).
         //
         // Q8 needs a saturation guard here because it rounds into a u8, where
         // 256 has nowhere to go.
         if self.0 < -32 {
-            let biased: i16 = self.0 + 32;
-            return 0 - (((0 - biased) + 63) >> 6);
+            return (self.0 + 32) >> 6;
         }
         return ((((self.0 as u16) + 32) >> 6) as i16);
     }
