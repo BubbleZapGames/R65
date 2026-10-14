@@ -6,4 +6,4 @@ This package contains the compiler implementation for the R65 programming langua
 targeting WLA-DX assembly syntax for SNES ROM development.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
