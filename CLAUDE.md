@@ -580,6 +580,8 @@ r65c game.r65 -o game.asm -v  # Verbose output
 r65x init --platform snes my_project  # Create test project
 ```
 
+For writing R65 programs (as opposed to working on the compiler), the agent-facing primer is [docs/AGENTS_R65.md](docs/AGENTS_R65.md). Its `rust` blocks are compiled by `r65/tests/compiler/test_agents_primer.py`.
+
 ## Testing ROMs
 
 `./Mesen-GDB/bin/linux-x64/Release/mesen-gdb` is a SNES debugger for automated ROM testing. It supports batch mode with register/memory assertions, interactive GDB-style debugging, memory dumps, and trace logging. See [Mesen-GDB/CLAUDE.md](Mesen-GDB/CLAUDE.md) for full usage reference.

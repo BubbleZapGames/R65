@@ -53,8 +53,7 @@ wlalink linkfile.txt build/game.smc
 ### Quick Syntax Examples
 
 ```rust
-// Function with mode annotation
-#[mode(m8, x16)]
+// Function with a register parameter
 fn set_background_color(color @ A: u8) {
     CGDATA = color;
 }
@@ -78,6 +77,13 @@ fn wait_for_vblank() {
     }
 }
 ```
+
+## Writing R65 with an AI Agent
+
+Point your coding agent at the [R65 agent primer](https://github.com/BubbleZapGames/R65/blob/master/docs/AGENTS_R65.md)
+before it writes code, or link it from this project's `CLAUDE.md` / `AGENTS.md`.
+It covers the language model, a complete program, the Rust habits that fail,
+the standard library's API, and how to build and test a ROM.
 
 ## SNES Specifics
 
