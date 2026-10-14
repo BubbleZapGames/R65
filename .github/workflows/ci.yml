@@ -59,7 +59,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Install WLA-DX
         run: brew install wla-dx
@@ -82,7 +82,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Install WLA-DX
         run: brew install wla-dx
