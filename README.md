@@ -2,7 +2,7 @@
 
 R65 is a Rust-inspired programming language for the 6502/65816 processor family, designed for SNES development. It gives you the control of assembly with the safety and readability of a modern language.
 
-Website: [r65.dev](https://r65.dev/)
+Website and documentation: [r65.dev](https://r65.dev/)
 
 ```rust
 #[entry]
@@ -29,7 +29,7 @@ fn main() -> ! {
 Requires Python 3.8+ (the only dependency is `lark`).
 
 ```bash
-git clone https://github.com/yourusername/R65.git
+git clone https://github.com/BubbleZapGames/R65.git
 cd R65
 pip install -e .
 ```
@@ -49,8 +49,21 @@ Or download pre-built binaries from https://github.com/vhelin/wla-dx/releases an
 ```bash
 r65x init --platform snes my_game
 cd my_game
-make                          # Assemble and link
+make                          # Compile, assemble and link build/MY_GAME.smc
+make run                      # Open it in an emulator (Mesen, higan or bsnes)
+make tests                    # Run tests/*.script with Mesen-GDB, if installed
 ```
+
+The generated `src/main.r65` already boots the console and runs an empty game
+loop; start there. ROM tests use [Mesen-GDB](https://github.com/BubbleZapGames/Mesen-GDB),
+a scriptable SNES debugger.
+
+### Using an AI Coding Agent
+
+Point the agent at [docs/AGENTS_R65.md](docs/AGENTS_R65.md) before it writes
+R65. It is a short primer: a complete program, the Rust habits that don't
+carry over, the standard library's API, and how to build and test a ROM.
+
 ---
 
 # R65 Language Guide
@@ -850,7 +863,7 @@ include!("player.r65")
 include!("enemies.r65")
 
 #[entry]
-fn main() { /* ... */ }
+fn main() -> ! { /* ... */ }
 ```
 
 ---
@@ -902,6 +915,8 @@ r65-emu game.smc --trace        # Built-in 65816 emulator: --breakpoint, --disas
 
 | Document | Description |
 |----------|-------------|
+| [r65.dev](https://r65.dev/) | Language reference and guides |
+| [docs/AGENTS_R65.md](docs/AGENTS_R65.md) | Primer for AI coding agents writing R65 |
 | [CLAUDE.md](CLAUDE.md) | Complete language specification |
 | [docs/abi-models.md](docs/abi-models.md) | Function calls, parameters, methods, ABI |
 | [docs/pointers-memory.md](docs/pointers-memory.md) | Memory model, addressing modes |
