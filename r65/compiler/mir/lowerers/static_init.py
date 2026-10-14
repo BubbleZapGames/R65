@@ -10,7 +10,7 @@ from r65.compiler.hir import (
     HIRStaticDecl, HIRFunctionDecl, HIRStructDecl,
     HIRExpression, HIRIntegerLiteral, HIRBooleanLiteral, HIREnumVariantExpr, HIRTypeCast,
     HIRArrayFillExpr, HIRArrayLiteralExpr, HIRStringLiteral, HIRStructLiteralExpr,
-    HIRIdentifier, HIRFunctionAddress, HIRAddressOf,
+    HIRIdentifier, HIRFunctionAddress, HIRAddressOf, HIRIncludeBytesExpr,
     SymbolKind,
 )
 from r65.compiler.hir.attributes import StorageKind
@@ -152,10 +152,19 @@ class StaticInitLowerer:
                 # place.
                 self._emit_rom_scalar_init(static_decl, initializer)
 
-            elif is_rom_storage:
-                # Any other ROM initializer (`include_bytes!`) is laid out
-                # by its own path, not stored at runtime.
+            elif is_rom_storage and isinstance(initializer, HIRIncludeBytesExpr):
+                # `include_bytes!` is laid out by its own path, not stored
+                # at runtime.
                 pass
+
+            elif is_rom_storage or TypeUtils.is_aggregate_type(static_decl.var_type):
+                # Anything else would leave a ROM static with no data at all,
+                # or store one scalar into an aggregate in RAM.
+                raise MIRLoweringError(
+                    f"initializer of static `{static_decl.name}` must be a "
+                    f"compile-time constant",
+                    source_loc=static_decl.source_loc
+                )
 
             elif self._is_function_pointer_init(initializer):
                 # Function pointer: emit Store with FunctionPointer directly
