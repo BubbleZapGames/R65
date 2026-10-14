@@ -199,7 +199,11 @@ class ControlFlowInstructionSelector(BaseSelector):
 
         self._emit_implied(Opcode.TAX)
 
-        self.emitter.emit_instr(Opcode.LDA_ABSOLUTE_X, Address(table_label), "LUT lookup")
+        # The table sits beside the code, in the function's bank, and an
+        # absolute load reads DBR's bank: long unless the two are the same.
+        lookup = (Opcode.LDA_ABSOLUTE_X if self._dbr_holds_code_bank()
+                  else Opcode.LDA_LONG_X)
+        self.emitter.emit_instr(lookup, Address(table_label), "LUT lookup")
         self._emit_jump(Opcode.BRA, merge_label)
 
         # Default path
@@ -231,6 +235,36 @@ class ControlFlowInstructionSelector(BaseSelector):
         else:
             for val in instr.values:
                 self.emitter.emit_directive(f"    .DB ${val:02X}")
+
+    def _dbr_holds_code_bank(self) -> bool:
+        """Whether DBR is the bank of the code being emitted, so an absolute
+        operand reaches data placed beside the code.
+
+        DBR holds the data bank by convention (every absolute hardware and
+        low-RAM access relies on it), except where the function moves it: a
+        databank=inline prologue points it at the function's bank, SET_DBR at
+        a far pointer's, and a `DBR =` write or an asm! block anywhere.
+        """
+        from r65.compiler.hir.attributes import DataBankMode
+        from r65.compiler.mir.nodes import FarPtrStrategy, HardwareRegister, InlineAsm
+
+        func = self.current_function
+        if func is None:
+            return False
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, InlineAsm):
+                    return False
+                dest = getattr(instr, 'dest', None)
+                if isinstance(dest, HardwareRegister) and dest.name == 'DBR':
+                    return False
+        if func.has_far_ptr_stack_params and func.far_ptr_strategy == FarPtrStrategy.SET_DBR:
+            return False
+        if (func.is_far and func.bank_attr and func.mode_attr
+                and func.mode_attr.databank == DataBankMode.INLINE
+                and not getattr(func, '_skip_dbr_inline', False)):
+            return True
+        return self.emitter.code_bank == self.emitter.data_bank
 
     # ========================================================================
     # Conditional Branch

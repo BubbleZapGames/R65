@@ -77,6 +77,28 @@ class TestLookupTableAssembly:
         assert ".DB" in func_asm, "u8 LUT should emit .DB table entries"
         assert "JMP (" not in func_asm, "LUT should NOT emit JMP (addr,X)"
 
+    @pytest.mark.parametrize("attrs, opcode", [
+        ("#[bank(2)]", "LDA.l"),                                 # DBR is bank 0
+        ("#[bank(2)]\n#[mode(databank=inline)]", "LDA.w"),       # DBR is bank 2
+    ])
+    def test_lut_outside_the_data_bank(self, attrs, opcode):
+        """The table sits beside the code: an absolute load reads it only
+        where DBR holds the code's bank. The hardware write keeps
+        databank=inline from skipping its DBR setup."""
+        source = f"""
+        #[hw(0x4202)]
+        static mut WRMPYA: u8;
+        {attrs}
+        far fn classify(val @ A: u8) -> u8 {{
+            let v: u8 = match val {{ 0 => 10, 1 => 20, 2 => 30, _ => 0 }};
+            WRMPYA = v;
+            return v;
+        }}
+        """
+        func_asm = get_function_asm_with_data(compile_string(source, "test.r65"), "classify")
+        lookup = next(l for l in func_asm.split('\n') if 'LUT lookup' in l)
+        assert opcode in lookup, lookup
+
     def test_u8_lut_omits_asl(self):
         """u8 LUT should not emit ASL (byte table, no index doubling needed)."""
         source = """
