@@ -5,7 +5,11 @@ Validates operator usage according to R65 hardware cost model.
 Operators are restricted to hardware-efficient operations:
 - Multiply (*) only for power-of-2 constants (1, 2, 4, 8, 16, 32, 64, 128, 256)
 - Divide (/) only for power-of-2 constants (1, 2, 4, 8, 16, 32, 64, 128, 256)
+- Modulo (%) not at all
 - Shift (<<, >>) only for constant amounts
+
+None of this applies between constants (folded while building HIR) or inside
+a const fn body (evaluated at compile time).
 - Register-specific operations based on 65816 hardware capabilities
 """
 
@@ -37,6 +41,15 @@ class OperatorValidator:
 
         elif op == '/':
             OperatorValidator._validate_divide(op_node)
+
+        elif op == '%':
+            raise TypeCheckError(
+                "the '%' operator is only allowed in const fn bodies and "
+                "constant expressions",
+                source_loc=op_node.source_loc,
+                hint="use mod8(a, b) for u8 or mod16(a, b) for u16 "
+                     "(from stdlib math.r65)"
+            )
 
         elif op in ['<<', '>>']:
             OperatorValidator._validate_shift(op_node)

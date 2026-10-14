@@ -212,9 +212,9 @@ def _eval_binary_int(op: str, left: int, right: int) -> Optional[int]:
     elif op == '*':
         return left * right
     elif op == '/':
-        return left // right if right != 0 else None
+        return trunc_div(left, right) if right != 0 else None
     elif op == '%':
-        return left % right if right != 0 else None
+        return trunc_mod(left, right) if right != 0 else None
     elif op == '&':
         return left & right
     elif op == '|':
@@ -291,6 +291,21 @@ def _eval_binary_bool(expr, symbol_table: 'SymbolTable') -> Optional[bool]:
             return result != 0
 
     return None
+
+
+def trunc_div(left: int, right: int) -> int:
+    """`left / right` rounded toward zero, as R65 and Rust define it.
+
+    Python's `//` floors instead, which differs for a negative quotient
+    (-7 // 2 == -4, not -3). The caller rejects a zero divisor.
+    """
+    q = abs(left) // abs(right)
+    return q if (left < 0) == (right < 0) else -q
+
+
+def trunc_mod(left: int, right: int) -> int:
+    """`left % right` with the sign of `left`, matching `trunc_div`."""
+    return left - right * trunc_div(left, right)
 
 
 def wrap_int(value: int, type_name: str) -> int:

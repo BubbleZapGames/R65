@@ -151,6 +151,9 @@ class CallValidator:
             # Type check each argument
             self._validate_arguments(expr.args, func_decl.parameters, func_symbol.name, expr.source_loc)
 
+            if func_decl.is_const:
+                self._check_const_fn_runtime_call(func_symbol.name, func_decl, expr)
+
             # Check bank compatibility (near functions can't call near functions in different banks)
             self._check_call_bank_compatibility(func_symbol.name, func_decl, expr.source_loc)
 
@@ -877,6 +880,62 @@ class CallValidator:
 
         expr.expr_type = func_type
         return func_type
+
+    def _check_const_fn_runtime_call(self, func_name: str,
+                                     func_decl: HIRFunctionDecl,
+                                     call: HIRFunctionCall) -> None:
+        """Reject a runtime call of a const fn whose body has no runtime form.
+
+        A const fn body may use `*`, `/` and `%` freely, because it normally
+        runs at compile time. A call the HIR builder could not fold (an
+        argument is not constant) becomes a real call, and those operators
+        would then fail in codegen, inside whichever function inlined it.
+        Reporting it here names the const fn and the call that needs it.
+        A call from another const fn's body is checked where that one is
+        called.
+        """
+        caller = self.get_current_function()
+        if caller is not None and caller.is_const:
+            return
+        found = self._const_only_operation(func_decl, set())
+        if found is None:
+            return
+        op_node, owner, error = found
+        where = f" in '{owner}'" if owner != func_decl.name else ""
+        line = getattr(op_node.source_loc, 'line', None)
+        at = f" (line {line})" if line else ""
+        raise TypeCheckError(
+            f"const fn '{func_name}' is called with a non-constant argument, "
+            f"but its '{op_node.op}'{where}{at} has no runtime form: {error.message}",
+            source_loc=call.source_loc,
+            hint="pass constant arguments so the call is evaluated at compile "
+                 "time" + (f", or {error.hint}" if error.hint else ""))
+
+    def _const_only_operation(self, func_decl: HIRFunctionDecl, seen: set):
+        """The first operator in *func_decl* (or a const fn it calls) that
+        only compile-time evaluation allows, as (node, fn name, error)."""
+        from r65.compiler.hir.nodes import walk_hir, HIRBinaryOp
+        from r65.compiler.typeck.operator_validator import OperatorValidator
+
+        seen.add(func_decl.name)
+        for node in walk_hir(func_decl.body):
+            if isinstance(node, HIRBinaryOp):
+                try:
+                    OperatorValidator.validate_binary_op(node)
+                except TypeCheckError as error:
+                    return node, func_decl.name, error
+            elif (isinstance(node, HIRFunctionCall)
+                    and isinstance(node.func, HIRIdentifier)
+                    and node.func.symbol is not None
+                    and node.func.symbol.kind == SymbolKind.FUNCTION
+                    and node.func.symbol.name not in seen):
+                callee = self.lookup_function_decl(node.func.symbol.name,
+                                                   node.source_loc)
+                if callee is not None and callee.is_const:
+                    found = self._const_only_operation(callee, seen)
+                    if found is not None:
+                        return found
+        return None
 
     def _check_call_bank_compatibility(self, func_name: str, func_decl: HIRFunctionDecl, source_loc):
         """

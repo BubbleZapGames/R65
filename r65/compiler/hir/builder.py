@@ -54,6 +54,12 @@ class HIRBuilder:
         self.cfg_evaluator = cfg_evaluator
         self.const_evaluator = ConstEvaluator(self.symbol_table, self.cfg_evaluator)
         self.type_resolver = TypeResolver(self.symbol_table, self.const_evaluator)
+        # Const fn bodies need declared types to wrap values at their width.
+        self.const_evaluator.type_resolver = self.type_resolver
+        # Forward-referenced consts (see _register_forward_consts)
+        self._consts_declared = set()
+        self._forward_consts = {}
+        self._consts_in_progress = []
         self.attr_processor = AttributeProcessor()
         self.source_file = source_file
         self.source_dir = Path(source_file).parent if source_file else Path.cwd()
@@ -157,6 +163,10 @@ class HIRBuilder:
         # supertraits dyn-used would only inject a TypeId byte (a layout change) into structs
         # that implement *only* a supertrait and are never dynamically dispatched.
         self._dyn_used_traits = self._collect_dyn_traits(ast_program)
+
+        # Consts and const fns may be used above their declaration: register
+        # them so const evaluation can reach one that pass 1 has not declared.
+        self._register_forward_consts(ast_program)
 
         # Pass 1: Declare all top-level symbols (filtered by cfg)
         for decl in self._items_in_bank_context(ast_program):
@@ -465,6 +475,45 @@ class HIRBuilder:
     # Pass 1: Declare Top-Level Symbols
     # =========================================================================
 
+    def _register_forward_consts(self, program: ast.Program):
+        """Hand the const evaluator every top-level const and const fn.
+
+        Pass 1 declares items in source order, so a const whose value uses a
+        const or const fn written below it would find nothing. The evaluator
+        asks `_declare_forward_const` for a const it cannot find, which
+        declares it there and then; a const fn needs no symbol to be run.
+        """
+        self._consts_declared = set()
+        self._forward_consts = {}
+        self._consts_in_progress = []
+        const_fns = {}
+        for decl in program.items:
+            if not (isinstance(decl, ast.Declaration) and self._should_include_declaration(decl)):
+                continue
+            if isinstance(decl, ast.ConstDecl):
+                self._forward_consts[decl.name] = decl
+            elif isinstance(decl, ast.FunctionDecl) and decl.is_const:
+                const_fns[decl.name] = decl
+            elif isinstance(decl, ast.ImplDecl):
+                for method in decl.methods:
+                    if method.is_const:
+                        const_fns[f"{decl.struct_name}__{method.name}"] = method
+        self.const_evaluator.forward_const_fns = const_fns
+        self.const_evaluator.declare_forward_const = self._declare_forward_const
+
+    def _declare_forward_const(self, name: str) -> bool:
+        """Declare the const *name* ahead of its turn in pass 1; whether
+        there is such a const."""
+        decl = self._forward_consts.get(name)
+        if name in self._consts_in_progress:
+            cycle = " -> ".join(self._consts_in_progress + [name])
+            raise HIRError(f"const '{name}' depends on itself: {cycle}",
+                           source_loc=getattr(decl, 'source_loc', None))
+        if decl is None or name in self._consts_declared:
+            return False
+        self._declare_toplevel(decl)
+        return True
+
     def _declare_toplevel(self, decl: ast.Declaration):
         """First pass: declare top-level symbols."""
         if isinstance(decl, ast.FunctionDecl):
@@ -518,11 +567,18 @@ class HIRBuilder:
             self.symbol_table.declare(decl.name, symbol)
 
         elif isinstance(decl, ast.ConstDecl):
+            if decl.name in self._consts_declared:
+                return  # Declared early, on first use (see _declare_forward_const)
+            self._consts_declared.add(decl.name)
             # Resolve type
             const_type = self.type_resolver.resolve_type(decl.const_type)
 
             # Evaluate const value
-            const_value = self.const_evaluator.eval(decl.value)
+            self._consts_in_progress.append(decl.name)
+            try:
+                const_value = self.const_evaluator.eval(decl.value)
+            finally:
+                self._consts_in_progress.pop()
 
             symbol = Symbol(
                 name=decl.name,

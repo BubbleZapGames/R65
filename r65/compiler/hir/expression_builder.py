@@ -453,7 +453,15 @@ class ExpressionBuilder:
 
             left = self.build_expression(expr.left)
             right = self.build_expression(expr.right)
-            return hir.HIRBinaryOp(op=expr.op, left=left, right=right, source_loc=src_loc)
+            node = hir.HIRBinaryOp(op=expr.op, left=left, right=right, source_loc=src_loc)
+            # `*`, `/` and `%` are unrestricted between constants. Fold the
+            # ones the runtime operator rules would reject, so those rules
+            # never see them; the rest keep their shape for literal promotion.
+            if expr.op in ('*', '/', '%') and not self._runtime_operator_ok(node):
+                folded = self._fold_to_literal(expr, src_loc)
+                if isinstance(folded, hir.HIRIntegerLiteral):
+                    return folded
+            return node
 
         elif isinstance(expr, ast.UnaryOp):
             operand = self.build_expression(expr.operand)
@@ -486,6 +494,9 @@ class ExpressionBuilder:
                 mangled = f"{expr.func.enum_name}__{expr.func.variant_name}"
                 assoc = self.symbol_table.lookup(mangled)
                 if assoc is not None and assoc.kind == SymbolKind.METHOD:
+                    folded = self._fold_const_fn_call(expr, src_loc)
+                    if folded is not None:
+                        return folded
                     func = hir.HIRIdentifier(name=mangled, symbol=assoc,
                                              source_loc=expr.func.source_loc)
                     args = [self.build_expression(a) for a in expr.args]
@@ -620,14 +631,10 @@ class ExpressionBuilder:
                     builtin_name = func_name
 
             # Try to const-fold calls to const fn with all-const arguments
-            if isinstance(expr.func, ast.Identifier) and not builtin_name:
-                symbol = self.symbol_table.lookup(expr.func.name)
-                if (symbol and symbol.kind == SymbolKind.FUNCTION and
-                        hasattr(symbol.definition, 'is_const') and symbol.definition.is_const):
-                    # Args not all const: fall through to the runtime call.
-                    folded = self._fold_to_literal(expr, src_loc, arrays=True)
-                    if folded is not None:
-                        return folded
+            if not builtin_name:
+                folded = self._fold_const_fn_call(expr, src_loc)
+                if folded is not None:
+                    return folded
 
             if builtin_name:
                 func = hir.HIRIdentifier(
@@ -854,6 +861,57 @@ class ExpressionBuilder:
                 return enum_name
         return None
 
+    def _fold_const_fn_call(self, expr, src_loc):
+        """A call of a const fn (or const method) with all-constant arguments,
+        evaluated to a literal; None when it is not one.
+
+        Once every argument is constant the call must fold, so a failure
+        inside the const fn is reported rather than hidden behind a runtime
+        call that then fails for an unrelated reason.
+        """
+        name = self.const_evaluator._const_fn_name(expr)
+        symbol = self.symbol_table.lookup(name) if name else None
+        if not (symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+                and getattr(symbol.definition, 'is_const', False)):
+            return None
+        if not all(self.const_evaluator.is_constant(a) for a in expr.args):
+            return None
+        value = self.const_evaluator.eval(expr)
+        enum_variant = self._enum_result(symbol.definition, value, name, src_loc)
+        if enum_variant is not None:
+            return enum_variant
+        return self._literal_from_value(value, src_loc, arrays=True)
+
+    def _enum_result(self, func_def, value, name, src_loc):
+        """The variant a const fn returning a fieldless enum evaluated to, so
+        the folded value keeps its enum type; None for any other return type."""
+        ret = getattr(func_def, 'return_type', None)
+        if not isinstance(ret, ast.BasicType) or not isinstance(value, int):
+            return None
+        enum_symbol = self.symbol_table.lookup(ret.name)
+        enum_decl = getattr(enum_symbol, 'definition', None) if enum_symbol else None
+        if not isinstance(enum_decl, ast.EnumDecl) and type(enum_decl).__name__ != 'HIREnumDecl':
+            return None
+        for variant in enum_decl.variants:
+            variant_symbol = self.symbol_table.lookup(f"{ret.name}::{variant.name}")
+            if variant_symbol is not None and variant_symbol.const_value == value:
+                return hir.HIREnumVariantExpr(enum_name=ret.name, variant_name=variant.name,
+                                              value=value, source_loc=src_loc)
+        raise HIRError(
+            f"const fn '{name}' returned {value}, which is no variant of '{ret.name}'",
+            source_loc=src_loc)
+
+    @staticmethod
+    def _runtime_operator_ok(node) -> bool:
+        """Whether *node* passes the runtime operator rules as written."""
+        from r65.compiler.typeck.operator_validator import OperatorValidator
+        from r65.compiler.typeck.errors import TypeCheckError
+        try:
+            OperatorValidator.validate_binary_op(node)
+        except TypeCheckError:
+            return False
+        return True
+
     def _fold_to_literal(self, expr, src_loc, arrays: bool = False):
         """*expr* as a literal when it evaluates at compile time to a bool or an
         int (or, with *arrays*, a list of ints); None otherwise."""
@@ -861,6 +919,13 @@ class ExpressionBuilder:
             value = self.const_evaluator.eval(expr)
         except HIRError:
             return None
+        try:
+            return self._literal_from_value(value, src_loc, arrays)
+        except HIRError:
+            return None
+
+    def _literal_from_value(self, value, src_loc, arrays: bool = False):
+        """An evaluated const *value* as an HIR literal."""
         if isinstance(value, bool):
             return hir.HIRBooleanLiteral(value=value, source_loc=src_loc)
         if isinstance(value, int):

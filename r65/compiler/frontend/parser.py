@@ -2418,6 +2418,7 @@ class ASTBuilder(Transformer):
     sub = _make_binary_op_handler('-')
     mul = _make_binary_op_handler('*')
     div = _make_binary_op_handler('/')
+    mod = _make_binary_op_handler('%')
     # Bitwise operators
     bitand = _make_binary_op_handler('&')
     bitor = _make_binary_op_handler('|')
@@ -2550,6 +2551,7 @@ class ASTBuilder(Transformer):
         'MINUSEQUAL': '-',
         'STAREQUAL': '*',
         'SLASHEQUAL': '/',
+        'PERCENTEQUAL': '%',
         'AMPEREQUAL': '&',
         'VBAREQUAL': '|',
         'CIRCUMFLEXEQUAL': '^',
@@ -2828,9 +2830,6 @@ class Parser:
             if char == '?':
                 message = "the '?' operator is not supported in R65"
                 hint = "R65 has no Result/Option types; use return codes or error flags"
-            elif char == '%':
-                message = "the '%' modulo operator is not supported in R65"
-                hint = "use mod8(a, b) for u8 or mod16(a, b) for u16 (from stdlib math.r65)"
 
             source_line = get_source_line(source, line)
             source_loc = SourceLocation(
@@ -2946,6 +2945,7 @@ class Parser:
             'MINUS': '-',
             'STAR': '*',
             'SLASH': '/',
+            'PERCENT': '%',
             # Bitwise operators
             'AMPER': '&',
             'VBAR': '|',
@@ -2962,6 +2962,7 @@ class Parser:
             'MINUSEQUAL': '-=',
             'STAREQUAL': '*=',
             'SLASHEQUAL': '/=',
+            'PERCENTEQUAL': '%=',
             'AMPEREQUAL': '&=',
             'VBAREQUAL': '|=',
             'CIRCUMFLEXEQUAL': '^=',

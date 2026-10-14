@@ -13,7 +13,10 @@ from r65.compiler.hir.unified_type_utils import get_unified_type_size, layout_fi
 from r65.compiler.hir.types import ArrayTypeInfo, BUILTIN_TYPE_NAMES, INTEGER_TYPE_NAMES
 from r65.compiler.builtins.registry import BuiltinRegistry, BuiltinKind
 from r65.compiler.frontend.ast import CfgIdentifier
+from r65.compiler.hir.hir_const_eval import trunc_div, trunc_mod, wrap_int
+import copy
 import math as _math
+import sys
 
 
 # =============================================================================
@@ -114,7 +117,11 @@ class ConstEvaluator:
         self.cfg_evaluator = cfg_evaluator
         self._compiled_const_fns = {}  # Cache: func_name -> compiled Python callable
         self._compiling_const_fns = set()  # Names currently being compiled (for recursion)
-        self._const_fn_depth = 0       # Recursion depth counter (max 64)
+        self.type_resolver = None      # Set by HIRBuilder once it has one
+        # Set by HIRBuilder: const fns by name, and a callback declaring a
+        # const that pass 1 has not reached yet (both for forward references).
+        self.forward_const_fns = {}
+        self.declare_forward_const = None
 
     def is_constant(self, expr: ast.Expression) -> bool:
         """
@@ -150,7 +157,7 @@ class ConstEvaluator:
                 raise HIRError(f"Type name '{expr.name}' cannot be used as a value in const expression", source_loc=expr.source_loc)
             
             # Look up const variable
-            symbol = self.symbol_table.lookup(expr.name)
+            symbol = self._lookup_const(expr.name)
             if symbol is None:
                 raise HIRError(f"Undefined identifier in const expression: {expr.name}", source_loc=expr.source_loc)
 
@@ -258,6 +265,15 @@ class ConstEvaluator:
         else:
             raise HIRError(f"Non-constant expression: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
 
+    def _lookup_const(self, name: str):
+        """The symbol for *name*, declaring a const written further down
+        the file first if that is what it names."""
+        symbol = self.symbol_table.lookup(name)
+        if symbol is None and self.declare_forward_const is not None:
+            if self.declare_forward_const(name):
+                symbol = self.symbol_table.lookup(name)
+        return symbol
+
     def _check_newtype_field_index(self, expr: ast.NewtypeFieldAccess) -> None:
         """Reject `t.1` before it silently evaluates to the payload.
 
@@ -319,12 +335,12 @@ class ConstEvaluator:
             right_val = self._ensure_int(right)
             if right_val == 0:
                 raise HIRError("Division by zero in const expression", source_loc=expr.source_loc)
-            return self._ensure_int(left) // right_val
+            return trunc_div(self._ensure_int(left), right_val)
         elif op == '%':
             right_val = self._ensure_int(right)
             if right_val == 0:
                 raise HIRError("Modulo by zero in const expression", source_loc=expr.source_loc)
-            return self._ensure_int(left) % right_val
+            return trunc_mod(self._ensure_int(left), right_val)
 
         # Bitwise operators
         elif op == '&':
@@ -333,10 +349,15 @@ class ConstEvaluator:
             return self._ensure_int(left) | self._ensure_int(right)
         elif op == '^':
             return self._ensure_int(left) ^ self._ensure_int(right)
-        elif op == '<<':
-            return self._ensure_int(left) << self._ensure_int(right)
-        elif op == '>>':
-            return self._ensure_int(left) >> self._ensure_int(right)
+        elif op in ('<<', '>>'):
+            amount = self._ensure_int(right)
+            if amount < 0:
+                raise HIRError(f"negative shift amount {amount} in const expression",
+                               source_loc=expr.source_loc)
+            amount = min(amount, 32)   # every R65 integer is gone by then
+            if op == '<<':
+                return self._ensure_int(left) << amount
+            return self._ensure_int(left) >> amount
 
         # Comparison operators
         elif op == '==':
@@ -452,7 +473,7 @@ class ConstEvaluator:
         if isinstance(expr.func, ast.FieldAccess):
             return self._eval_method_call(expr)
 
-        func_name = expr.func.name if isinstance(expr.func, ast.Identifier) else None
+        func_name = self._const_fn_name(expr)
 
         if not func_name:
             raise HIRError("Only direct function calls allowed in const expressions", source_loc=expr.source_loc)
@@ -464,6 +485,11 @@ class ConstEvaluator:
         payload = self._newtype_construct_arg(expr, func_name, symbol)
         if payload is not None:
             return self.eval(payload)
+
+        forward = self.forward_const_fns.get(func_name) if symbol is None else None
+        if forward is not None:
+            arg_values = [self.eval(arg) for arg in expr.args]
+            return self._eval_const_fn_call(forward, arg_values, func_name)
 
         # Check if this is a const fn (user-defined)
         if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
@@ -682,6 +708,10 @@ class ConstEvaluator:
             return True  # Always matches (binding not needed in const eval)
         elif isinstance(pattern, ast.LiteralPattern):
             return value == pattern.value
+        elif isinstance(pattern, ast.RangePattern):
+            if pattern.inclusive:
+                return pattern.start <= value <= pattern.end
+            return pattern.start <= value < pattern.end
         elif isinstance(pattern, ast.EnumPattern):
             qualified = f"{pattern.enum_name}::{pattern.variant_name}"
             symbol = self.symbol_table.lookup(qualified)
@@ -695,11 +725,22 @@ class ConstEvaluator:
 
     # =========================================================================
     # Const fn evaluation via Python transpilation
+    #
+    # A const fn body is transpiled to a Python function once and run on each
+    # call. The transpiler tracks the R65 type of every local and expression,
+    # so values wrap at their type's width exactly where the 65816 would wrap
+    # them, and it gives every local a fresh Python name (`v3_x`), so R65
+    # scoping and shadowing hold and no R65 name can collide with Python's.
+    # Statements that R65 allows inside an expression (a block, `match`, an
+    # `if` with statements, `loop` with `break value`) are hoisted into
+    # statements ahead of the expression that uses them.
     # =========================================================================
+
+    MAX_CONST_FN_ITERATIONS = 1_000_000
+    MAX_CONST_FN_DEPTH = 256
 
     def _eval_const_fn_call(self, func_def, arg_values, func_name):
         """Evaluate a const fn call by transpiling to Python and executing."""
-        # Validate argument count
         expected = len(func_def.params)
         actual = len(arg_values)
         if actual != expected:
@@ -708,50 +749,31 @@ class ConstEvaluator:
                 source_loc=getattr(func_def, 'source_loc', None)
             )
 
-        # Guard against deep recursion
-        if self._const_fn_depth > 64:
-            raise HIRError(
-                f"const fn recursion depth exceeded (max 64) in '{func_name}'",
-                source_loc=getattr(func_def, 'source_loc', None)
-            )
-
-        # Compile function if not cached
         if func_name not in self._compiled_const_fns:
             self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
-
         compiled_fn = self._compiled_const_fns[func_name]
-
-        # Build execution namespace with helpers and other const fns
         namespace = self._build_const_fn_namespace()
 
-        # Call the compiled function
-        self._const_fn_depth += 1
+        loc = getattr(func_def, 'source_loc', None)
+        old_limit = sys.getrecursionlimit()
+        # Two Python frames per const fn call, on top of the compiler's own.
+        sys.setrecursionlimit(max(old_limit, 4 * self.MAX_CONST_FN_DEPTH + 2000))
         try:
             result = compiled_fn(*arg_values, **namespace)
-            if result is None:
-                raise HIRError(
-                    f"const fn '{func_name}' did not return a value",
-                    source_loc=getattr(func_def, 'source_loc', None)
-                )
-            return result
         except HIRError:
             raise
-        except ZeroDivisionError:
-            raise HIRError(f"Division by zero in const fn '{func_name}'", source_loc=getattr(func_def, 'source_loc', None))
+        except _ConstFnFault as e:
+            raise HIRError(f"{e} in const fn '{func_name}'", source_loc=loc)
         except RecursionError:
-            raise HIRError(f"Infinite recursion in const fn '{func_name}'", source_loc=getattr(func_def, 'source_loc', None))
-        except RuntimeError as e:
-            if "exceeded maximum iteration limit" in str(e):
-                raise HIRError(
-                    f"const fn '{func_name}' exceeded maximum iteration limit "
-                    f"({ConstEvaluator.MAX_CONST_FN_ITERATIONS} iterations)",
-                    source_loc=getattr(func_def, 'source_loc', None)
-                )
-            raise HIRError(f"Error evaluating const fn '{func_name}': {e}", source_loc=getattr(func_def, 'source_loc', None))
+            raise HIRError(f"Infinite recursion in const fn '{func_name}'", source_loc=loc)
         except Exception as e:
-            raise HIRError(f"Error evaluating const fn '{func_name}': {e}", source_loc=getattr(func_def, 'source_loc', None))
+            raise HIRError(f"Error evaluating const fn '{func_name}': {e}", source_loc=loc)
         finally:
-            self._const_fn_depth -= 1
+            sys.setrecursionlimit(old_limit)
+
+        if result is None:
+            raise HIRError(f"const fn '{func_name}' did not return a value", source_loc=loc)
+        return result
 
     def validate_const_fn(self, func_def, func_name):
         """Eagerly validate a const fn body at definition time.
@@ -767,83 +789,116 @@ class ConstEvaluator:
         """Transpile a const fn AST body to a Python callable."""
         # Track that we're compiling this function (for recursive calls)
         self._compiling_const_fns.add(func_name)
+        saved_ctx = getattr(self, '_ctx', None)
         try:
             return self._compile_const_fn_inner(func_def, func_name)
         finally:
+            self._ctx = saved_ctx
             self._compiling_const_fns.discard(func_name)
 
     def _compile_const_fn_inner(self, func_def, func_name):
         """Inner implementation of const fn compilation."""
-        # Get parameter names
-        param_names = [p.name for p in func_def.params]
+        ret = func_def.return_type
+        ret_key = None if ret is None or isinstance(ret, ast.NeverType) else self._type_key(ret)
+        ctx = self._ctx = _FnCtx(func_name, ret is not None and not isinstance(ret, ast.NeverType), ret_key)
 
-        # Transpile body to Python source
-        body_lines = self._transpile_block(func_def.body, indent=1)
+        py_params = []
+        prologue = []
+        for p in func_def.params:
+            key = self._type_key(p.param_type)
+            py = ctx.declare(p.name, key)
+            py_params.append(py)
+            if _is_aggregate_key(key):
+                prologue.append(f"    {py} = _copy({py})")
+            elif key in _INT_KEYS:
+                prologue.append(f"    {py} = _{key}({py})")
 
-        if not body_lines:
-            body_lines = ["    pass"]
+        body_lines = self._transpile_stmts(func_def.body.statements, 1, tail=True)
 
-        # Build the Python function source
-        # Use **_ns_ to receive namespace helpers without polluting positional args
-        params_str = ", ".join(param_names)
-        if params_str:
-            fn_source = f"def _const_fn_({params_str}, **_ns_):\n"
-        else:
-            fn_source = f"def _const_fn_(**_ns_):\n"
-
-        # Add namespace unpacking and loop counter at the top
-        fn_source += "    _u8 = _ns_['_u8']; _u16 = _ns_['_u16']; _i8 = _ns_['_i8']; _i16 = _ns_['_i16']; _bool = _ns_['_bool']\n"
-        fn_source += "    _idiv = _ns_['_idiv']; _imod = _ns_['_imod']\n"
+        params_str = "".join(f"{p}, " for p in py_params)
+        fn_source = f"def _const_fn_({params_str}**_ns_):\n"
+        fn_source += "    " + "; ".join(f"{h} = _ns_['{h}']" for h in _HELPERS) + "\n"
         fn_source += "    _loop_count_ = 0\n"
+        fn_source += "\n".join(prologue + body_lines) + ("\n" if prologue or body_lines else "")
+        fn_source += "    return None\n"
 
-        fn_source += "\n".join(body_lines) + "\n"
-
-        # Compile and exec
         try:
             code = compile(fn_source, f"<const fn {func_name}>", "exec")
-            local_ns = {}
-            exec(code, {}, local_ns)
-            return local_ns['_const_fn_']
         except SyntaxError as e:
             raise HIRError(
                 f"Failed to compile const fn '{func_name}': {e}",
                 source_loc=getattr(func_def, 'source_loc', None)
             )
+        local_ns = {}
+        exec(code, {}, local_ns)
+        raw = local_ns['_const_fn_']
+        limit = self.MAX_CONST_FN_DEPTH
+
+        def call(*args, **ns):
+            depth = ns['_depth']
+            depth[0] += 1
+            try:
+                if depth[0] > limit:
+                    raise _ConstFnFault(f"recursion deeper than {limit} calls")
+                return raw(*args, **ns)
+            finally:
+                depth[0] -= 1
+
+        return call
 
     def _build_const_fn_namespace(self):
         """Build the namespace dict passed to compiled const fns."""
-        def _u8(v):
-            return int(v) & 0xFF
-
-        def _u16(v):
-            return int(v) & 0xFFFF
-
-        def _i8(v):
-            val = int(v) & 0xFF
-            return val if val < 128 else val - 256
-
-        def _i16(v):
-            val = int(v) & 0xFFFF
-            return val if val < 32768 else val - 65536
-
         def _bool(v):
             if isinstance(v, bool):
                 return v
             return int(v) != 0
 
-        def _idiv(a, b):
+        def _idiv(a, b, line=None):
             if b == 0:
-                raise ZeroDivisionError("division by zero")
-            return int(a) // int(b)
+                raise _ConstFnFault(f"division by zero{_at(line)}")
+            return trunc_div(int(a), int(b))
 
-        def _imod(a, b):
+        def _imod(a, b, line=None):
             if b == 0:
-                raise ZeroDivisionError("modulo by zero")
-            return int(a) % int(b)
+                raise _ConstFnFault(f"modulo by zero{_at(line)}")
+            return trunc_mod(int(a), int(b))
+
+        def _shift_amount(n, line):
+            n = int(n)
+            if n < 0:
+                raise _ConstFnFault(f"negative shift amount {n}{_at(line)}")
+            return min(n, 32)   # every R65 integer is gone by then
+
+        def _shl(a, n, line=None):
+            return int(a) << _shift_amount(n, line)
+
+        def _shr(a, n, line=None):
+            return int(a) >> _shift_amount(n, line)
+
+        def _ix(arr, i, line=None):
+            if not isinstance(arr, list):
+                raise _ConstFnFault(f"indexing a value that is not an array{_at(line)}")
+            i = int(i)
+            if i < 0 or i >= len(arr):
+                raise _ConstFnFault(
+                    f"index {i} out of bounds for an array of length {len(arr)}{_at(line)}")
+            return i
+
+        def _fill(v, n):
+            return [copy.deepcopy(v) for _ in range(int(n))]
+
+        def _fault(msg):
+            raise _ConstFnFault(msg)
 
         ns = {
-            '_u8': _u8, '_u16': _u16, '_i8': _i8, '_i16': _i16, '_bool': _bool,
-            '_idiv': _idiv, '_imod': _imod,
+            '_u8': lambda v: wrap_int(int(v), 'u8'),
+            '_u16': lambda v: wrap_int(int(v), 'u16'),
+            '_i8': lambda v: wrap_int(int(v), 'i8'),
+            '_i16': lambda v: wrap_int(int(v), 'i16'),
+            '_bool': _bool, '_idiv': _idiv, '_imod': _imod,
+            '_shl': _shl, '_shr': _shr, '_ix': _ix, '_fill': _fill,
+            '_copy': copy.deepcopy, '_fault': _fault, '_LoopExit': _LoopExit,
+            '_depth': [0],
             **_FIXED_MATH_FNS,
         }
 
@@ -853,422 +908,844 @@ class ConstEvaluator:
 
         return ns
 
-    MAX_CONST_FN_ITERATIONS = 10_000
+    # ---- types ---------------------------------------------------------------
 
-    def _transpile_block(self, block, indent=1):
-        """Transpile an AST Block to Python source lines."""
+    def _type_key(self, ast_type):
+        """The transpiler's key for an AST type (see `_key_of_info`)."""
+        if ast_type is None:
+            return None
+        if isinstance(ast_type, ast.BasicType) and (
+                ast_type.name in INTEGER_TYPE_NAMES or ast_type.name == 'bool'):
+            return ast_type.name
+        if isinstance(ast_type, ast.ArrayType):
+            elem = self._type_key(ast_type.element_type)
+            try:
+                size = self._ensure_int(self.eval(ast_type.size))
+            except HIRError:
+                size = None
+            return ('arr', elem, size)
+        if isinstance(ast_type, ast.PointerType):
+            return 'u24' if ast_type.is_far else 'u16'
+        resolver = getattr(self, 'type_resolver', None)
+        if resolver is None:
+            return None
+        try:
+            info = resolver.resolve_type(ast_type)
+        except Exception:
+            return None
+        return self._key_of_info(info)
+
+    def _key_of_info(self, info):
+        """The transpiler's key for an HIR TypeInfo.
+
+        An integer type name, 'bool', ('arr', elem key, size) or
+        ('struct', name); None when unknown. Newtypes and enums are keyed
+        by their payload width, which is all const evaluation needs.
+        """
+        from r65.compiler.hir.types import (
+            BasicTypeInfo, NewtypeTypeInfo, EnumTypeInfo, StructTypeInfo,
+            PointerTypeInfo, strip_newtype)
+        if info is None:
+            return None
+        if isinstance(info, NewtypeTypeInfo):
+            return self._key_of_info(strip_newtype(info))
+        if isinstance(info, BasicTypeInfo):
+            return info.name if (info.name in INTEGER_TYPE_NAMES or info.name == 'bool') else None
+        if isinstance(info, EnumTypeInfo):
+            try:
+                return 'u8' if info.size_bytes == 1 else 'u16'
+            except Exception:
+                return 'u8'
+        if isinstance(info, ArrayTypeInfo):
+            return ('arr', self._key_of_info(info.element_type), info.size)
+        if isinstance(info, StructTypeInfo):
+            return ('struct', info.name)
+        if isinstance(info, PointerTypeInfo):
+            return 'u24' if info.is_far else 'u16'
+        return None
+
+    def _field_key(self, struct_key, field_name):
+        """The key of *field_name* in a ('struct', name) key, or None."""
+        if not (isinstance(struct_key, tuple) and struct_key[0] == 'struct'):
+            return None
+        symbol = self.symbol_table.lookup(struct_key[1])
+        definition = getattr(symbol, 'definition', None) if symbol else None
+        for f in getattr(definition, 'fields', None) or []:
+            if f.name != field_name:
+                continue
+            info = getattr(f, 'type_info', None) or getattr(f, 'field_type', None)
+            if isinstance(info, ast.ASTNode):
+                return self._type_key(info)
+            return self._key_of_info(info)
+        return None
+
+    def _literal_default_key(self, expr):
+        """The type the type checker gives `let x = <expr>;` when *expr* is
+        untyped literal arithmetic: the smallest type that holds its value."""
+        try:
+            value = self.eval(expr)
+        except HIRError:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        from r65.compiler.typeck.type_inference import TypeInference
+        info = TypeInference.infer_integer_literal_type(value, None)
+        return self._key_of_info(info)
+
+    def _zero_value(self, key, loc):
+        """Python source for the zero value of *key* (an uninitialized `let`)."""
+        if key in _INT_KEYS or key in ('u24', None):
+            return "0"
+        if key == 'bool':
+            return "False"
+        if key[0] == 'arr':
+            if key[2] is None:
+                raise HIRError("array length of an uninitialized local is not constant",
+                               source_loc=loc)
+            return f"_fill({self._zero_value(key[1], loc)}, {key[2]})"
+        if key[0] == 'struct':
+            symbol = self.symbol_table.lookup(key[1])
+            fields = getattr(getattr(symbol, 'definition', None), 'fields', None) or []
+            parts = ", ".join(f"'{f.name}': {self._zero_value(self._field_key(key, f.name), loc)}"
+                              for f in fields)
+            return f"{{{parts}}}"
+        return "0"
+
+    # ---- statements ----------------------------------------------------------
+
+    def _transpile_stmts(self, stmts, indent, tail=False):
+        """Transpile statements to lines at *indent*, in a new scope.
+
+        With *tail*, a trailing expression statement is the function's value,
+        as `_add_implicit_return` treats it in the HIR builder.
+        """
+        ctx = self._ctx
+        ctx.scopes.append({})
         lines = []
-        for stmt in block.statements:
-            lines.extend(self._transpile_stmt(stmt, indent))
+        try:
+            for i, stmt in enumerate(stmts):
+                is_tail = (tail and i == len(stmts) - 1 and ctx.returns_value
+                           and isinstance(stmt, ast.ExprStmt)
+                           and not isinstance(stmt.expr, (ast.Assignment, ast.CompoundAssignment)))
+                if (is_tail and isinstance(stmt.expr, ast.MatchExpression)
+                        and stmt.expr.origin == 'let_else'):
+                    # The rest of the body sits in the first arm; its tail is ours.
+                    lines.extend(self._with_pre(
+                        lambda: self._match(stmt.expr, indent, None, tail=True), indent))
+                    continue
+                if is_tail and getattr(stmt.expr, 'origin', None) is None:
+                    stmt = ast.ReturnStmt(values=[stmt.expr], source_loc=stmt.source_loc)
+                lines.extend(self._with_pre(lambda: self._transpile_stmt(stmt, indent), indent))
+        finally:
+            ctx.scopes.pop()
         return lines
 
-    @staticmethod
-    def _loop_guard_lines(prefix):
-        """Return Python lines that increment and check the shared loop counter."""
-        return [
-            f"{prefix}_loop_count_ += 1",
-            f"{prefix}if _loop_count_ > {ConstEvaluator.MAX_CONST_FN_ITERATIONS}:"
-            f" raise RuntimeError('exceeded maximum iteration limit')",
-        ]
+    def _with_pre(self, build, indent):
+        """Run *build* (which returns lines) collecting hoisted lines before them."""
+        ctx = self._ctx
+        saved_pre, saved_indent = ctx.pre, ctx.indent
+        ctx.pre, ctx.indent = [], indent
+        try:
+            body = build()
+            return ctx.pre + body
+        finally:
+            ctx.pre, ctx.indent = saved_pre, saved_indent
+
+    def _block_lines(self, stmts, indent):
+        lines = self._transpile_stmts(stmts, indent)
+        return lines or ["    " * indent + "pass"]
 
     def _transpile_stmt(self, stmt, indent):
         """Transpile a single AST statement to Python source lines."""
+        ctx = self._ctx
         prefix = "    " * indent
+        loc = getattr(stmt, 'source_loc', None)
 
         if isinstance(stmt, ast.LetStmt):
+            declared = self._type_key(stmt.var_type) if stmt.var_type is not None else None
             if stmt.initializer is not None:
-                val = self._transpile_expr(stmt.initializer)
-                return [f"{prefix}{stmt.name} = {val}"]
+                code, key = self._tx(stmt.initializer)
+                if declared is not None:
+                    key = declared
+                elif key is None:
+                    key = self._literal_default_key(stmt.initializer)
+                code = self._coerce(code, key)
             else:
-                return [f"{prefix}{stmt.name} = 0"]
+                key = declared
+                code = self._zero_value(key, loc)
+            py = ctx.declare(stmt.name, key)
+            return [f"{prefix}{py} = {code}"]
 
-        elif isinstance(stmt, ast.ReturnStmt):
-            if stmt.values:
-                val = self._transpile_expr(stmt.values[0])
-                return [f"{prefix}return {val}"]
+        if isinstance(stmt, ast.ReturnStmt):
+            if not stmt.values:
+                return [f"{prefix}return None"]
+            if len(stmt.values) > 1:
+                return [f"{prefix}_fault('returns {len(stmt.values)} values; "
+                        f"a constant holds one{_at(_line(loc))}')"]
+            code, _ = self._tx(stmt.values[0])
+            return [f"{prefix}return {self._coerce(code, ctx.ret_key)}"]
+
+        if isinstance(stmt, ast.IfStmt):
+            cond, _ = self._tx(stmt.condition)
+            lines = [f"{prefix}if {cond}:"]
+            lines += self._block_lines(stmt.then_block.statements, indent + 1)
+            if isinstance(stmt.else_block, ast.IfStmt):
+                lines.append(f"{prefix}else:")
+                lines += self._with_pre(
+                    lambda: self._transpile_stmt(stmt.else_block, indent + 1), indent + 1)
+            elif isinstance(stmt.else_block, ast.Block):
+                lines.append(f"{prefix}else:")
+                lines += self._block_lines(stmt.else_block.statements, indent + 1)
+            return lines
+
+        if isinstance(stmt, ast.WhileStmt):
+            return self._loop(stmt.label, None, indent, stmt.condition,
+                              lambda i: self._block_lines(stmt.body.statements, i))
+
+        if isinstance(stmt, ast.LoopStmt):
+            return self._loop(stmt.label, None, indent, None,
+                              lambda i: self._block_lines(stmt.body.statements, i))
+
+        if isinstance(stmt, ast.ForStmt):
+            start, skey = self._tx(stmt.start)
+            end, ekey = self._tx(stmt.end)
+            if stmt.inclusive:
+                end = f"({end}) + 1"
+            ctx.scopes.append({})
+            try:
+                var = ctx.declare(stmt.variable, _unify(skey, ekey))
+                return self._loop(stmt.label, None, indent, None,
+                                  lambda i: self._block_lines(stmt.body.statements, i),
+                                  header=f"for {var} in range({start}, {end}):")
+            finally:
+                ctx.scopes.pop()
+
+        if isinstance(stmt, ast.BreakStmt):
+            return self._break(stmt, prefix, loc)
+
+        if isinstance(stmt, ast.ContinueStmt):
+            target = self._loop_target(stmt.label, loc)
+            if target is ctx.loops[-1]:
+                return [f"{prefix}continue"]
+            target.continue_exc = True
+            return [f"{prefix}raise _LoopExit({target.id}, 'c')"]
+
+        if isinstance(stmt, ast.ExprStmt):
+            return self._expr_stmt(stmt.expr, indent)
+
+        if isinstance(stmt, ast.Block):
+            return self._transpile_stmts(stmt.statements, indent)
+
+        if isinstance(stmt, ast.AsmStmt):
+            raise HIRError("Inline assembly (asm!) cannot be used in const fn", source_loc=loc)
+
+        if isinstance(stmt, ast.ConstAssertStmt):
+            raise HIRError("const_assert! is not supported in const fn", source_loc=loc)
+
+        if isinstance(stmt, ast.MultiLetStmt):
+            raise HIRError("`let a, b = ...` is not supported in const fn: a const fn "
+                           "returns one value", source_loc=loc)
+
+        raise HIRError(f"Unsupported statement in const fn: {type(stmt).__name__}", source_loc=loc)
+
+    def _expr_stmt(self, expr, indent):
+        """An expression used as a statement: its value, if any, is dropped."""
+        prefix = "    " * indent
+        if isinstance(expr, ast.Assignment):
+            place, key = self._place(expr.target)
+            code, _ = self._tx(expr.value)
+            return [f"{prefix}{place} = {self._coerce(code, key)}"]
+        if isinstance(expr, ast.CompoundAssignment):
+            place, key = self._place(expr.target)
+            code, rkey = self._tx(expr.value)
+            value, _ = self._binary(expr.operator, place, key, code, rkey, expr)
+            return [f"{prefix}{place} = {self._coerce(value, key)}"]
+        if isinstance(expr, ast.MatchExpression):
+            return self._match(expr, indent, None)
+        if isinstance(expr, ast.LoopExpression):
+            return self._loop(expr.label, None, indent, None,
+                              lambda i: self._block_lines(expr.body.statements, i))
+        code, _ = self._tx(expr)
+        return [f"{prefix}{code}"]
+
+    # ---- loops -------------------------------------------------------------
+
+    def _loop(self, label, tmp, indent, condition, body_fn, header=None):
+        """A Python loop for an R65 loop; *body_fn(indent)* gives its body.
+
+        A `break`/`continue` aimed at an enclosing loop has no Python form,
+        so it raises _LoopExit, and the loop it names catches it.
+        """
+        ctx = self._ctx
+        loop = _LoopCtx(ctx.next_id(), label, tmp)
+        ctx.loops.append(loop)
+        try:
+            inner = indent + 1
+            pad = "    " * inner
+            guard = [f"{pad}_loop_count_ += 1",
+                     f"{pad}if _loop_count_ > {self.MAX_CONST_FN_ITERATIONS}: "
+                     f"_fault('exceeded maximum iteration limit "
+                     f"({self.MAX_CONST_FN_ITERATIONS:,} loop passes)')"]
+            if header is not None:
+                head, cond_lines = header, []
+            elif condition is None:
+                head, cond_lines = "while True:", []
             else:
-                return [f"{prefix}return"]
+                cond_pre = []
 
-        elif isinstance(stmt, ast.IfStmt):
-            lines = []
-            cond = self._transpile_expr(stmt.condition)
-            lines.append(f"{prefix}if {cond}:")
-            body_lines = self._transpile_block(stmt.then_block, indent + 1)
-            if not body_lines:
-                body_lines = [f"{'    ' * (indent + 1)}pass"]
-            lines.extend(body_lines)
-            if stmt.else_block:
-                if isinstance(stmt.else_block, ast.IfStmt):
-                    # else if chain
-                    else_lines = self._transpile_stmt(stmt.else_block, indent)
-                    # Change 'if' to 'elif' for the first line
-                    if else_lines:
-                        else_lines[0] = else_lines[0].replace(f"{prefix}if ", f"{prefix}elif ", 1)
-                    lines.extend(else_lines)
-                elif isinstance(stmt.else_block, ast.Block):
-                    lines.append(f"{prefix}else:")
-                    else_body = self._transpile_block(stmt.else_block, indent + 1)
-                    if not else_body:
-                        else_body = [f"{'    ' * (indent + 1)}pass"]
-                    lines.extend(else_body)
+                def build_cond():
+                    code, _ = self._tx(condition)
+                    cond_pre.append(code)
+                    return []
+                pre = self._with_pre(build_cond, inner)
+                if pre:
+                    head = "while True:"
+                    cond_lines = pre + [f"{pad}if not ({cond_pre[0]}): break"]
+                else:
+                    head, cond_lines = f"while {cond_pre[0]}:", []
+            body = body_fn(inner)
+            if loop.continue_exc:
+                body = ([f"{pad}try:"] + _indent(body) +
+                        [f"{pad}except _LoopExit as _e_:",
+                         f"{pad}    if _e_.args != ({loop.id}, 'c'): raise"])
+            lines = ["    " * indent + head] + guard + cond_lines + body
+            if loop.break_exc:
+                prefix = "    " * indent
+                lines = ([f"{prefix}try:"] + _indent(lines) +
+                         [f"{prefix}except _LoopExit as _e_:",
+                          f"{prefix}    if _e_.args != ({loop.id}, 'b'): raise"])
             return lines
+        finally:
+            ctx.loops.pop()
 
-        elif isinstance(stmt, ast.WhileStmt):
-            lines = []
-            cond = self._transpile_expr(stmt.condition)
-            lines.append(f"{prefix}while {cond}:")
-            inner = "    " * (indent + 1)
-            guard = self._loop_guard_lines(inner)
-            body_lines = self._transpile_block(stmt.body, indent + 1)
-            if not body_lines:
-                body_lines = [f"{inner}pass"]
-            lines.extend(guard)
-            lines.extend(body_lines)
-            return lines
+    def _loop_target(self, label, loc):
+        ctx = self._ctx
+        if not ctx.loops:
+            raise HIRError("`break`/`continue` outside a loop in const fn", source_loc=loc)
+        if label is None:
+            return ctx.loops[-1]
+        for loop in reversed(ctx.loops):
+            if loop.label == label:
+                return loop
+        raise HIRError(f"no enclosing loop labeled '{label}' in const fn", source_loc=loc)
 
-        elif isinstance(stmt, ast.LoopStmt):
-            lines = []
-            lines.append(f"{prefix}while True:")
-            inner = "    " * (indent + 1)
-            guard = self._loop_guard_lines(inner)
-            body_lines = self._transpile_block(stmt.body, indent + 1)
-            if not body_lines:
-                body_lines = [f"{inner}pass"]
-            lines.extend(guard)
-            lines.extend(body_lines)
-            return lines
+    def _break(self, stmt, prefix, loc):
+        ctx = self._ctx
+        target = self._loop_target(stmt.label, loc)
+        lines = []
+        if stmt.value is not None:
+            if target.tmp is None:
+                raise HIRError("`break` with a value outside a `loop` expression",
+                               source_loc=loc)
+            code, key = self._tx(stmt.value)
+            target.keys.append(key)
+            lines.append(f"{prefix}{target.tmp} = {code}")
+        if target is ctx.loops[-1]:
+            return lines + [f"{prefix}break"]
+        target.break_exc = True
+        return lines + [f"{prefix}raise _LoopExit({target.id}, 'b')"]
 
-        elif isinstance(stmt, ast.ForStmt):
-            lines = []
-            start = self._transpile_expr(stmt.start)
-            end = self._transpile_expr(stmt.end)
-            lines.append(f"{prefix}for {stmt.variable} in range({start}, {end}):")
-            inner = "    " * (indent + 1)
-            guard = self._loop_guard_lines(inner)
-            body_lines = self._transpile_block(stmt.body, indent + 1)
-            if not body_lines:
-                body_lines = [f"{inner}pass"]
-            lines.extend(guard)
-            lines.extend(body_lines)
-            return lines
+    # ---- expressions ---------------------------------------------------------
 
-        elif isinstance(stmt, ast.BreakStmt):
-            return [f"{prefix}break"]
+    def _hoist(self, line):
+        """Emit *line* ahead of the statement being transpiled."""
+        self._ctx.pre.append("    " * self._ctx.indent + line)
 
-        elif isinstance(stmt, ast.ContinueStmt):
-            return [f"{prefix}continue"]
+    def _coerce(self, code, key):
+        """*code* converted to a place of type *key* (wrapping an integer)."""
+        if key in _INT_KEYS:
+            return f"_{key}({code})"
+        if key == 'u24':
+            return f"(int({code}) & 0xFFFFFF)"
+        return code
 
-        elif isinstance(stmt, ast.ExprStmt):
-            expr_str = self._transpile_expr(stmt.expr)
-            return [f"{prefix}{expr_str}"]
+    def _place(self, target):
+        """(Python place, key) for an assignment target."""
+        loc = getattr(target, 'source_loc', None)
+        if isinstance(target, ast.Identifier):
+            local = self._ctx.lookup(target.name)
+            if local is None:
+                self._reject_global(target)
+                raise HIRError(f"cannot assign to '{target.name}' in const fn", source_loc=loc)
+            return local
+        if isinstance(target, ast.ArrayIndex):
+            arr, akey = self._tx(target.array)
+            idx, _ = self._tx(target.index)
+            elem = akey[1] if isinstance(akey, tuple) and akey[0] == 'arr' else None
+            return f"{arr}[_ix({arr}, {idx}, {_line(loc)})]", elem
+        if isinstance(target, ast.FieldAccess):
+            base, bkey = self._tx(target.base)
+            return f"{base}['{target.field}']", self._field_key(bkey, target.field)
+        if isinstance(target, ast.Register):
+            raise HIRError(f"Cannot access hardware register '{target.name}' in const fn",
+                           source_loc=loc)
+        raise HIRError(f"cannot assign to this in const fn: {type(target).__name__}",
+                       source_loc=loc)
 
-        elif isinstance(stmt, ast.Block):
-            return self._transpile_block(stmt, indent)
+    def _reject_global(self, expr):
+        from r65.compiler.hir.symbol_table import SymbolKind
+        symbol = self.symbol_table.lookup(expr.name)
+        if symbol and symbol.kind == SymbolKind.REGISTER:
+            raise HIRError(f"Cannot access hardware register '{expr.name}' in const fn",
+                           source_loc=expr.source_loc)
+        if symbol and symbol.kind == SymbolKind.STATIC_VAR:
+            raise HIRError(f"Cannot access runtime variable '{expr.name}' in const fn",
+                           source_loc=expr.source_loc)
 
-        elif isinstance(stmt, ast.AsmStmt):
-            raise HIRError("Inline assembly (asm!) cannot be used in const fn", source_loc=getattr(stmt, 'source_loc', None))
+    def _tx(self, expr):
+        """Transpile an AST expression to (Python expression, type key)."""
+        from r65.compiler.hir.symbol_table import SymbolKind
+        loc = getattr(expr, 'source_loc', None)
 
-        elif isinstance(stmt, ast.ConstAssertStmt):
-            raise HIRError("const_assert! is not supported in const fn", source_loc=getattr(stmt, 'source_loc', None))
-
-        else:
-            raise HIRError(f"Unsupported statement in const fn: {type(stmt).__name__}", source_loc=getattr(stmt, 'source_loc', None))
-
-    def _transpile_expr(self, expr):
-        """Transpile an AST expression to a Python expression string."""
         if isinstance(expr, ast.IntegerLiteral):
-            return str(expr.value)
+            return str(expr.value), getattr(expr, 'suffix', None)
 
-        elif isinstance(expr, ast.BooleanLiteral):
-            return "True" if expr.value else "False"
+        if isinstance(expr, ast.BooleanLiteral):
+            return ("True" if expr.value else "False"), 'bool'
 
-        elif isinstance(expr, ast.Identifier):
-            # Check if it's a const or enum variant
-            from r65.compiler.hir.symbol_table import SymbolKind
-            symbol = self.symbol_table.lookup(expr.name)
-            if symbol:
-                if symbol.kind == SymbolKind.CONST and symbol.const_value is not None:
-                    return repr(symbol.const_value)
-                elif symbol.kind == SymbolKind.IMPL_CONST and symbol.const_value is not None:
-                    return repr(symbol.const_value)
-                elif symbol.kind == SymbolKind.REGISTER:
-                    raise HIRError(
-                        f"Cannot access hardware register '{expr.name}' in const fn",
-                        source_loc=expr.source_loc
-                    )
-                elif symbol.kind == SymbolKind.STATIC_VAR:
-                    raise HIRError(
-                        f"Cannot access runtime variable '{expr.name}' in const fn",
-                        source_loc=expr.source_loc
-                    )
-            # Otherwise it's a local variable or parameter reference
-            return expr.name
+        if isinstance(expr, ast.Identifier):
+            local = self._ctx.lookup(expr.name)
+            if local is not None:
+                return local
+            symbol = self._lookup_const(expr.name)
+            if symbol and symbol.kind in (SymbolKind.CONST, SymbolKind.IMPL_CONST) \
+                    and symbol.const_value is not None:
+                return repr(symbol.const_value), self._key_of_info(symbol.var_type)
+            self._reject_global(expr)
+            raise HIRError(f"Undefined identifier '{expr.name}' in const fn", source_loc=loc)
 
-        elif isinstance(expr, ast.EnumVariantExpr):
+        if isinstance(expr, ast.EnumVariantExpr):
             qualified = f"{expr.enum_name}::{expr.variant_name}"
             symbol = self.symbol_table.lookup(qualified)
             if symbol and symbol.const_value is not None:
-                return str(symbol.const_value)
-            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const fn", source_loc=expr.source_loc)
+                return repr(symbol.const_value), self._key_of_info(symbol.var_type)
+            raise HIRError(f"Cannot resolve '{qualified}' in const fn", source_loc=loc)
 
-        elif isinstance(expr, ast.BinaryOp):
-            left = self._transpile_expr(expr.left)
-            right = self._transpile_expr(expr.right)
-            op = expr.op
-            if op == '&&':
-                return f"(bool({left}) and bool({right}))"
-            elif op == '||':
-                return f"(bool({left}) or bool({right}))"
-            elif op == '/':
-                return f"_ns_['_idiv']({left}, {right})"
-            elif op == '%':
-                return f"_ns_['_imod']({left}, {right})"
-            else:
-                return f"({left} {op} {right})"
+        if isinstance(expr, ast.BinaryOp):
+            if expr.op in ('&&', '||'):
+                return self._short_circuit(expr)
+            left, lkey = self._tx(expr.left)
+            right, rkey = self._tx(expr.right)
+            return self._binary(expr.op, left, lkey, right, rkey, expr)
 
-        elif isinstance(expr, ast.UnaryOp):
-            operand = self._transpile_expr(expr.operand)
+        if isinstance(expr, ast.UnaryOp):
+            operand, key = self._tx(expr.operand)
             if expr.op == '!':
-                return f"(not {operand})"
-            elif expr.op == '~':
-                return f"(~{operand})"
-            elif expr.op == '-':
-                return f"(-{operand})"
-            else:
-                raise HIRError(f"Unsupported unary op in const fn: {expr.op}", source_loc=expr.source_loc)
+                return f"(not {operand})", 'bool'
+            if expr.op == '~':
+                return self._coerce(f"(~{operand})", key), key
+            if expr.op == '-':
+                return self._coerce(f"(-{operand})", key), key
+            raise HIRError(f"Unsupported unary op in const fn: {expr.op}", source_loc=loc)
 
-        elif isinstance(expr, ast.TypeCast):
-            inner = self._transpile_expr(expr.expr)
-            if isinstance(expr.target_type, ast.BasicType):
-                type_name = expr.target_type.name
-                if type_name in INTEGER_TYPE_NAMES:
-                    return f"_ns_['_{type_name}']({inner})"
-                elif type_name == 'bool':
-                    return f"_ns_['_bool']({inner})"
-            raise HIRError(f"Unsupported cast in const fn: {expr.target_type}", source_loc=expr.source_loc)
+        if isinstance(expr, ast.TypeCast):
+            inner, _ = self._tx(expr.expr)
+            key = self._type_key(expr.target_type)
+            if key == 'bool':
+                return f"_bool({inner})", 'bool'
+            if key in _INT_KEYS or key == 'u24':
+                return self._coerce(inner, key), key
+            raise HIRError(f"Unsupported cast in const fn: {expr.target_type}", source_loc=loc)
 
-        elif isinstance(expr, ast.FunctionCall):
-            if isinstance(expr.func, ast.Identifier):
-                func_name = expr.func.name
-                # Check for builtins that can be resolved at transpile time
-                if func_name == 'size_of' and BuiltinRegistry.is_builtin(func_name):
-                    try:
-                        val = self._eval_size_of(expr)
-                        return str(val)
-                    except HIRError:
-                        pass
-                elif func_name == 'offset_of' and BuiltinRegistry.is_builtin(func_name):
-                    try:
-                        val = self._eval_offset_of(expr)
-                        return str(val)
-                    except HIRError:
-                        pass
+        if isinstance(expr, ast.CfgFunctionCall):
+            return ("True" if self.eval_cfg(expr.condition, loc) else "False"), 'bool'
 
-                # Check for const_math builtins
-                builtin = BuiltinRegistry.get_builtin(func_name)
-                if builtin and builtin.kind is BuiltinKind.CONST_MATH:
-                    args_str = ", ".join(self._transpile_expr(a) for a in expr.args)
-                    return f"_ns_['{func_name}']({args_str})"
+        if isinstance(expr, ast.FunctionCall):
+            return self._call(expr)
 
-                from r65.compiler.hir.symbol_table import SymbolKind
+        if isinstance(expr, (ast.Assignment, ast.CompoundAssignment)):
+            raise HIRError("an assignment is a statement, not a value, in const fn",
+                           source_loc=loc)
 
-                symbol = self.symbol_table.lookup(func_name)
+        if isinstance(expr, ast.BlockExpression):
+            self._ctx.scopes.append({})
+            try:
+                for stmt in expr.statements:
+                    self._ctx.pre.extend(self._with_pre(
+                        lambda: self._transpile_stmt(stmt, self._ctx.indent), self._ctx.indent))
+                return self._tx(expr.final_expr)
+            finally:
+                self._ctx.scopes.pop()
 
-                payload = self._newtype_construct_arg(expr, func_name, symbol)
-                if payload is not None:
-                    return self._transpile_expr(payload)
+        if isinstance(expr, ast.IfExpression):
+            return self._if_expr(expr)
 
-                # Check if it's a const fn call
-                if symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
-                    func_def = symbol.definition
-                    if func_def and hasattr(func_def, 'is_const') and func_def.is_const:
-                        # Compile it if needed (skip if currently being compiled — recursive)
-                        if func_name not in self._compiled_const_fns and func_name not in self._compiling_const_fns:
-                            self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
-                        # The trailing separator has to hang off the args, not
-                        # off `**_ns_`: a zero-arg callee would otherwise
-                        # transpile to `f(, **_ns_)`, a Python syntax error.
-                        args_str = "".join(f"{self._transpile_expr(a)}, " for a in expr.args)
-                        return f"_ns_['{func_name}']({args_str}**_ns_)"
-                    else:
-                        raise HIRError(
-                            f"Cannot call '{func_name}' from const fn: "
-                            f"'{func_name}' is not a const fn",
-                            source_loc=expr.source_loc
-                        )
+        if isinstance(expr, ast.MatchExpression):
+            tmp = self._ctx.temp()
+            keys = []
+            self._ctx.pre.extend(self._match(expr, self._ctx.indent, (tmp, keys)))
+            return tmp, _unify(*keys)
 
-            raise HIRError(f"Unsupported function call in const fn: {expr}", source_loc=expr.source_loc)
+        if isinstance(expr, ast.LoopExpression):
+            tmp = self._ctx.temp()
+            self._hoist(f"{tmp} = None")
+            lines = self._loop(expr.label, tmp, self._ctx.indent, None,
+                               lambda i: self._block_lines(expr.body.statements, i))
+            self._ctx.pre.extend(lines)
+            return tmp, None
 
-        elif isinstance(expr, ast.Assignment):
-            target = self._transpile_expr(expr.target)
-            value = self._transpile_expr(expr.value)
-            return f"{target} = {value}"
+        if isinstance(expr, ast.Register):
+            raise HIRError(f"Cannot access hardware register '{expr.name}' in const fn",
+                           source_loc=loc)
 
-        elif isinstance(expr, ast.CompoundAssignment):
-            target = self._transpile_expr(expr.target)
-            value = self._transpile_expr(expr.value)
-            op = expr.operator
-            if op == '/':
-                return f"{target} = _ns_['_idiv']({target}, {value})"
-            elif op == '%':
-                return f"{target} = _ns_['_imod']({target}, {value})"
-            return f"{target} {op}= {value}"
+        if isinstance(expr, ast.StringLiteral):
+            raise HIRError("String literals are not supported in const fn", source_loc=loc)
 
-        elif isinstance(expr, ast.BlockExpression):
-            return self._transpile_block_expr(expr)
+        if isinstance(expr, ast.ArrayIndex):
+            arr, akey = self._tx(expr.array)
+            idx, _ = self._tx(expr.index)
+            elem = akey[1] if isinstance(akey, tuple) and akey[0] == 'arr' else None
+            return f"{arr}[_ix({arr}, {idx}, {_line(loc)})]", elem
 
-        elif isinstance(expr, ast.IfExpression):
-            return self._transpile_if_expr(expr)
+        if isinstance(expr, ast.FieldAccess):
+            base, bkey = self._tx(expr.base)
+            return f"{base}['{expr.field}']", self._field_key(bkey, expr.field)
 
-        elif isinstance(expr, ast.MatchExpression):
-            return self._transpile_match_expr(expr)
-
-        elif isinstance(expr, ast.Register):
-            raise HIRError(
-                f"Cannot access hardware register '{expr.name}' in const fn",
-                source_loc=expr.source_loc
-            )
-
-        elif isinstance(expr, ast.StringLiteral):
-            raise HIRError("String literals are not supported in const fn", source_loc=expr.source_loc)
-
-        elif isinstance(expr, ast.ArrayIndex):
-            array = self._transpile_expr(expr.array)
-            index = self._transpile_expr(expr.index)
-            return f"{array}[{index}]"
-
-        elif isinstance(expr, ast.FieldAccess):
-            base = self._transpile_expr(expr.base)
-            return f"{base}['{expr.field}']"
-
-        elif isinstance(expr, ast.NewtypeFieldAccess):
+        if isinstance(expr, ast.NewtypeFieldAccess):
             # `t.0` is a retype, not a field load: a newtype *is* its payload at
             # compile time, so the payload is the operand's own value.
             self._check_newtype_field_index(expr)
-            return self._transpile_expr(expr.base)
+            return self._tx(expr.base)
 
-        elif isinstance(expr, ast.Dereference):
-            raise HIRError("Pointer dereference is not supported in const fn", source_loc=expr.source_loc)
+        if isinstance(expr, ast.Dereference):
+            raise HIRError("Pointer dereference is not supported in const fn", source_loc=loc)
 
-        elif isinstance(expr, ast.AddressOf):
-            raise HIRError("Address-of operator is not supported in const fn", source_loc=expr.source_loc)
+        if isinstance(expr, ast.AddressOf):
+            raise HIRError("Address-of operator is not supported in const fn", source_loc=loc)
 
-        elif isinstance(expr, ast.ArrayLiteralExpr):
-            elements = ", ".join(self._transpile_expr(e) for e in expr.elements)
-            return f"[{elements}]"
+        if isinstance(expr, ast.ArrayLiteralExpr):
+            parts = [self._tx(e) for e in expr.elements]
+            elem = _unify(*(k for _, k in parts))
+            code = ", ".join(self._coerce(c, elem) for c, _ in parts)
+            return f"[{code}]", ('arr', elem, len(parts))
 
-        elif isinstance(expr, ast.ArrayFillExpr):
-            value = self._transpile_expr(expr.value)
-            count = self._transpile_expr(expr.count)
-            return f"[{value}] * {count}"
+        if isinstance(expr, ast.ArrayFillExpr):
+            value, vkey = self._tx(expr.value)
+            count, _ = self._tx(expr.count)
+            return f"_fill({value}, {count})", ('arr', vkey, None)
 
-        elif isinstance(expr, ast.StructLiteralExpr):
-            fields = ", ".join(f"'{f.name}': {self._transpile_expr(f.value)}" for f in expr.fields)
-            return f"{{{fields}}}"
+        if isinstance(expr, ast.StructLiteralExpr):
+            key = ('struct', expr.struct_name) if hasattr(expr, 'struct_name') else None
+            fields = ", ".join(
+                f"'{f.name}': {self._coerce(self._tx(f.value)[0], self._field_key(key, f.name))}"
+                for f in expr.fields)
+            return f"{{{fields}}}", key
 
-        elif isinstance(expr, ast.MultiAssignment):
-            raise HIRError("Multiple assignment is not supported in const fn", source_loc=expr.source_loc)
+        if isinstance(expr, ast.MultiAssignment):
+            raise HIRError("Multiple assignment is not supported in const fn", source_loc=loc)
 
-        elif isinstance(expr, ast.IncludeBytesExpr):
-            raise HIRError("include_bytes! is not supported in const fn", source_loc=expr.source_loc)
+        if isinstance(expr, ast.IncludeBytesExpr):
+            raise HIRError("include_bytes! is not supported in const fn", source_loc=loc)
 
+        raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}",
+                       source_loc=loc)
+
+    def _binary(self, op, left, lkey, right, rkey, expr):
+        """(code, key) for `left op right`, wrapped to the operation's type."""
+        line = _line(getattr(expr, 'source_loc', None))
+        if op in ('==', '!=', '<', '>', '<=', '>='):
+            return f"({left} {op} {right})", 'bool'
+        if op in ('<<', '>>'):
+            helper = '_shl' if op == '<<' else '_shr'
+            return self._coerce(f"{helper}({left}, {right}, {line})", lkey), lkey
+        key = _unify(lkey, rkey)
+        if op == '/':
+            code = f"_idiv({left}, {right}, {line})"
+        elif op == '%':
+            code = f"_imod({left}, {right}, {line})"
+        elif op in ('+', '-', '*', '&', '|', '^'):
+            code = f"({left} {op} {right})"
         else:
-            raise HIRError(f"Unsupported expression in const fn: {type(expr).__name__}", source_loc=getattr(expr, 'source_loc', None))
+            raise HIRError(f"Unsupported operator in const fn: {op}",
+                           source_loc=getattr(expr, 'source_loc', None))
+        if key == 'bool':
+            return f"_bool({code})", key
+        return self._coerce(code, key), key
 
-    def _transpile_block_expr(self, expr):
-        """Transpile a block expression to a Python expression.
+    def _short_circuit(self, expr):
+        """`&&`/`||`, keeping the right side unevaluated when it is skipped."""
+        ctx = self._ctx
+        left, _ = self._tx(expr.left)
+        right_code = []
 
-        If no statements, just transpile the final expression.
-        Block expressions with statements cannot be transpiled to a single
-        Python expression, so they raise an error in const fn context.
-        """
-        if not expr.statements:
-            return self._transpile_expr(expr.final_expr)
+        def build_right():
+            code, _ = self._tx(expr.right)
+            right_code.append(code)
+            return []
+        right_pre = self._with_pre(build_right, ctx.indent + 1)
+        py_op = 'and' if expr.op == '&&' else 'or'
+        if not right_pre:
+            return f"(_bool({left}) {py_op} _bool({right_code[0]}))", 'bool'
+        tmp = ctx.temp()
+        self._hoist(f"{tmp} = _bool({left})")
+        self._hoist(f"if {'' if expr.op == '&&' else 'not '}{tmp}:")
+        ctx.pre.extend(right_pre)
+        ctx.pre.append("    " * (ctx.indent + 1) + f"{tmp} = _bool({right_code[0]})")
+        return tmp, 'bool'
 
-        raise HIRError("Block expressions with statements are not supported in const fn", source_loc=expr.source_loc)
+    def _branch_value(self, branch, tmp, indent):
+        """Lines that evaluate an if-expression branch into *tmp*, and its key."""
+        keys = []
 
-    def _transpile_if_expr(self, expr):
-        """Transpile an if expression to a Python ternary expression."""
-        cond = self._transpile_expr(expr.condition)
-        then_val = self._transpile_expr(expr.then_block)
-        else_val = self._transpile_expr(expr.else_block)
-        return f"(({then_val}) if ({cond}) else ({else_val}))"
+        def build():
+            code, key = self._tx(branch)
+            keys.append(key)
+            return ["    " * indent + f"{tmp} = {code}"]
+        return self._with_pre(build, indent), keys[0]
 
-    def _transpile_match_expr(self, expr):
-        """Transpile a match expression to a Python lambda with chained ternaries.
+    def _if_expr(self, expr):
+        ctx = self._ctx
+        cond, _ = self._tx(expr.condition)
+        tmp = ctx.temp()
+        then_lines, tkey = self._branch_value(expr.then_block, tmp, ctx.indent + 1)
+        else_lines, ekey = self._branch_value(expr.else_block, tmp, ctx.indent + 1)
+        key = _unify(tkey, ekey)
+        if len(then_lines) == 1 and len(else_lines) == 1:
+            then_code = then_lines[0].split(" = ", 1)[1]
+            else_code = else_lines[0].split(" = ", 1)[1]
+            return f"(({then_code}) if ({cond}) else ({else_code}))", key
+        self._hoist(f"if {cond}:")
+        ctx.pre.extend(then_lines)
+        self._hoist("else:")
+        ctx.pre.extend(else_lines)
+        return tmp, key
 
-        match x { 0 => a, 1 | 2 => b, name => c, _ => d }
-        becomes:
-        (lambda _m_: (a if _m_ == 0 else (b if _m_ == 1 or _m_ == 2
-         else (lambda name: c)(_m_))))(scrutinee)
-        Arms after an irrefutable one are dropped.
-        """
-        scrutinee = self._transpile_expr(expr.scrutinee)
+    def _call(self, expr):
+        """A call inside a const fn body: a const fn, a builtin or a newtype."""
+        from r65.compiler.hir.symbol_table import SymbolKind
+        loc = getattr(expr, 'source_loc', None)
+        func_name = self._const_fn_name(expr)
+        if func_name is None:
+            raise HIRError(f"Unsupported function call in const fn: {expr}", source_loc=loc)
 
+        if func_name in ('size_of', 'offset_of') and BuiltinRegistry.is_builtin(func_name):
+            evaluate = self._eval_size_of if func_name == 'size_of' else self._eval_offset_of
+            return str(evaluate(expr)), None
+
+        builtin = BuiltinRegistry.get_builtin(func_name)
+        if builtin and builtin.kind is BuiltinKind.CONST_MATH:
+            args = ", ".join(self._tx(a)[0] for a in expr.args)
+            return f"_ns_['{func_name}']({args})", None
+        if builtin and builtin.kind is BuiltinKind.CFG:
+            return ("True" if self.eval(expr) else "False"), 'bool'
+
+        symbol = self.symbol_table.lookup(func_name)
+        payload = self._newtype_construct_arg(expr, func_name, symbol)
+        if payload is not None:
+            code, _ = self._tx(payload)
+            key = self._key_of_info(symbol.type_info) if symbol else None
+            return self._coerce(code, key), key
+
+        forward = self.forward_const_fns.get(func_name) if symbol is None else None
+        if forward is not None or (symbol and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)):
+            func_def = forward if forward is not None else symbol.definition
+            if func_def is not None and getattr(func_def, 'is_const', False):
+                if len(expr.args) != len(func_def.params):
+                    raise HIRError(
+                        f"const fn '{func_name}' expects {len(func_def.params)} "
+                        f"argument(s), got {len(expr.args)}", source_loc=loc)
+                if (func_name not in self._compiled_const_fns
+                        and func_name not in self._compiling_const_fns):
+                    self._compiled_const_fns[func_name] = self._compile_const_fn(func_def, func_name)
+                args = "".join(f"{self._tx(a)[0]}, " for a in expr.args)
+                ret = func_def.return_type
+                key = None if ret is None or isinstance(ret, ast.NeverType) else self._type_key(ret)
+                return f"_ns_['{func_name}']({args}**_ns_)", key
+            raise HIRError(
+                f"Cannot call '{func_name}' from const fn: '{func_name}' is not a const fn",
+                source_loc=loc)
+
+        raise HIRError(f"Unsupported function call in const fn: {func_name}", source_loc=loc)
+
+    def _const_fn_name(self, expr):
+        """The symbol name a call resolves to: `f(..)` or `Type::method(..)`."""
+        if isinstance(expr.func, ast.Identifier):
+            return expr.func.name
+        if isinstance(expr.func, ast.EnumVariantExpr):
+            return f"{expr.func.enum_name}__{expr.func.variant_name}"
+        return None
+
+    # ---- match ---------------------------------------------------------------
+
+    def _match(self, expr, indent, into, tail=False):
+        """Statement-form `match`; *into* is (tmp, keys) when it has a value."""
+        ctx = self._ctx
+        prefix = "    " * indent
+        loc = getattr(expr, 'source_loc', None)
         if not expr.arms:
-            raise HIRError("Empty match expression in const fn", source_loc=expr.source_loc)
+            raise HIRError("Empty match expression in const fn", source_loc=loc)
+        scrut = ctx.temp()
+        lines = []
 
-        # Build list of (condition_or_None, body_str) for each arm
-        parts = []
+        def build_scrutinee():
+            code, _ = self._tx(expr.scrutinee)
+            return [f"{prefix}{scrut} = {code}"]
+        lines += self._with_pre(build_scrutinee, indent)
+
+        first = True
         for arm in expr.arms:
-            body_str = self._transpile_expr(arm.body)
-            pattern = arm.pattern
-
-            if isinstance(pattern, ast.WildcardPattern):
-                parts.append((None, body_str))
-            elif isinstance(pattern, ast.IdentifierPattern):
-                # Bind scrutinee to variable name via nested lambda
-                parts.append((None, f"(lambda {pattern.name}: {body_str})(_m_)"))
-            elif isinstance(pattern, ast.LiteralPattern):
-                parts.append((f"_m_ == {repr(pattern.value)}", body_str))
-            elif isinstance(pattern, ast.EnumPattern):
-                cond = self._transpile_enum_pattern(pattern)
-                parts.append((cond, body_str))
-            elif isinstance(pattern, ast.OrPattern):
-                or_conds = []
-                for sub in pattern.patterns:
-                    if isinstance(sub, ast.LiteralPattern):
-                        or_conds.append(f"_m_ == {repr(sub.value)}")
-                    elif isinstance(sub, ast.EnumPattern):
-                        or_conds.append(self._transpile_enum_pattern(sub))
-                    else:
-                        raise HIRError(
-                            f"Unsupported sub-pattern in or-pattern in const fn: "
-                            f"{type(sub).__name__}",
-                            source_loc=expr.source_loc
-                        )
-                parts.append((" or ".join(or_conds), body_str))
+            cond, binding = self._pattern_cond(arm.pattern, scrut)
+            if cond is None:
+                lines.append(f"{prefix}else:" if not first else f"{prefix}if True:")
             else:
-                raise HIRError(
-                    f"Unsupported pattern in const fn match: {type(pattern).__name__}",
-                    source_loc=expr.source_loc
-                )
+                lines.append(f"{prefix}{'if' if first else 'elif'} {cond}:")
+            lines += self._arm_body(arm.body, binding, scrut, indent + 1, into,
+                                    tail=tail and first)
+            first = False
+            if cond is None:
+                return lines
+        lines.append(f"{prefix}else:")
+        lines.append(f"{prefix}    _fault('no match arm matches {{}}{_at(_line(loc))}'.format({scrut}))")
+        return lines
 
-        # Build ternary chain from right to left
-        result = None
-        for condition, body in reversed(parts):
-            if result is None:
-                # Last arm
-                if condition is None:
-                    result = body
-                else:
-                    result = f"({body} if {condition} else None)"
+    def _arm_body(self, body, binding, scrut, indent, into, tail=False):
+        ctx = self._ctx
+        pad = "    " * indent
+        ctx.scopes.append({})
+        try:
+            lines = []
+            if binding is not None:
+                lines.append(f"{pad}{ctx.declare(binding, None)} = {scrut}")
+            if isinstance(body, (ast.ReturnStmt, ast.BreakStmt, ast.ContinueStmt)):
+                lines += self._with_pre(lambda: self._transpile_stmt(body, indent), indent)
+            elif isinstance(body, ast.Block):
+                lines += self._transpile_stmts(body.statements, indent, tail=tail)
+            elif into is None:
+                lines += self._with_pre(lambda: self._expr_stmt(body, indent), indent)
             else:
-                if condition is None:
-                    # Unconditional catch-all before end — takes priority
-                    result = body
-                else:
-                    result = f"({body} if {condition} else {result})"
+                tmp, keys = into
 
-        return f"(lambda _m_: {result})({scrutinee})"
+                def build():
+                    code, key = self._tx(body)
+                    keys.append(key)
+                    return [f"{pad}{tmp} = {code}"]
+                lines += self._with_pre(build, indent)
+            return lines or [f"{pad}pass"]
+        finally:
+            ctx.scopes.pop()
 
-    def _transpile_enum_pattern(self, pattern):
-        """Transpile an enum pattern to a Python comparison string."""
-        qualified = f"{pattern.enum_name}::{pattern.variant_name}"
-        symbol = self.symbol_table.lookup(qualified)
-        if symbol and symbol.const_value is not None:
-            return f"_m_ == {symbol.const_value}"
-        raise HIRError(
-            f"Cannot resolve enum variant '{qualified}' in const fn match",
-            source_loc=getattr(pattern, 'source_loc', None)
-        )
+    def _pattern_cond(self, pattern, scrut):
+        """(Python condition or None for irrefutable, binding name or None)."""
+        loc = getattr(pattern, 'source_loc', None)
+        if isinstance(pattern, ast.WildcardPattern):
+            return None, None
+        if isinstance(pattern, ast.IdentifierPattern):
+            return None, (None if pattern.name == '_' else pattern.name)
+        if isinstance(pattern, ast.LiteralPattern):
+            return f"{scrut} == {pattern.value!r}", None
+        if isinstance(pattern, ast.RangePattern):
+            op = '<=' if pattern.inclusive else '<'
+            return f"({pattern.start!r} <= {scrut} {op} {pattern.end!r})", None
+        if isinstance(pattern, ast.EnumPattern):
+            if pattern.binding is not None:
+                raise HIRError("tagged enum patterns are not supported in const fn",
+                               source_loc=loc)
+            qualified = f"{pattern.enum_name}::{pattern.variant_name}"
+            symbol = self.symbol_table.lookup(qualified)
+            if symbol and symbol.const_value is not None:
+                return f"{scrut} == {symbol.const_value!r}", None
+            raise HIRError(f"Cannot resolve enum variant '{qualified}' in const fn match",
+                           source_loc=loc)
+        if isinstance(pattern, ast.OrPattern):
+            conds = []
+            for sub in pattern.patterns:
+                cond, binding = self._pattern_cond(sub, scrut)
+                if binding is not None:
+                    raise HIRError("a binding inside an or-pattern is not supported in const fn",
+                                   source_loc=loc)
+                if cond is None:
+                    return None, None
+                conds.append(cond)
+            return "(" + " or ".join(conds) + ")", None
+        raise HIRError(f"Unsupported pattern in const fn match: {type(pattern).__name__}",
+                       source_loc=loc)
+
+
+# ---- transpiler support ------------------------------------------------------
+
+_INT_KEYS = frozenset(INTEGER_TYPE_NAMES)
+_HELPERS = ('_u8', '_u16', '_i8', '_i16', '_bool', '_idiv', '_imod', '_shl', '_shr',
+            '_ix', '_fill', '_copy', '_fault', '_LoopExit')
+_WIDTH = {'u8': 1, 'i8': 1, 'u16': 2, 'i16': 2, 'u24': 3}
+
+
+class _ConstFnFault(Exception):
+    """An error raised by running const fn code (bad index, division by zero,
+    no matching arm, iteration or recursion limit). Reported as an HIRError
+    naming the const fn."""
+
+
+class _LoopExit(Exception):
+    """`break`/`continue` aimed past the innermost loop; args (loop id, kind)."""
+
+
+class _LoopCtx:
+    def __init__(self, loop_id, label, tmp):
+        self.id = loop_id
+        self.label = label
+        self.tmp = tmp            # the loop expression's value, or None
+        self.keys = []            # types of the values `break` gives it
+        self.break_exc = False
+        self.continue_exc = False
+
+
+class _FnCtx:
+    """Per-function transpiler state: scopes, loops, hoisted lines."""
+
+    def __init__(self, func_name, returns_value, ret_key):
+        self.func_name = func_name
+        self.returns_value = returns_value
+        self.ret_key = ret_key
+        self.scopes = [{}]
+        self.loops = []
+        self.pre = []
+        self.indent = 1
+        self._counter = 0
+
+    def next_id(self):
+        self._counter += 1
+        return self._counter
+
+    def declare(self, name, key):
+        py = f"v{self.next_id()}_{name}"
+        self.scopes[-1][name] = (py, key)
+        return py
+
+    def temp(self):
+        return f"_t{self.next_id()}_"
+
+    def lookup(self, name):
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
+        return None
+
+
+def _unify(*keys):
+    """The type of an operation on values of *keys*: the wider integer wins;
+    an untyped literal (None) takes the other side's type."""
+    result = None
+    for key in keys:
+        if key is None:
+            continue
+        if result is None:
+            result = key
+        elif result in _WIDTH and key in _WIDTH and _WIDTH[key] > _WIDTH[result]:
+            result = key
+    return result
+
+
+def _is_aggregate_key(key):
+    return isinstance(key, tuple)
+
+
+def _line(loc):
+    return getattr(loc, 'line', None)
+
+
+def _at(line):
+    return f" (line {line})" if line else ""
+
+
+def _indent(lines):
+    return ["    " + line for line in lines]

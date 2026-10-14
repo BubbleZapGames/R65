@@ -171,7 +171,7 @@ const MASK: u8 = 0x80 | 0x40;
 static BUFFER: [u8; TILE_SIZE * 2] = [0; TILE_SIZE * 2];
 ```
 
-**Const functions**: `const fn` enables user-defined compile-time computation. Supports arithmetic, control flow (`if`/`else`, `while`, `for`), local variables, type casts, and calling other const fns. Cannot access hardware registers or runtime variables. Calls with all-const arguments are folded to literals; calls with runtime arguments emit a normal function call.
+**Const functions**: `const fn` enables user-defined compile-time computation. Supports arithmetic (with unrestricted `*`, `/`, `%`), control flow (`if`/`else`, `while`, `for`, `loop`, `match`, labeled `break`/`continue`), local variables, arrays, structs, type casts, and calling other const fns and const methods. Values wrap at their type's width, as at runtime. Cannot access hardware registers or runtime variables. Calls with all-const arguments are folded to literals (an evaluation error is reported, not deferred to runtime); calls with runtime arguments emit a normal function call. Consts and const fns may be used above their declaration. Limits: 1,000,000 loop passes per call, recursion 256 deep.
 
 ```rust
 const fn tile_offset(x: u8, y: u8) -> u16 {
@@ -534,12 +534,15 @@ Hardware-aware operators with restrictions for expensive operations:
 |----------|----------|-------------|
 | Arithmetic | `+`, `-` | None |
 | Multiply/Divide | `*`, `/` | Power-of-2 constants 1–256 only |
+| Modulo | `%` | Const contexts only |
 | Shift | `<<`, `>>` | Constant amounts only |
 | Bitwise | `&`, `\|`, `^`, `~` | None |
 | Compare | `==`, `!=`, `<`, `>`, `<=`, `>=` | None |
 | Logical | `&&`, `\|\|`, `!` | Short-circuit |
 
 **Function alternatives**: `mul8()`/`mul16()`, `div8()`/`div16()`, `mod8()`, `shl8()`/`shl16()`, `shr8()`/`shr16()` for variable amounts.
+
+**Const contexts**: between constants and inside a `const fn` body, `*`, `/` and `%` are unrestricted; `/` and `%` truncate toward zero. A const fn using them can only be called with constant arguments.
 
 **Also**: Compound assignments (`+=`, etc.), increment/decrement (`x++`, `x--` - postfix, statement-only).
 

@@ -47,6 +47,7 @@ class TestCompoundAssignOverload:
         ("SubAssign", "sub_assign", "-"),
         ("MulAssign", "mul_assign", "*"),
         ("DivAssign", "div_assign", "/"),
+        ("RemAssign", "rem_assign", "%"),
         ("BitAndAssign", "bitand_assign", "&"),
         ("BitOrAssign", "bitor_assign", "|"),
         ("BitXorAssign", "bitxor_assign", "^"),

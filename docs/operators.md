@@ -312,7 +312,35 @@ let remainder: u8 = mod8(distance, tile_size);
 let wrapped = index & 0xFF;  // Same as mod8(index, 256)
 ```
 
-**Note**: The `%` operator is parsed but **not supported at code generation** — use the `mod8()` function instead.
+**Note**: The `%` operator exists only at compile time (see *Const Contexts* below); at runtime use `mod8()` / `mod16()`.
+
+---
+
+## Const Contexts: Unrestricted `*`, `/` and `%`
+
+The restrictions on `*` and `/`, and the absence of `%`, are about the code a
+runtime operation needs. None of them apply where no code is generated:
+
+- **Between constants.** `W * 13 / 3 % 10` with `W` a `const` (or a literal) is
+  folded while the program is built, in a `const` initializer, an array size,
+  a static initializer or ordinary code alike.
+- **Inside a `const fn` body.** Operands may be parameters and locals:
+  `a % b`, `x * y / 3` and `%=` are all allowed.
+
+`/` and `%` truncate toward zero (`-7 / 2 == -3`, `-7 % 2 == -1`), and
+division by zero is a compile error. `%` anywhere else is a compile error that
+points to `mod8()` / `mod16()`.
+
+A `const fn` is folded only when every argument is constant. Called with a
+runtime argument it becomes a real call, so a body that uses one of these
+operators in a form the hardware rules reject cannot run: the call is
+rejected, naming the const fn and the operator, with a hint to pass constant
+arguments or use the stdlib function.
+
+Values in a `const fn` wrap at their type's width exactly as they do at
+runtime: `let x: u8 = 255; x + 1` is `0`, a `u16` shift drops its high bits
+before a later `>>` sees them, and the result is converted to the declared
+return type.
 
 ---
 
@@ -812,7 +840,7 @@ a *= 2;   // OK: desugars to a = a * 2 (power of 2)
 a *= b;   // ERROR: desugars to a = a * b (variable multiply not allowed)
 a /= 4;   // OK: desugars to a = a / 4 (power of 2)
 a /= b;   // ERROR: desugars to a = a / b (variable divide not allowed)
-a %= b;   // ERROR: % operator not supported at codegen — use a = mod8(a, b)
+a %= b;   // ERROR outside a const fn: use a = mod8(a, b)
 ```
 
 **Optimization**: Direct memory operations when beneficial:
@@ -1156,4 +1184,4 @@ let overflow = STATUS & OVERFLOW_FLAG;
 
 **STATUS**: Implemented
 **Last Updated**: 2026-02-10
-**Not Yet Implemented**: `%` operator at codegen (use `mod8()` function), signed arithmetic right shift (uses logical shift for both)
+**Not Yet Implemented**: `%` at runtime (use `mod8()`; it is allowed in const contexts), signed arithmetic right shift at runtime (uses logical shift for both; a `const fn` shifts arithmetically)

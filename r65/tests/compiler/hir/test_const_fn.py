@@ -620,3 +620,280 @@ class TestConstFnNewtypes:
             const fn make(n: u8) -> TileId { return TileId(n, 2); }
             const T: TileId = make(1);
             """)
+
+
+def const_values(source: str) -> dict:
+    """Every const's evaluated value, by name."""
+    hir = build_hir(source)
+    return {d.name: d.evaluated_value for d in hir.declarations if isinstance(d, HIRConstDecl)}
+
+
+class TestConstFnOperators:
+    """`*`, `/` and `%` are unrestricted in const fns and between constants."""
+
+    def test_full_operators_in_const_fn(self):
+        values = const_values("""
+        const fn f(a: u8, b: u8) -> u8 { let mut x: u8 = a % b; x %= 4; return x * b / 3; }
+        const R: u8 = f(23, 7);
+        """)
+        assert values['R'] == 4
+
+    def test_between_constants(self):
+        values = const_values("""
+        const W: u16 = 7;
+        const H: u16 = W * 13 / 3 % 10;
+        """)
+        assert values['H'] == 0
+        build_and_typecheck("""
+        const W: u8 = 7;
+        const H: u8 = 5;
+        fn main() { A = W * H / 3; }
+        """)
+
+    def test_division_truncates_toward_zero(self):
+        values = const_values("""
+        const fn d(a: i8, b: i8) -> i8 { return a / b; }
+        const fn m(a: i8, b: i8) -> i8 { return a % b; }
+        const DV: i8 = d(-7, 2);
+        const MV: i8 = m(-7, 2);
+        const D2: i16 = (0 - 7) / 2;
+        """)
+        assert (values['DV'], values['MV'], values['D2']) == (-3, -1, -3)
+
+    def test_modulo_rejected_at_runtime(self):
+        with pytest.raises(Exception, match="only allowed in const fn bodies"):
+            build_and_typecheck("""
+            #[zeropage]
+            static mut Z: u8;
+            fn main() { Z = Z % 7; }
+            """)
+
+    def test_runtime_call_of_const_only_body(self):
+        """A const fn that divides by a variable cannot run: say so at the call."""
+        with pytest.raises(Exception, match="const fn 'outer' is called with a non-constant argument"):
+            build_and_typecheck("""
+            const fn inner(a: u8, b: u8) -> u8 { return a / b; }
+            const fn outer(a: u8) -> u8 { return inner(a, 3); }
+            #[zeropage]
+            static mut Z: u8;
+            fn main() { Z = outer(Z); }
+            """)
+
+
+class TestConstFnFailuresSurface:
+    """A const fn that fails with constant arguments reports why."""
+
+    def test_iteration_limit_reported(self):
+        with pytest.raises(HIRError, match="exceeded maximum iteration limit"):
+            build_hir("""
+            const fn f() -> [u8; 2] { loop { } return [1, 2]; }
+            static VAL: [u8; 2] = f();
+            """)
+
+    def test_non_constant_static_initializer_rejected(self):
+        """A ROM aggregate whose initializer is not data must not compile to nothing."""
+        with pytest.raises(Exception, match="must be a compile-time constant"):
+            compile_string("""
+            const fn f(x: u8) -> [u8; 2] { return [x, x]; }
+            #[zeropage]
+            static mut Z: u8;
+            static VAL: [u8; 2] = f(Z);
+            #[entry] fn main() -> ! { A = VAL[1]; loop {} }
+            """, "test.r65")
+
+    def test_recursion_limit(self):
+        with pytest.raises(HIRError, match="recursion deeper than 256"):
+            build_hir("""
+            const fn s(n: u16) -> u16 { if n == 0 { return 0; } return 1 + s(n - 1); }
+            const R: u16 = s(2000);
+            """)
+        assert const_values("""
+            const fn s(n: u16) -> u16 { if n == 0 { return 0; } return 1 + s(n - 1); }
+            const R: u16 = s(200);
+            """)['R'] == 200
+
+    def test_index_out_of_bounds(self):
+        with pytest.raises(HIRError, match="index 255 out of bounds"):
+            build_hir("""
+            const fn f(i: u8) -> u8 { let t: [u8; 3] = [10, 20, 30]; return t[i - 1]; }
+            const R: u8 = f(0);
+            """)
+
+    def test_multi_value_return_rejected(self):
+        with pytest.raises(HIRError, match="returns 2 values"):
+            build_hir("""
+            const fn two() -> u8, u8 { return 1, 2; }
+            const C: u8 = two();
+            """)
+
+
+class TestConstFnWrapping:
+    """Values wrap at their type's width, as they do on the 65816."""
+
+    def test_wrapping(self):
+        values = const_values("""
+        const fn inc(x: u8) -> u8 { let mut y: u8 = x; y = y + 1; return y; }
+        const fn under(a: u16, b: u16) -> u16 { return a - b; }
+        const fn xs(s: u16) -> u16 {
+            let mut x: u16 = s;
+            x = x ^ (x << 7); x = x ^ (x >> 9); x = x ^ (x << 8);
+            return x;
+        }
+        const fn nib(x: u8) -> u8 { let y: u8 = ~x; return y >> 4; }
+        const fn sign(x: i8) -> u8 { if x < 0 { return 1; } return 0; }
+        const fn wide() -> u8 { return 200 + 100; }
+        const fn untyped() -> u8 { let mut c = 250; c = c + 10; return c; }
+        const A1: u8 = inc(255);
+        const B1: u16 = under(1, 2);
+        const C1: u16 = xs(0xFFFF);
+        const D1: u8 = nib(0x0F);
+        const E1: u8 = sign(200 as i8);
+        const F1: u8 = wide();
+        const G1: u8 = untyped();
+        """)
+        assert values['A1'] == 0
+        assert values['B1'] == 0xFFFF
+        assert values['C1'] == 0x7F7F
+        assert values['D1'] == 0x0F
+        assert values['E1'] == 1
+        assert values['F1'] == 44
+        assert values['G1'] == 4
+
+    def test_shift_amount_checked(self):
+        with pytest.raises(HIRError, match="negative shift amount"):
+            build_hir("const M: u8 = 1 << (0 - 1);")
+        assert const_values("""
+            const fn f(n: u16) -> u16 { return 1 << n; }
+            const R: u16 = f(60000);
+            """)['R'] == 0
+
+
+class TestConstFnScoping:
+    """R65 scoping, whatever the names mean to the Python it runs as."""
+
+    def test_scopes_and_names(self):
+        values = const_values("""
+        const n: u8 = 1;
+        const fn block() -> u8 { let x: u8 = 1; if true { let x: u8 = 9; } return x; }
+        const fn local() -> u8 { let n: u8 = 5; return n; }
+        const fn lerp(from: u8, to: u8) -> u8 { return (from + to) / 2; }
+        const fn count(range: u8) -> u8 { let mut s: u8 = 0; for i in 0..range { s = s + 1; } return s; }
+        const BK: u8 = block();
+        const L: u8 = local();
+        const P: u8 = lerp(2, 4);
+        const R: u8 = count(3);
+        """)
+        assert (values['BK'], values['L'], values['P'], values['R']) == (1, 5, 3, 3)
+
+    def test_uninitialized_and_nested_arrays(self):
+        values = const_values("""
+        const fn f() -> [u8; 2] { let mut t: [u8; 2]; t[0] = 1; t[1] = 2; return t; }
+        const fn g() -> u8 { let mut t: [[u8; 2]; 2] = [[0; 2]; 2]; t[0][1] = 5; return t[1][1]; }
+        const T: [u8; 2] = f();
+        const G: u8 = g();
+        """)
+        assert values['T'] == [1, 2]
+        assert values['G'] == 0
+
+
+class TestConstFnControlFlow:
+    """Control flow R65 allows in any fn works in a const fn."""
+
+    def test_loops(self):
+        values = const_values("""
+        const fn incl() -> u8 { let mut s: u8 = 0; for i in 0..=3 { s = s + 1; } return s; }
+        const fn big() -> u16 { let mut s: u16 = 0; for i in 0..128 { for j in 0..128 { s = s + 1; } } return s; }
+        const fn lab() -> u8 {
+            let mut n: u8 = 0;
+            'outer: for i in 0..10 { for j in 0..10 { if i * j == 12 { break 'outer; } n = n + 1; } }
+            return n;
+        }
+        const fn cont() -> u8 {
+            let mut n: u8 = 0;
+            'outer: for i in 0..4 { for j in 0..4 { if j == 2 { continue 'outer; } n = n + 1; } }
+            return n;
+        }
+        const fn val() -> u8 { let mut i: u8 = 0; let v: u8 = loop { i = i + 1; if i == 7 { break i * 2; } }; return v; }
+        const I: u8 = incl();
+        const BIG: u16 = big();
+        const LAB: u8 = lab();
+        const CONT: u8 = cont();
+        const VAL: u8 = val();
+        """)
+        assert (values['I'], values['BIG'], values['LAB'], values['CONT'], values['VAL']) == \
+            (4, 16384, 26, 8, 14)
+
+    def test_expressions_with_statements(self):
+        values = const_values("""
+        const fn tail() -> u8 { 5 }
+        const fn tail_if(x: u8) -> u8 { if x > 3 { 1 } else { 2 } }
+        const fn blk(x: u8) -> u8 { let y: u8 = if x > 3 { let z: u8 = x + 1; z } else { 0 }; return y; }
+        const fn arms(x: u8) -> u8 {
+            let mut r: u8 = 0;
+            match x { 0 => { r = 10; } 1..=4 => { r = 20; } _ => { r = 30; } };
+            return r;
+        }
+        const fn cond() -> u8 { let mut i: u8 = 0; while match i { 5 => false, _ => true } { i = i + 1; } return i; }
+        const T: u8 = tail();
+        const TI: u8 = tail_if(9);
+        const BL: u8 = blk(5);
+        const A0: u8 = arms(0);
+        const A3: u8 = arms(3);
+        const A9: u8 = arms(9);
+        const C: u8 = cond();
+        """)
+        assert (values['T'], values['TI'], values['BL']) == (5, 1, 6)
+        assert (values['A0'], values['A3'], values['A9'], values['C']) == (10, 20, 30, 5)
+
+    def test_cfg(self):
+        assert const_values("""
+            const fn f() -> u8 { if cfg!(debug) { return 1; } return 2; }
+            const R: u8 = f();
+            """)['R'] == 2
+
+
+class TestConstFnResolution:
+    """Const methods, forward references and typed results."""
+
+    def test_const_methods(self):
+        values = const_values("""
+        struct Foo { a: u8 }
+        struct Bar { a: u8 }
+        impl Foo { const fn k(x: u8) -> u8 { return x + 1; } }
+        impl Bar { const fn k(x: u8) -> u8 { return x + 2; } }
+        const C: u8 = Foo::k(1);
+        const C2: u8 = Bar::k(1);
+        """)
+        assert (values['C'], values['C2']) == (2, 3)
+
+    def test_forward_references(self):
+        values = const_values("""
+        const K: u8 = f();
+        const fn f() -> u8 { return M * 2; }
+        const M: u8 = 21;
+        const X1: u8 = Y1 + 1;
+        const Y1: u8 = 2;
+        """)
+        assert (values['K'], values['X1']) == (42, 3)
+
+    def test_const_cycle_reported(self):
+        with pytest.raises(HIRError, match="depends on itself"):
+            build_hir("""
+            const A1: u8 = B1 + 1;
+            const B1: u8 = A1;
+            """)
+
+    def test_enum_and_newtype_results(self):
+        source = """
+        enum Dir { N = 0, E, S, W }
+        struct Tile(u8);
+        const fn opp(d: Dir) -> Dir {
+            return match d { Dir::N => Dir::S, Dir::S => Dir::N, Dir::E => Dir::W, Dir::W => Dir::E };
+        }
+        const fn next(x: u8) -> Tile { return (x + 1) as Tile; }
+        const R: Dir = opp(Dir::E);
+        const T: Tile = next(2);
+        """
+        build_and_typecheck(source)
+        values = const_values(source)
+        assert (values['R'], values['T']) == (3, 3)
