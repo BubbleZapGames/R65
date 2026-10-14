@@ -957,13 +957,14 @@ class InstructionSelector:
         # Perform operation
         if op == '!':
             # Logical NOT: 1 if zero, else 0
+            was_zero, done = self._get_unique_label(), self._get_unique_label()
             self._emit_immediate(Opcode.CMP_IMMEDIATE, 0, "Check if zero")
-            self._emit_branch(Opcode.BEQ, "+", "Branch if zero")
+            self._emit_branch(Opcode.BEQ, was_zero, "Branch if zero")
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 0, "Was non-zero, result = 0")
-            self._emit_branch(Opcode.BRA, "++")
-            self.emitter.emit_label("+")
+            self._emit_branch(Opcode.BRA, done)
+            self.emitter.emit_label(was_zero)
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 1, "Was zero, result = 1")
-            self.emitter.emit_label("++")
+            self.emitter.emit_label(done)
         elif op == '~':
             # Bitwise NOT
             mask = 0xFFFF if is_u16 else 0xFF
@@ -1097,10 +1098,11 @@ class InstructionSelector:
         if is_u16 and count >= 8:
             self._emit_implied(Opcode.XBA, "Swap bytes (shift right 8)")
             self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Clear high byte")
+            positive = self._get_unique_label()
             self._emit_immediate(Opcode.BIT_IMMEDIATE, 0x0080, "Was the value negative?")
-            self._emit_branch(Opcode.BEQ, "+")
+            self._emit_branch(Opcode.BEQ, positive)
             self._emit_immediate(Opcode.ORA_IMMEDIATE, 0xFF00, "Sign-extend the high byte")
-            self.emitter.emit_label("+")
+            self.emitter.emit_label(positive)
             count -= 8
 
         for _ in range(count):
@@ -1147,11 +1149,12 @@ class InstructionSelector:
             self._emit_immediate(Opcode.LDA_IMMEDIATE, 0, "Quotient is 0")
             return
         sign = 0x8000 if is_u16 else 0x80
+        non_negative = self._get_unique_label()
         self._emit_immediate(Opcode.CMP_IMMEDIATE, sign, "Negative dividend?")
-        self._emit_branch(Opcode.BCC, "+")
+        self._emit_branch(Opcode.BCC, non_negative)
         self._emit_implied(Opcode.CLC)
         self._emit_immediate(Opcode.ADC_IMMEDIATE, value - 1, "Round toward zero")
-        self.emitter.emit_label("+")
+        self.emitter.emit_label(non_negative)
         self._emit_arithmetic_shift_right(shift_count, is_u16)
 
     # ========================================================================

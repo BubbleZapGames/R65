@@ -159,10 +159,11 @@ class TypeConversionSelector(BaseSelector):
         self.parent._ensure_m16_mode()
         self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend u8 to u16")
         if source_signed:
+            positive = self.parent._get_unique_label()
             self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate(0x0080), "Negative?")
-            self._emit_instr(Opcode.BCC, Address("+"), "Branch if positive")
+            self._emit_instr(Opcode.BCC, Address(positive), "Branch if positive")
             self._emit_instr(Opcode.ORA_IMMEDIATE, Immediate(0xFF00), "Sign-extend")
-            self._emit_label("+")
+            self._emit_label(positive)
         self._emit_instr(Opcode.TAX if reg == 'X' else Opcode.TAY)
 
     def _emit_zero_extension_through_a(self, src_operand, dest_loc) -> bool:
@@ -216,13 +217,14 @@ class TypeConversionSelector(BaseSelector):
 
         If high bit is set (negative), extend with 0xFF, else 0x00.
         """
+        positive, done = self.parent._get_unique_label(), self.parent._get_unique_label()
         self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x80), "Check sign bit")
-        self._emit_instr(Opcode.BEQ, Address("+"), "Branch if positive")
+        self._emit_instr(Opcode.BEQ, Address(positive), "Branch if positive")
         self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0xFF), "Negative: extend with $FF")
-        self._emit_instr(Opcode.BRA, Address("++"))
-        self._emit_label("+")
+        self._emit_instr(Opcode.BRA, Address(done))
+        self._emit_label(positive)
         self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(0x00), "Positive: extend with $00")
-        self._emit_label("++")
+        self._emit_label(done)
 
         # Store high byte
         # CRITICAL: Switch to 8-bit mode before storing high byte.

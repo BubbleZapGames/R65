@@ -134,6 +134,13 @@ class BranchFixup:
 
         for i, node in enumerate(nodes):
             if isinstance(node, Label):
+                # Every pass keys labels by name, so a name must be defined
+                # once. An assembler anonymous label (+, ++, -) is defined
+                # many times and means "the nearest one": a pass that looks
+                # it up by name finds the wrong one. Inline asm! stays raw
+                # text, so its anonymous labels never reach here.
+                compiler_assert(node.name not in label_indices,
+                                f"label '{node.name}' is defined more than once")
                 label_indices[node.name] = i
             elif isinstance(node, Instruction):
                 if node.opcode in ALL_BRANCH_OPCODES:
