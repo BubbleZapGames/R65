@@ -73,10 +73,7 @@ class TemplateManager:
             if item.name.startswith('.') and item.name != '.gitattributes':
                 continue
             if item.is_file():
-                # Read and substitute template variables
-                content = item.read_text(encoding='utf-8')
-                content = content.replace("{{PROJECT_NAME}}", project_name)
-                content = content.replace("{{PROJECT_NAME_UPPER}}", project_name.upper())
+                content = self._render(item, project_name)
 
                 # Determine destination based on file type
                 if item.suffix == '.md':
@@ -95,10 +92,25 @@ class TemplateManager:
 
                 dst_item.write_text(content, encoding='utf-8')
             elif item.is_dir():
-                # Recursively copy subdirectories
-                dst_subdir = dst / item.name
-                dst_subdir.mkdir(exist_ok=True)
-                self._copy_directory(item, dst_subdir, project_name)
+                # Subdirectories (tests/, ...) keep their layout in the project root
+                self._copy_tree(item, dst.parent / item.name, project_name)
+
+    def _copy_tree(self, src: Path, dst: Path, project_name: str):
+        """Copy a directory as-is, with template substitution."""
+        dst.mkdir(exist_ok=True)
+        for item in src.iterdir():
+            if item.name.startswith('.'):
+                continue
+            if item.is_file():
+                (dst / item.name).write_text(self._render(item, project_name), encoding='utf-8')
+            elif item.is_dir():
+                self._copy_tree(item, dst / item.name, project_name)
+
+    def _render(self, item: Path, project_name: str) -> str:
+        """Read a template file and substitute template variables."""
+        content = item.read_text(encoding='utf-8')
+        content = content.replace("{{PROJECT_NAME}}", project_name)
+        return content.replace("{{PROJECT_NAME_UPPER}}", project_name.upper())
 
     def _copy_stdlib(self, lib_dir: Path):
         """Copy standard library files to lib directory."""

@@ -11,6 +11,7 @@ boots the console, handles VBlank (NMI) and runs an empty game loop.
 │   ├── main.r65       # Reset and NMI handlers, game loop
 │   └── lib/           # Standard library (65816, sneslib, math)
 ├── build/             # Generated assembly, debug symbols and ROM
+├── tests/             # mesen-gdb test scripts (*.script)
 ├── Makefile           # Build system for WLA-DX
 └── r65-lint.toml      # Lint rules (r65c --lint)
 ```
@@ -25,6 +26,7 @@ PATH. `make install-deps` installs WLA-DX via Homebrew.
 ```bash
 make            # Build build/{{PROJECT_NAME_UPPER}}.smc
 make run        # Build and open in Mesen, higan or bsnes
+make tests      # Run tests/*.script with mesen-gdb, if installed
 make debug      # Clean build with verbose output
 make syntax     # Compile to assembly only (no ROM)
 make clean      # Remove build artifacts

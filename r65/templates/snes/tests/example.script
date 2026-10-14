@@ -1,0 +1,15 @@
+# Example mesen-gdb test script, run by `make tests` from the project root.
+# Each line is a debugger command; `assert` lines report PASS or FAIL.
+# Commands: https://github.com/BubbleZapGames/Mesen-GDB#test-scripts
+# Separate sections with `#` lines, not blank ones: a blank line repeats
+# the previous command.
+#
+until main 60       # boot runs snes_init(), then calls main(); give it 60 frames
+assert PC == main "Reached the game loop"
+assert cgram 0 == 0 "snes_init cleared CGRAM"
+#
+# Drive the pad and check your own variables, for example:
+#   input 1 right
+#   frames 10
+#   input 1 none
+#   assert PX:u16 == 130 "Player moved right"

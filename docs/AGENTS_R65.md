@@ -232,6 +232,7 @@ A project from `r65x init --platform snes my_game` has a Makefile:
 ```bash
 make            # src/main.r65 -> build/main.asm -> ROM (r65c -v --cfg snes --dbg -I src)
 make run        # build and launch the emulator
+make tests      # run tests/*.script with mesen-gdb (skipped if not installed)
 make syntax     # compile to assembly only
 make clean
 ```
@@ -239,6 +240,10 @@ make clean
 - **Lint.** `r65-lint.toml` (project root) configures `r65c --lint`. Its `C001`
   rule flags PPU registers written where they are unsafe during rendering.
 - **Debug symbols.** `--dbg` writes a `.dbg` file for source-level debugging in Mesen.
+- **Test scripts.** `tests/*.script` are mesen-gdb command files with `assert`
+  checks (`until main 60`, `input 1 right`, `frames 10`, `assert PX:u16 == 130`).
+  `make tests` runs each one headless. Separate sections with `#` lines, not
+  blank ones: a blank line repeats the previous command.
 - **Automated ROM tests.** [Mesen-GDB](https://github.com/BubbleZapGames/Mesen-GDB)
   runs a ROM headless with assertions:
   `mesen-gdb build/GAME.smc --batch --headless --break main --check-mem 0x10=0xFF --timeout 5000`

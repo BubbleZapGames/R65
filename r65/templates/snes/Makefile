@@ -72,6 +72,10 @@ run: $(ROM_FILE)
 		echo "Then run: make run"; \
 	fi
 
+# Run tests/*.script against the ROM with mesen-gdb (skipped if not installed)
+tests: $(ROM_FILE)
+	$(MAKE) -C tests ROM=../$(ROM_FILE)
+
 # Debug with verbose output
 debug: clean
 	$(MAKE) all R65C_FLAGS="-v"
@@ -87,6 +91,7 @@ help:
 	@echo "  clean        - Remove build artifacts"
 	@echo "  install-deps - Install WLA-DX dependencies"
 	@echo "  run          - Run ROM with emulator"
+	@echo "  tests        - Run tests/*.script with mesen-gdb"
 	@echo "  debug        - Build with verbose output"
 	@echo "  syntax       - Check syntax only"
 	@echo "  help         - Show this help"
@@ -97,4 +102,4 @@ debug-vars:
 	@echo "MAIN_SRC: $(MAIN_SRC)"
 	@echo "ROM_FILE: $(ROM_FILE)"
 
-.PHONY: all clean install-deps run debug syntax r65x-build help debug-vars
+.PHONY: all clean install-deps run tests debug syntax r65x-build help debug-vars
