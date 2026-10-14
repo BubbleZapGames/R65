@@ -2,7 +2,7 @@
 
 Read this before writing R65 code. It covers the language model, a complete
 working program, the Rust habits that fail, the standard library's real API,
-and how to build and test a ROM. Full reference: <https://r65lang.dev/docs>.
+and how to build and test a ROM. Full reference: <https://r65.dev/docs>.
 
 Every `rust` block below is compiled by the R65 test suite
 (`r65/tests/compiler/test_agents_primer.py`). If you copy it, it builds.
@@ -303,7 +303,7 @@ fn read_pad_bad() {
 
 ## 8. Where to read more
 
-Reference: <https://r65lang.dev/docs>
+Reference: <https://r65.dev/docs>
 
 | Question | Page |
 |---|---|
@@ -321,5 +321,5 @@ Reference: <https://r65lang.dev/docs>
 | Stdlib built-ins, `asm!` | `platform/builtin_library`, `platform/assembly-code` |
 | `r65c` flags, `r65x` tools, ROM header | `platform/compiler`, `platform/tools`, `platform/snes-rom-header` |
 
-Prefix each page with `https://r65lang.dev/docs/`. In the R65 repo, `docs/*.md`
+Prefix each page with `https://r65.dev/docs/`. In the R65 repo, `docs/*.md`
 holds the design documents behind the language.

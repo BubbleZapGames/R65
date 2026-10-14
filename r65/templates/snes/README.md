@@ -83,7 +83,7 @@ fn wait_for_vblank() {
 }
 ```
 
-The full language reference is at [r65lang.dev](https://r65lang.dev/docs).
+The full language reference is at [r65.dev](https://r65.dev/docs).
 
 ## Writing R65 with an AI Agent
 
