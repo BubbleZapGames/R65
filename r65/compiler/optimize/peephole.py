@@ -2737,6 +2737,11 @@ class PeepholeOptimizer:
         Opcode.STA_ABSOLUTE_X: Opcode.STZ_ABSOLUTE_X,
     }
 
+    # Instructions that replace A without reading it first. Most writers of A
+    # also read it (AND, ADC, ASL A, XBA, ...), so after one of those the
+    # zero the LDA put in A is still needed.
+    _LOADS_A_WITHOUT_READING = frozenset({'LDA', 'PLA', 'TXA', 'TYA', 'TDC', 'TSC'})
+
     def _convert_zero_stores_to_stz(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """
         Convert LDA #$00 / STA addr sequences to STZ addr.
@@ -2795,7 +2800,7 @@ class PeepholeOptimizer:
                         k += 1
                         continue
                     if isinstance(n, Instruction):
-                        if n.opcode in MODIFIES_A_OPCODES:
+                        if mnemonic(n.opcode) in self._LOADS_A_WITHOUT_READING:
                             a_needed = False  # A is overwritten
                             break
                         # SEP/REP don't use A's value, skip them

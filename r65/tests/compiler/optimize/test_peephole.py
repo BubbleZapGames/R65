@@ -511,6 +511,35 @@ class TestTrackedLoadForgetsWrittenMemory:
         assert len(result) == 2
 
 
+class TestStzKeepsZeroThatIsRead:
+    """`LDA #0; STA x` becomes `STZ x`, and the LDA may go only if A is
+    replaced before it is read. Most writers of A read it first."""
+
+    @pytest.mark.parametrize("reader", [
+        Instruction(opcode=Opcode.XBA),
+        Instruction(opcode=Opcode.AND_IMMEDIATE, operand=Immediate(0xFF)),
+        Instruction(opcode=Opcode.ASL),
+        Instruction(opcode=Opcode.ADC_IMMEDIATE, operand=Immediate(1)),
+    ], ids=lambda i: i.opcode.name)
+    def test_lda_kept(self, reader):
+        nodes = [
+            Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(0)),
+            Instruction(opcode=Opcode.STA_ABSOLUTE, operand=Address(0x0300)),
+            reader,
+        ]
+        result = PeepholeOptimizer()._convert_zero_stores_to_stz(nodes)
+        assert [n.opcode for n in result][:2] == [Opcode.LDA_IMMEDIATE, Opcode.STZ_ABSOLUTE]
+
+    def test_lda_dropped_before_reload(self):
+        nodes = [
+            Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(0)),
+            Instruction(opcode=Opcode.STA_ABSOLUTE, operand=Address(0x0300)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        result = PeepholeOptimizer()._convert_zero_stores_to_stz(nodes)
+        assert [n.opcode for n in result] == [Opcode.STZ_ABSOLUTE, Opcode.LDA_DP]
+
+
 class TestIncFoldKeepsCarryForIndexedRotate:
     """`CLC; ADC #1` folds to `INC A` only when nothing reads its carry-out.
     The carry readers were listed by opcode, and `ROL dp,X` was missing."""
