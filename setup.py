@@ -32,11 +32,12 @@ setup(
     packages=find_packages(exclude=["tests", "tests.*", "docs", "examples"]),
 
     # Python version requirement
-    python_requires=">=3.8",
+    python_requires=">=3.10",
 
     # Dependencies
     install_requires=[
         "lark>=1.1.0",  # Parser generator
+        "tomli>=1.1.0; python_version < '3.11'",  # r65-lint.toml on Python 3.10
     ],
 
     # Development dependencies
@@ -75,10 +76,9 @@ setup(
         "Topic :: Software Development :: Compilers",
         "Topic :: Software Development :: Embedded Systems",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Operating System :: OS Independent",
     ],
 

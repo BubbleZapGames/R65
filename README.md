@@ -26,7 +26,7 @@ fn main() -> ! {
 
 ### Installation
 
-Requires Python 3.8+ (the only dependency is `lark`).
+Requires Python 3.10+ (dependencies: `lark`, plus `tomli` on Python 3.10).
 
 ```bash
 git clone https://github.com/BubbleZapGames/R65.git

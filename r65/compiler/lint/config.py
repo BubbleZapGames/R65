@@ -31,7 +31,10 @@ tables are always enabled — declaring a custom rule implicitly activates it.
 
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    import tomli as tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Set
