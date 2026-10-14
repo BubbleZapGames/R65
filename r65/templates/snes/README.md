@@ -1,54 +1,57 @@
 # {{PROJECT_NAME}}
 
-A new SNES project created with R65.
+A new SNES project created with R65. Start editing `src/main.r65`: it already
+boots the console, handles VBlank (NMI) and runs an empty game loop.
 
 ## Project Structure
 
 ```
 {{PROJECT_NAME}}/
 ├── src/
-│   └── main.r65       # Main program entry point
+│   ├── main.r65       # Reset and NMI handlers, game loop
+│   └── lib/           # Standard library (65816, sneslib, math)
+├── build/             # Generated assembly, debug symbols and ROM
 ├── Makefile           # Build system for WLA-DX
-└── build/             # Generated assembly and ROM files
+└── r65-lint.toml      # Lint rules (r65c --lint)
 ```
 
 ## Getting Started
 
+You need the R65 compiler (`r65c`) and WLA-DX (`wla-65816`, `wlalink`) on your
+PATH. `make install-deps` installs WLA-DX via Homebrew.
+
 ### Build the Project
 
 ```bash
-# Build ROM
-make
-
-# Build with verbose output
-make debug
-
-# Clean build artifacts
-make clean
-
-# Check syntax only (no ROM generation)
-make syntax
+make            # Build build/{{PROJECT_NAME_UPPER}}.smc
+make run        # Build and open in Mesen, higan or bsnes
+make debug      # Clean build with verbose output
+make syntax     # Compile to assembly only (no ROM)
+make clean      # Remove build artifacts
 ```
 
 ### Manual Compilation
 
 ```bash
-# Compile R65 to assembly
-r65c src/main.r65 -o build/main.asm
+# Compile R65 to assembly (--dbg also writes symbols for Mesen)
+r65c src/main.r65 -o build/main.asm --cfg snes --dbg -I src
 
 # Assemble with WLA-DX
-wla-65816 -o build/main.o build/main.asm
+wla-65816 -I src -o build/main.o build/main.asm
 
 # Link to ROM
-wlalink linkfile.txt build/game.smc
+printf '[objects]\nbuild/main.o\n' > linkfile.txt
+wlalink -S linkfile.txt build/{{PROJECT_NAME_UPPER}}.smc
 ```
 
 ## R65 Language Features
 
-- **Hardware-transparent**: Direct access to SNES registers (A, X, Y, etc.)
-- **Type safety**: Catch bank overflow and mode errors at compile time
-- **Zero-cost abstractions**: High-level code compiles to efficient assembly
-- **Rust-inspired syntax**: Modern, clean language design
+- **Hardware-transparent**: CPU registers (A, X, Y, ...), banks and hardware
+  registers are part of the language
+- **Type safety**: Mode, size and bank mistakes are compile errors
+- **Visible cost**: Every construct compiles to the instructions you would
+  write by hand; expensive operations are explicit library calls
+- **Rust-inspired syntax**: Structs, enums, `match`, `impl` blocks and macros
 
 ### Quick Syntax Examples
 
@@ -77,6 +80,8 @@ fn wait_for_vblank() {
     }
 }
 ```
+
+The full language reference is at [r65lang.dev](https://r65lang.dev/docs).
 
 ## Writing R65 with an AI Agent
 
