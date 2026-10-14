@@ -242,8 +242,7 @@ make clean
 - **Debug symbols.** `--dbg` writes a `.dbg` file for source-level debugging in Mesen.
 - **Test scripts.** `tests/*.script` are mesen-gdb command files with `assert`
   checks (`until main 60`, `input 1 right`, `frames 10`, `assert PX:u16 == 130`).
-  `make tests` runs each one headless. Separate sections with `#` lines, not
-  blank ones: a blank line repeats the previous command.
+  `make tests` runs each one headless.
 - **Automated ROM tests.** [Mesen-GDB](https://github.com/BubbleZapGames/Mesen-GDB)
   runs a ROM headless with assertions:
   `mesen-gdb build/GAME.smc --batch --headless --break main --check-mem 0x10=0xFF --timeout 5000`
