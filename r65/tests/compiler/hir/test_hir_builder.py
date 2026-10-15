@@ -644,6 +644,23 @@ fn check() {
         hir = build_hir(source)
         # Should build without error - const reference resolved
 
+    @pytest.mark.parametrize("use", [
+        "#[lowram] static mut CUR: Dir;",
+        "static TABLE: [Dir; 2] = [Dir::East, Dir::West];",
+        "const START: Dir = Dir::East;",
+        "#[lowram] static mut P: Player;",
+        "#[lowram] static mut POOL: [Pool; 4];",
+        "impl Player { fn x(*self) -> u8 { return self.x; } }",
+    ])
+    def test_type_named_above_its_declaration(self, use):
+        """Types are declared before the items that resolve one in pass 1."""
+        build_hir(use + """
+enum Dir { North, East, South, West }
+struct Player { x: u8 }
+#[soa]
+struct Pool { dir: Dir, hp: u8 }
+""")
+
     def test_undefined_identifier_error(self):
         """Test error on undefined identifier."""
         source = """

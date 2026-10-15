@@ -168,8 +168,21 @@ class HIRBuilder:
         # them so const evaluation can reach one that pass 1 has not declared.
         self._register_forward_consts(ast_program)
 
-        # Pass 1: Declare all top-level symbols (filtered by cfg)
+        # Pass 1: Declare all top-level symbols (filtered by cfg). Statics,
+        # consts, newtypes, aliases and impls resolve a type as they are
+        # declared, so the types go first and any of them may be named above
+        # its declaration: structs, enums and traits by name, then newtypes
+        # and aliases, which resolve a type themselves.
+        type_groups = ((ast.StructDecl, ast.EnumDecl, ast.TraitDecl),
+                       (ast.NewtypeDecl, ast.TypeAlias))
+        for group in type_groups:
+            for decl in self._items_in_bank_context(ast_program):
+                if isinstance(decl, group) and self._should_include_declaration(decl):
+                    self._declare_toplevel(decl)
+        type_decls = tuple(t for group in type_groups for t in group)
         for decl in self._items_in_bank_context(ast_program):
+            if isinstance(decl, type_decls):
+                continue
             if isinstance(decl, ast.StackDirective):
                 stack_attr = self._stack_attribute(decl)
             elif isinstance(decl, ast.SnesRomDirective):
