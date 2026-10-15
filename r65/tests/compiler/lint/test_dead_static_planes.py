@@ -92,6 +92,17 @@ def test_an_untouched_pool_is_still_reported():
     ''', "unit_kind") == ["`static mut unit_kind` is written but never read"]
 
 
+def test_scratch_register_is_not_reported():
+    """A `register` static is the compiler's scratch pool: generated code
+    reads it, the source never names it."""
+    assert _dead('''
+        #[zeropage(0x30, register)]
+        static mut SCRATCH0: u8;
+        #[entry]
+        fn main() {}
+    ''', "SCRATCH0") == []
+
+
 class TestUnusedParamIgnoresSelf:
     """L008 does not flag an unread receiver.
 

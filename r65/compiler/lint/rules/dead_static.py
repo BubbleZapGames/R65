@@ -12,6 +12,8 @@ class DeadStaticMut(LintRule):
     Skips ``#[hw]`` statics: hardware registers are memory-mapped I/O, not
     storage, so "written but never read" is the common legitimate case
     (writing a PPU control register never has a corresponding read).
+    Skips ``register`` statics (``#[zeropage(0x30, register)]``) too: they are
+    the compiler's scratch pool, read by generated code, not by name.
 
     Collection happens during the walk (``visit_static_decl`` records each
     mutable static, ``visit_identifier`` records reads of any symbol) and the
@@ -35,6 +37,8 @@ class DeadStaticMut(LintRule):
             return  # an #[soa] plane is referenced through its parent, never by name
         if decl.storage_attr is not None and decl.storage_attr.storage_kind == StorageKind.HW:
             return  # Hardware registers are not storage.
+        if decl.storage_attr is not None and decl.storage_attr.is_register:
+            return  # Scratch registers are read by generated code, not by name.
         self._declared[id(decl.symbol)] = (decl.name, decl.source_loc)
         # A planed parent — an `#[soa]` struct pool or a tagged enum pool — is
         # never named in a read: `POOL[i].hp` and `match POOL[i]` are both
