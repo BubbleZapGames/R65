@@ -1,5 +1,6 @@
 """L004: missed_shift — warn when `x * C` or `x / C` uses a power-of-2 constant."""
 
+from r65.compiler.codegen.type_utils import is_signed_scalar
 from r65.compiler.hir import HIRBinaryOp, HIRIntegerLiteral
 from r65.compiler.lint.rule import LintContext, LintRule
 
@@ -18,6 +19,9 @@ class MissedShift(LintRule):
     constants for a reason; making that restriction visible at the source
     level via ``<<``/``>>`` documents the hardware intent and matches the
     generated ASL/LSR directly.
+
+    Signed division is left alone: `/` rounds toward zero and `>>` rounds
+    down, so `-7 / 2` is -3 but `-7 >> 1` is -4.
     """
 
     def __init__(self):
@@ -29,6 +33,8 @@ class MissedShift(LintRule):
 
     def visit_binary_op(self, expr: HIRBinaryOp, ctx: LintContext) -> None:
         if expr.op not in ("*", "/"):
+            return
+        if expr.op == "/" and is_signed_scalar(getattr(expr.left, 'expr_type', None)):
             return
         const_literal = None
         if isinstance(expr.right, HIRIntegerLiteral):
