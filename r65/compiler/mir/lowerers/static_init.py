@@ -312,7 +312,13 @@ class StaticInitLowerer:
                 source_loc=self.builder._current_source_loc
             )
 
-        label = getattr(symbol, 'rom_label', None) or f"__{target.name}_data"
+        # An include_bytes! static is labelled `NAME_data` when codegen emits
+        # its .INCBIN, after this runs; every other ROM static `__NAME_data`.
+        definition = getattr(symbol, 'definition', None)
+        if isinstance(getattr(definition, 'initializer', None), HIRIncludeBytesExpr):
+            label = f"{target.name}_data"
+        else:
+            label = getattr(symbol, 'rom_label', None) or f"__{target.name}_data"
 
         parts = ['low', 'high', 'bank']
         if size < 2 or size > 3:
