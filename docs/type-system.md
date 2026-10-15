@@ -437,7 +437,9 @@ let b: u16 = 1000;
 let c: u16 = a + b;  // a is implicitly promoted to u16
 ```
 
-This applies to arithmetic, bitwise, and comparison operators.
+This applies to arithmetic, bitwise, and comparison operators. An ordering
+comparison (`<`, `<=`, `>`, `>=`) between a signed and an unsigned operand is
+an error instead: cast one side with `as` so both share a signedness.
 
 The same cast is inserted wherever a one-byte value is stored into a two-byte
 place: an assignment, a `let`, a `return`, a struct-literal field, an array-literal

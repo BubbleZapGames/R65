@@ -6,10 +6,13 @@ When unsuffixed integer literals produce a compile-time result that overflows
 the inferred type, the type checker should promote operand and result types
 to u16/i16 automatically.
 """
+import pytest
+
 from r65.compiler.frontend import Parser
 from r65.compiler.frontend.macros import expand_macros
 from r65.compiler.hir import HIRBuilder
 from r65.compiler.typeck import TypeChecker
+from r65.compiler.typeck.errors import TypeCheckError
 
 
 def build_and_typecheck(source: str, expand: bool = False):
@@ -129,3 +132,23 @@ class TestLiteralAdoptsOperandType:
     def test_literal_that_does_not_fit_keeps_its_type(self):
         """`i8 & 0xFF` still pairs i8 with u8 — 0xFF is not an i8."""
         assert self._rhs_type("#[zeropage]\nstatic mut V: i8;", "V = V & 0xFF;") == 'u8'
+
+
+class TestMixedSignOrdering:
+    """`<` between a signed and an unsigned operand is rejected: promotion
+    would compare both unsigned, so an i8 of -1 is not less than a u8 of 5."""
+
+    STATICS = ("#[zeropage]\nstatic mut SV: i8;\n#[zeropage]\nstatic mut UV: u8;\n"
+               "#[zeropage]\nstatic mut WV: u16;\n#[zeropage]\nstatic mut OK: bool;")
+
+    def _check(self, cond):
+        build_and_typecheck(f"{self.STATICS}\nfn main() {{ OK = {cond}; }}")
+
+    def test_signed_with_unsigned_is_rejected(self):
+        for cond in ("SV < UV", "SV >= WV", "UV > SV"):
+            with pytest.raises(TypeCheckError, match="cannot compare (un)?signed .* with (un)?signed"):
+                self._check(cond)
+
+    def test_literals_casts_and_equality_pass(self):
+        for cond in ("SV < 5", "SV < -1", "5 > SV", "(SV as i16) < (UV as i16)", "SV == UV"):
+            self._check(cond)

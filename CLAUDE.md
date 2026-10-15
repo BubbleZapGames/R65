@@ -129,7 +129,7 @@ No built-in error handling. Use return codes, global error flags, or sentinel va
 
 ### Type Conversions
 
-Integers convert implicitly where a value flows into a place (`let`, assignment, `return`, arguments): widening zero/sign-extends, narrowing truncates. In mixed-size expressions the narrower operand is widened. Everything else — pointers, newtypes out of their payload, enums — needs an explicit `as`, which also states intent for integer conversions.
+Integers convert implicitly where a value flows into a place (`let`, assignment, `return`, arguments): widening zero/sign-extends, narrowing truncates. In mixed-size expressions the narrower operand is widened; `<`, `<=`, `>`, `>=` between a signed and an unsigned operand is an error. Everything else — pointers, newtypes out of their payload, enums — needs an explicit `as`, which also states intent for integer conversions.
 
 | Conversion | Behavior | Cost |
 |------------|----------|------|

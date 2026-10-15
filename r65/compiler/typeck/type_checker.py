@@ -1429,6 +1429,31 @@ class TypeChecker:
         return left_type, right_type
 
     @staticmethod
+    def _reject_mixed_sign_ordering(expr: HIRBinaryOp, left_type: TypeInfo,
+                                    right_type: TypeInfo) -> None:
+        """`<` between a signed and an unsigned operand has no right answer.
+
+        Promotion settles on one compare for both: at equal width the unsigned
+        one, so `-1 < 5` is false for an i8 and a u8; widening an i8 to u16
+        makes -1 0xFFFF. A literal never trips this, having already taken the
+        other operand's type.
+        """
+        left, right = strip_newtype(left_type), strip_newtype(right_type)
+        if not (isinstance(left, BasicTypeInfo) and isinstance(right, BasicTypeInfo)
+                and TypeUtils.is_integer_type(left) and TypeUtils.is_integer_type(right)):
+            return
+        signed = ('i8', 'i16')
+        if (left.name in signed) == (right.name in signed):
+            return
+        def kind(t):
+            return f"{'signed' if t.name in signed else 'unsigned'} {t.name}"
+        raise TypeCheckError(
+            f"cannot compare {kind(left)} with {kind(right)} using '{expr.op}'",
+            source_loc=expr.source_loc,
+            hint="cast one side with `as` so both have the same signedness",
+        )
+
+    @staticmethod
     def _widen_operands(expr: HIRBinaryOp, left_type: TypeInfo,
                         right_type: TypeInfo, promoted_type: TypeInfo) -> None:
         """Bring both operands of `expr` to `promoted_type`.
@@ -1599,6 +1624,8 @@ class TypeChecker:
                 )
 
             left_type, right_type = self._literal_adopts_operand_type(expr, left_type, right_type)
+            if expr.op in ('<', '<=', '>', '>='):
+                self._reject_mixed_sign_ordering(expr, left_type, right_type)
 
             # Promote mismatched integer types (e.g., u16 >= u8 -> u16 >= u16)
             if not TypeUtils.types_equal(left_type, right_type):

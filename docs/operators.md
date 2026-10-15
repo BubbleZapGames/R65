@@ -622,6 +622,10 @@ if a != b { }
 **Type Rules**:
 - Both operands must be the same type
 - Signed vs unsigned matters: `i8 < i8` vs `u8 < u8`
+- A signed and an unsigned operand is a type error for `<`, `<=`, `>`
+  and `>=` (`i8 < u8`, `i8 < u16`): no single compare is right for both,
+  and `-1 < 5` would come out false. Cast one side with `as`. An unsuffixed
+  literal takes the other operand's type, so `s < 5` and `s < -1` are fine
 - Result type: `bool`
 
 **Assembly Mapping**:
