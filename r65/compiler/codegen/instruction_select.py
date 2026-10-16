@@ -1085,33 +1085,34 @@ class InstructionSelector:
         """Shift A right by *count*, copying the sign bit into the vacated
         bits (i8/i16 `>>`, rounding toward negative infinity).
 
-        The 65816 has no arithmetic shift, so each step is `CMP #$80` (carry
-        = the sign bit, since A >= $80 exactly when it is set) and `ROR A`,
-        which rotates that carry back in at the top: 4 cycles a bit against
-        LSR's 2. A count of the width or more leaves only the sign, which is
-        what width - 1 steps produce.
+        The 65816 has no arithmetic shift. One bit is `CMP #$80` (carry = the
+        sign bit, since A >= $80 exactly when it is set) and `ROR A`, which
+        rotates that carry back in at the top: 4-5 cycles a bit. Three or
+        more shift logically and then put the sign back:
 
-        A 16-bit count of 8 or more starts with XBA, the byte swap that is a
-        shift by 8, and then sign-extends the new low byte into the high one
-        before the remaining steps.
+            LSR x n / EOR #m / SEC / SBC #m     ; m = the sign bit's new place
+
+        which flips the old sign bit and subtracts its weight, filling every
+        bit above it with copies of it - 2 cycles a bit plus 6-7 once. A
+        16-bit count of 8 or more starts the logical shift with XBA and an
+        AND, the byte swap that is a shift by 8. A count of the width or
+        more leaves only the sign, which is what width - 1 produces.
         """
         bit_width = 16 if is_u16 else 8
         sign = 0x8000 if is_u16 else 0x80
         count = min(count, bit_width - 1)
 
-        if is_u16 and count >= 8:
-            self._emit_implied(Opcode.XBA, "Swap bytes (shift right 8)")
-            self._emit_immediate(Opcode.AND_IMMEDIATE, 0x00FF, "Clear high byte")
-            positive = self._get_unique_label()
-            self._emit_immediate(Opcode.BIT_IMMEDIATE, 0x0080, "Was the value negative?")
-            self._emit_branch(Opcode.BEQ, positive)
-            self._emit_immediate(Opcode.ORA_IMMEDIATE, 0xFF00, "Sign-extend the high byte")
-            self.emitter.emit_label(positive)
-            count -= 8
+        if count < 3:
+            for _ in range(count):
+                self._emit_immediate(Opcode.CMP_IMMEDIATE, sign, "Carry = sign bit")
+                self._emit_implied(Opcode.ROR, "Arithmetic shift right")
+            return
 
-        for _ in range(count):
-            self._emit_immediate(Opcode.CMP_IMMEDIATE, sign, "Carry = sign bit")
-            self._emit_implied(Opcode.ROR, "Arithmetic shift right")
+        self._emit_shift_by(count, is_u16, left=False)
+        moved_sign = sign >> count
+        self._emit_immediate(Opcode.EOR_IMMEDIATE, moved_sign, "Sign-extend: flip the old sign bit")
+        self._emit_implied(Opcode.SEC)
+        self._emit_immediate(Opcode.SBC_IMMEDIATE, moved_sign, "... and subtract its weight")
 
     def _emit_multiply(self, right_operand, is_u16: bool):
         """Emit multiply by power of 2 using ASL instructions."""
