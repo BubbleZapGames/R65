@@ -89,7 +89,7 @@ double!(x + 1)       // Expands to: (x + 1) + (x + 1)
 double!(arr[i])      // Expands to: (arr[i]) + (arr[i])
 ```
 
-**Note**: Expressions are wrapped in parentheses during expansion to preserve precedence.
+**Note**: Expressions of more than one token are wrapped in parentheses during expansion to preserve precedence.
 
 **Warning**: Expression is evaluated multiple times if used multiple times in body. For side-effect-free expressions only, or use a local binding.
 
@@ -462,6 +462,8 @@ double!(1 + 2)
 // With parens: (1 + 2) * 2 = 6 (correct)
 // Expands to: (1 + 2) * 2
 ```
+
+A single-token argument (`x`, `5`, `"text"`) needs no grouping and is substituted as is. A parenthesized argument still works as an assignment target: `$dst = 0` with `buf[i]` expands to `(buf[i]) = 0`, which is valid.
 
 ### Identifier Concatenation
 

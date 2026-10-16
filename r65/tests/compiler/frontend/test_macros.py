@@ -549,6 +549,34 @@ class TestMacroExpansion:
         assert isinstance(stmt.expr.value, ast.IntegerLiteral)
         assert stmt.expr.value.value == 42
 
+    def test_expr_argument_keeps_its_grouping(self):
+        """`$e * 2` with `x + 1` is `(x + 1) * 2`, not `x + 1 * 2`."""
+        source = """
+        macro_rules! double($e:expr) { $e * 2 }
+
+        fn main() {
+            y = double!(x + 1);
+        }
+        """
+        expanded = expand_macros(parse(source, "<test>"))
+        value = expanded.items[0].body.statements[0].expr.value
+        assert isinstance(value, ast.BinaryOp) and value.op == '*'
+        assert isinstance(value.left, ast.BinaryOp) and value.left.op == '+'
+
+    def test_expr_argument_as_assignment_target(self):
+        """A parenthesized `expr` still works on the left of `=`."""
+        source = """
+        macro_rules! put($dst:expr, $v:expr) { $dst = $v; }
+
+        fn main() {
+            put!(buf[i + 1], 7);
+        }
+        """
+        expanded = expand_macros(parse(source, "<test>"))
+        stmt = expanded.items[0].body.statements[0]
+        assert isinstance(stmt.expr, ast.Assignment)
+        assert isinstance(stmt.expr.target, ast.ArrayIndex)
+
     def test_nested_macro_expansion(self):
         """Test nested macro calls."""
         source = """

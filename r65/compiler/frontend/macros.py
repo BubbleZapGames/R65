@@ -746,8 +746,9 @@ class MacroExpander:
                     if not self._arg_matches_fragment(arg, rep.fragment_type):
                         return None, f"argument ('{arg}') is not a '{rep.fragment_type}'"
             for param, arg in zip(simple_params, args[:n_simple]):
-                bindings[param.name] = [arg]
-            bindings[rep.name] = args[n_simple:]
+                bindings[param.name] = [self._bind_arg(arg, param.fragment_type)]
+            bindings[rep.name] = [self._bind_arg(arg, rep.fragment_type)
+                                  for arg in args[n_simple:]]
         else:
             if len(args) != len(simple_params):
                 return None, f"expects {len(simple_params)} arguments, got {len(args)}"
@@ -756,9 +757,21 @@ class MacroExpander:
                     if not self._arg_matches_fragment(arg, param.fragment_type):
                         return None, f"argument {i + 1} ('{arg}') is not a '{param.fragment_type}'"
             for param, arg in zip(simple_params, args):
-                bindings[param.name] = [arg]
+                bindings[param.name] = [self._bind_arg(arg, param.fragment_type)]
 
         return bindings, None
+
+    @staticmethod
+    def _bind_arg(arg: str, fragment_type: str) -> str:
+        """The text substituted for an argument. An `expr` of more than one
+        token goes in parentheses, so `$e * 2` with `a + 1` is `(a + 1) * 2`;
+        a single token, a string or char literal among them, needs none."""
+        if fragment_type != 'expr':
+            return arg
+        text = arg.strip()
+        if len(text.split()) == 1 or (len(text) >= 2 and text[0] in '"\'' and text[-1] == text[0]):
+            return arg
+        return f"( {text} )"
 
     def _select_arm(
         self,
