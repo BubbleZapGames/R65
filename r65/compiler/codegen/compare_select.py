@@ -117,6 +117,14 @@ class CompareSelector(BaseSelector):
         read twice; a hardware register is read once into scratch first.
         When the compare loaded A itself, nothing reads it afterwards and
         the restore (PHP..PLP, ~14 cycles) is skipped.
+
+        Against a constant there is no V to read at all. Flipping the sign
+        bit of both sides turns the signed order into the unsigned one, so
+
+            EOR #sign / CMP #(rhs ^ sign)     ; C, Z of an unsigned compare
+
+        and the branch uses BCC/BCS/BEQ (`_compare_biased`). A is put back
+        with a second EOR, under PHP/PLP because EOR changes Z.
         """
         from r65.compiler.codegen.asm_nodes import StackOffset
 
@@ -127,6 +135,21 @@ class CompareSelector(BaseSelector):
             if self.emitter.nz_valid_for != 'A':
                 self._emit_instr(Opcode.CMP_IMMEDIATE, operand)
             self._emit_instr(Opcode.CLV, comment="Signed compare with 0: no overflow")
+            return
+
+        width = self.emitter.get_accu_mode()
+        if (is_immediate and isinstance(operand, Immediate)
+                and isinstance(operand.value, int) and width in (8, 16)):
+            sign, mask = (0x8000, 0xFFFF) if width == 16 else (0x80, 0xFF)
+            self._emit_instr(Opcode.EOR_IMMEDIATE, Immediate(sign),
+                             "Signed compare: flip the sign bit")
+            self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate((operand.value & mask) ^ sign),
+                             "... so an unsigned compare orders it")
+            if restore_a:
+                self._emit_instr(Opcode.PHP, comment="Keep the compare's flags")
+                self._emit_instr(Opcode.EOR_IMMEDIATE, Immediate(sign), "A = lhs")
+                self._emit_instr(Opcode.PLP)
+            self.parent._compare_biased = True
             return
 
         if (not is_immediate and not isinstance(operand, (Address, StackOffset))
@@ -239,6 +262,7 @@ class CompareSelector(BaseSelector):
         # Store type info for subsequent CondBranch (for signed/unsigned detection)
         self.parent.last_comparison_type = instr.type_info
         self.parent._comparison_reversed = False
+        self.parent._compare_biased = False
         # Track whether the right operand is immediate 0 for branch optimization
         self.parent._compare_rhs_is_zero = (
             isinstance(instr.right, MIRImmediate) and instr.right.value == 0

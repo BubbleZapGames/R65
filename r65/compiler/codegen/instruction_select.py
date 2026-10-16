@@ -113,6 +113,8 @@ class InstructionSelector:
         self.last_comparison_type = None
         # Track if comparison operands were swapped (for reversed flag interpretation)
         self._comparison_reversed = False
+        # Whether a signed compare against a constant was biased to unsigned
+        self._compare_biased = False
 
         # Hardware register state tracker for optimization
         self.hw_tracker = HardwareRegisterTracker()

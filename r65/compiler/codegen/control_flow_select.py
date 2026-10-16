@@ -288,7 +288,11 @@ class ControlFlowInstructionSelector(BaseSelector):
         Args:
             instr: CondBranch instruction
         """
-        is_signed = self._is_signed_comparison()
+        # A signed compare against a constant was biased into an unsigned one
+        # (CompareSelector._emit_signed_cmp): its flags take unsigned branches.
+        is_signed = (self._is_signed_comparison()
+                     and not getattr(self.parent, '_compare_biased', False))
+        self.parent._compare_biased = False
 
         # Consume compare-against-zero flag before it goes stale
         compare_rhs_zero = getattr(self.parent, '_compare_rhs_is_zero', False)
@@ -421,6 +425,8 @@ class ControlFlowInstructionSelector(BaseSelector):
     #   with no A touch. That needs V from the subtraction itself, and
     #   CMP/CPX/CPY never set V, so a signed compare is emitted as SEC/SBC
     #   with A restored under PHP/PLP (CompareSelector._emit_signed_cmp).
+    #   Against a constant it is biased to an unsigned compare instead and
+    #   branches with the unsigned helpers below.
 
     def _emit_less_than_branch(self, true_target: str, false_target: str, is_signed: bool):
         """Emit branch for < comparison."""

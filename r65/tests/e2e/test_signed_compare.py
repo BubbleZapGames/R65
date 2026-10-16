@@ -137,3 +137,69 @@ fn main() {{
         src = self.SRC.format(cur=lit(cur), tgt=lit(tgt), step=lit(step))
         r = e2e.run(src, ExpectedState(memory={OUT: [expected & 0xFF, (expected >> 8) & 0xFF]}))
         assert r.success, f"approach({cur}, {tgt}, {step}): {r.error} {r.failures}"
+
+
+def const_program(ty: str, a: str, k: str, op: str) -> str:
+    """`a op K` with K a literal, so the compare sees an immediate; V is
+    set by an overflowing add just before it."""
+    return f'''
+#[zeropage(0x10)] static mut OUT: u8;
+#[zeropage(0x12)] static mut A_IN: {ty};
+#[zeropage(0x16)] static mut POISON: i16;
+#[zeropage(0x18)] static mut SINK: i16;
+#[entry]
+fn main() {{
+    A_IN = {a};
+    POISON = 30000;
+    let a: {ty} = A_IN;
+    SINK = POISON + POISON;
+    if a {op} (({k}) as {ty}) {{ OUT = 1; }} else {{ OUT = 2; }}
+}}
+'''
+
+
+def edge_lit(v: int) -> str:
+    """A literal for *v* that never spells an out-of-range magnitude."""
+    if v in (-128, -32768):
+        return f"0 - {-v - 1} - 1"
+    return lit(v)
+
+
+class TestConstantRhs:
+    """Against a constant the compare is biased (`EOR #sign; CMP #k^sign`)
+    to an unsigned one, so no V is read: check the order at the edges."""
+
+    @pytest.mark.parametrize("op", ["<", "<=", ">", ">="])
+    @pytest.mark.parametrize("k", [1, -1, 127, -128])
+    @pytest.mark.parametrize("a", [-128, -1, 0, 1, 127])
+    def test_i8(self, e2e, op, k, a):
+        r = e2e.run(const_program("i8", edge_lit(a), edge_lit(k), op),
+                    ExpectedState(memory={OUT: truth(a, k, op)}))
+        assert r.success, f"{a} {op} {k}: {r.error} {r.failures}"
+
+    @pytest.mark.parametrize("op", ["<", "<=", ">", ">="])
+    @pytest.mark.parametrize("k", [1, -1, 300, 32767, -32768])
+    @pytest.mark.parametrize("a", [-32768, -1, 1, 300, 32767])
+    def test_i16(self, e2e, op, k, a):
+        r = e2e.run(const_program("i16", edge_lit(a), edge_lit(k), op),
+                    ExpectedState(memory={OUT: truth(a, k, op)}))
+        assert r.success, f"{a} {op} {k}: {r.error} {r.failures}"
+
+    @pytest.mark.parametrize("x,expected", [(50, 50), (200, 100), (-300, -300)])
+    def test_left_operand_survives(self, e2e, x, expected):
+        """A holds `x` across the compare, as the return reads it."""
+        src = f'''
+#[zeropage(0x10)] static mut OUT: i16;
+#[zeropage(0x12)] static mut X_IN: i16;
+fn clamp(x @ A: i16) -> i16 {{
+    if x > 100 {{ return 100; }}
+    return x;
+}}
+#[entry]
+fn main() {{
+    X_IN = {lit(x)};
+    OUT = clamp(X_IN);
+}}
+'''
+        r = e2e.run(src, ExpectedState(memory={OUT: [expected & 0xFF, (expected >> 8) & 0xFF]}))
+        assert r.success, f"clamp({x}): {r.error} {r.failures}"
