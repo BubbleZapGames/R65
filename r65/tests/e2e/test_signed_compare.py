@@ -167,10 +167,11 @@ def edge_lit(v: int) -> str:
 
 class TestConstantRhs:
     """Against a constant the compare is biased (`EOR #sign; CMP #k^sign`)
-    to an unsigned one, so no V is read: check the order at the edges."""
+    to an unsigned one, and against 0 it is A's sign (BMI/BPL/BEQ), so no
+    V is read: check the order at the edges."""
 
     @pytest.mark.parametrize("op", ["<", "<=", ">", ">="])
-    @pytest.mark.parametrize("k", [1, -1, 127, -128])
+    @pytest.mark.parametrize("k", [0, 1, -1, 127, -128])
     @pytest.mark.parametrize("a", [-128, -1, 0, 1, 127])
     def test_i8(self, e2e, op, k, a):
         r = e2e.run(const_program("i8", edge_lit(a), edge_lit(k), op),
@@ -178,7 +179,7 @@ class TestConstantRhs:
         assert r.success, f"{a} {op} {k}: {r.error} {r.failures}"
 
     @pytest.mark.parametrize("op", ["<", "<=", ">", ">="])
-    @pytest.mark.parametrize("k", [1, -1, 300, 32767, -32768])
+    @pytest.mark.parametrize("k", [0, 1, -1, 300, 32767, -32768])
     @pytest.mark.parametrize("a", [-32768, -1, 1, 300, 32767])
     def test_i16(self, e2e, op, k, a):
         r = e2e.run(const_program("i16", edge_lit(a), edge_lit(k), op),

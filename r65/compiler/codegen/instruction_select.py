@@ -113,8 +113,10 @@ class InstructionSelector:
         self.last_comparison_type = None
         # Track if comparison operands were swapped (for reversed flag interpretation)
         self._comparison_reversed = False
-        # Whether a signed compare against a constant was biased to unsigned
-        self._compare_biased = False
+        # How a signed compare left its flags for the branch: None for the
+        # SBC template (N XOR V), 'unsigned' for a constant biased to an
+        # unsigned compare, 'sign' for a compare against 0 (N and Z of A)
+        self._compare_form = None
 
         # Hardware register state tracker for optimization
         self.hw_tracker = HardwareRegisterTracker()

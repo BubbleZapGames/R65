@@ -156,7 +156,7 @@ class MemoryOperationSelector(BaseSelector):
             # set. Leave no stale state from an earlier Compare behind.
             self.parent._compare_rhs_is_zero = True
             self.parent._comparison_reversed = False
-            self.parent._compare_biased = False
+            self.parent._compare_form = None
             self.parent.last_comparison_type = instr.type_info
 
     def select_store(self, instr: Store):

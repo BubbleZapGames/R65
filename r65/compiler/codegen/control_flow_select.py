@@ -288,11 +288,12 @@ class ControlFlowInstructionSelector(BaseSelector):
         Args:
             instr: CondBranch instruction
         """
-        # A signed compare against a constant was biased into an unsigned one
-        # (CompareSelector._emit_signed_cmp): its flags take unsigned branches.
-        is_signed = (self._is_signed_comparison()
-                     and not getattr(self.parent, '_compare_biased', False))
-        self.parent._compare_biased = False
+        # A signed compare against a constant was biased into an unsigned one,
+        # and one against 0 left only A's sign (CompareSelector._emit_signed_cmp).
+        form = getattr(self.parent, '_compare_form', None)
+        self.parent._compare_form = None
+        is_signed = self._is_signed_comparison() and form != 'unsigned'
+        sign_only = is_signed and form == 'sign'
 
         # Consume compare-against-zero flag before it goes stale
         compare_rhs_zero = getattr(self.parent, '_compare_rhs_is_zero', False)
@@ -307,7 +308,8 @@ class ControlFlowInstructionSelector(BaseSelector):
             self.parent._comparison_reversed = False
 
         if instr.condition is None:
-            self._emit_flag_based_branch(instr, is_signed, comparison, compare_rhs_zero)
+            self._emit_flag_based_branch(instr, is_signed, comparison, compare_rhs_zero,
+                                         sign_only)
         else:
             self._emit_value_based_branch(instr)
 
@@ -340,9 +342,19 @@ class ControlFlowInstructionSelector(BaseSelector):
         '!=':                    (Opcode.BNE, "Branch if not equal"),
     }
 
+    # Signed `x op 0` from N and Z: (branch, goes to the true target?) in
+    # order, then BRA to false.
+    _SIGN_BRANCHES = {
+        '<':  ((Opcode.BMI, True),),
+        '>=': ((Opcode.BPL, True),),
+        '>':  ((Opcode.BEQ, False), (Opcode.BPL, True)),
+        '<=': ((Opcode.BEQ, True), (Opcode.BMI, True)),
+    }
+
     def _emit_flag_based_branch(self, instr: CondBranch, is_signed: bool,
                                 comparison: str = None,
-                                compare_rhs_zero: bool = False):
+                                compare_rhs_zero: bool = False,
+                                sign_only: bool = False):
         """Emit branch based on CPU flags from preceding Compare."""
         if comparison is None:
             comparison = instr.comparison
@@ -365,6 +377,11 @@ class ControlFlowInstructionSelector(BaseSelector):
         if flag_branch is not None:
             opcode, comment = flag_branch
             self._emit_branch(opcode, true_target, comment)
+            self._emit_jump(Opcode.BRA, false_target)
+        elif sign_only and comparison in self._SIGN_BRANCHES:
+            # A signed compare against 0: the answer is in N and Z alone.
+            for opcode, to_true in self._SIGN_BRANCHES[comparison]:
+                self._emit_branch(opcode, true_target if to_true else false_target)
             self._emit_jump(Opcode.BRA, false_target)
         # Relational comparisons need signed/unsigned-aware multi-branch helpers.
         elif comparison == '<':

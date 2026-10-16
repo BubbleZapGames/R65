@@ -123,18 +123,19 @@ class CompareSelector(BaseSelector):
 
             EOR #sign / CMP #(rhs ^ sign)     ; C, Z of an unsigned compare
 
-        and the branch uses BCC/BCS/BEQ (`_compare_biased`). A is put back
-        with a second EOR, under PHP/PLP because EOR changes Z.
+        and the branch uses BCC/BCS/BEQ (`_compare_form = 'unsigned'`). A is
+        put back with a second EOR, under PHP/PLP because EOR changes Z.
+        Against 0 the sign is the answer: N and Z of A itself, no V
+        (`_compare_form = 'sign'`).
         """
         from r65.compiler.codegen.asm_nodes import StackOffset
 
-        # Against 0 nothing can overflow: V is 0, and N and Z are A's own,
-        # which a load has often set already. The signed branches use only
-        # N, V and Z.
+        # Against 0 the order is A's sign: N and Z of A, which a load has
+        # often set already, and the branch reads nothing else.
         if is_immediate and isinstance(operand, Immediate) and operand.value == 0:
             if self.emitter.nz_valid_for != 'A':
                 self._emit_instr(Opcode.CMP_IMMEDIATE, operand)
-            self._emit_instr(Opcode.CLV, comment="Signed compare with 0: no overflow")
+            self.parent._compare_form = 'sign'
             return
 
         width = self.emitter.get_accu_mode()
@@ -149,7 +150,7 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(Opcode.PHP, comment="Keep the compare's flags")
                 self._emit_instr(Opcode.EOR_IMMEDIATE, Immediate(sign), "A = lhs")
                 self._emit_instr(Opcode.PLP)
-            self.parent._compare_biased = True
+            self.parent._compare_form = 'unsigned'
             return
 
         if (not is_immediate and not isinstance(operand, (Address, StackOffset))
@@ -262,7 +263,7 @@ class CompareSelector(BaseSelector):
         # Store type info for subsequent CondBranch (for signed/unsigned detection)
         self.parent.last_comparison_type = instr.type_info
         self.parent._comparison_reversed = False
-        self.parent._compare_biased = False
+        self.parent._compare_form = None
         # Track whether the right operand is immediate 0 for branch optimization
         self.parent._compare_rhs_is_zero = (
             isinstance(instr.right, MIRImmediate) and instr.right.value == 0
