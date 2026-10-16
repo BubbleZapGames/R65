@@ -325,8 +325,8 @@ return_tuple: expr ("," expr)+
 break_stmt: BREAK LABEL_REF? ";"
           | BREAK LABEL_REF? expr ";"
 continue_stmt: CONTINUE LABEL_REF? ";"
-increment_stmt: lvalue PLUSPLUS ";"
-decrement_stmt: lvalue MINUSMINUS ";"
+increment_stmt: unary PLUSPLUS ";"
+decrement_stmt: unary MINUSMINUS ";"
 
 if_stmt: IF expr block (ELSE else_clause)?
        | IF LET pattern "=" expr block (ELSE else_clause)?  -> if_let_stmt
@@ -394,22 +394,15 @@ pattern_ident: IDENT
 // Expressions (precedence from low to high)
 ?expr: assignment
 
+// The target is any unary expression, so `(x) = 5` (as a macro's `$e = ...`
+// produces) parses; the parser then checks it names a place.
 ?assignment: logical_or
-           | lvalue "=" assignment                          -> assign
-           | lvalue compound_op assignment                  -> compound_assign
+           | unary "=" assignment                           -> assign
+           | unary compound_op assignment                   -> compound_assign
 
 compound_op: PLUSEQUAL | MINUSEQUAL | STAREQUAL | SLASHEQUAL | PERCENTEQUAL
            | AMPEREQUAL | VBAREQUAL | CIRCUMFLEXEQUAL
            | LSHIFTEQUAL | RSHIFTEQUAL
-
-// Lvalue (left-hand side of assignment)
-lvalue: IDENT                                   -> lvalue_ident
-      | REGISTER                                -> lvalue_register
-      | postfix "[" expr "]"                    -> lvalue_array
-      | postfix "." IDENT                       -> lvalue_field
-      // A newtype payload is read-only; matched so the error can say why
-      | postfix "." INTEGER                     -> lvalue_newtype_field_error
-      | "*" unary                               -> lvalue_deref
 
 ?logical_or: logical_and
            | logical_or "||" logical_and        -> or_expr

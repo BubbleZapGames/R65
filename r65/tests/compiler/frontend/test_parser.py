@@ -571,6 +571,43 @@ def test_assignment():
     print("✓ Assignment test passed")
 
 
+
+def test_parenthesized_assignment_target():
+    """A target may be parenthesized, as a macro's `$e = ...` produces."""
+    program = parse("""
+    fn test() {
+        (x) = 1;
+        (array[0]) += 2;
+        (*ptr) = 3;
+        (x)++;
+    }
+    """)
+    stmts = program.items[0].body.statements
+    assert isinstance(stmts[0].expr.target, ast.Identifier)
+    assert isinstance(stmts[1].expr.target, ast.ArrayIndex)
+    assert isinstance(stmts[2].expr.target, ast.Dereference)
+    assert isinstance(stmts[3].expr.target, ast.Identifier)
+
+
+def test_invalid_assignment_target():
+    """Only a variable, register, array element, field or `*pointer` is written."""
+    for body in ("f() = 1;", "&x = 1;", "(x + 1) = 1;", "-x += 1;"):
+        try:
+            parse(f"fn test() {{ {body} }}")
+        except ParseError as e:
+            assert "invalid assignment target" in str(e), body
+        else:
+            raise AssertionError(f"{body!r} parsed")
+
+
+def test_newtype_payload_assignment_rejected():
+    try:
+        parse("fn test() { t.0 = 1; }")
+    except ParseError as e:
+        assert "newtype payload is read-only" in str(e)
+    else:
+        raise AssertionError("'t.0 = 1' parsed")
+
 def test_compound_assignment():
     """Test parsing compound assignments."""
     source = """

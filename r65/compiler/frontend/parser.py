@@ -1828,7 +1828,7 @@ class ASTBuilder(Transformer):
     def increment_stmt(self, tree):
         """Increment statement (x++;) - desugars to x += 1;"""
         items = self._filter_tokens(tree.children)
-        lvalue = items[0]
+        lvalue = self._place(items[0], tree.meta)
         source_loc = self._make_source_loc(tree.meta)
         # Desugar to compound assignment: x++ becomes x += 1
         compound_assign = ast.CompoundAssignment(
@@ -1843,7 +1843,7 @@ class ASTBuilder(Transformer):
     def decrement_stmt(self, tree):
         """Decrement statement (x--;) - desugars to x -= 1;"""
         items = self._filter_tokens(tree.children)
-        lvalue = items[0]
+        lvalue = self._place(items[0], tree.meta)
         source_loc = self._make_source_loc(tree.meta)
         # Desugar to compound assignment: x-- becomes x -= 1
         compound_assign = ast.CompoundAssignment(
@@ -2539,11 +2539,11 @@ class ASTBuilder(Transformer):
     def assign(self, tree):
         """Assignment."""
         items = self._filter_tokens(tree.children)
-        lvalue = items[0]
+        target = self._place(items[0], tree.meta)
         value = items[1]
         source_loc = self._make_source_loc(tree.meta)
 
-        return ast.Assignment(target=lvalue, value=value, source_loc=source_loc)
+        return ast.Assignment(target=target, value=value, source_loc=source_loc)
 
     # Compound assignment operator token -> binary operator
     _COMPOUND_OPS = {
@@ -2564,8 +2564,9 @@ class ASTBuilder(Transformer):
         """Compound assignment (+=, -=, etc.)."""
         # compound_op has already reduced to its operator token
         items = self._filter_tokens(tree.children, keep_types=self._COMPOUND_OPS.keys())
-        lvalue, op_token, value = items
-        return ast.CompoundAssignment(target=lvalue, operator=self._COMPOUND_OPS[op_token.type],
+        target, op_token, value = items
+        return ast.CompoundAssignment(target=self._place(target, tree.meta),
+                                      operator=self._COMPOUND_OPS[op_token.type],
                                       value=value, source_loc=self._make_source_loc(tree.meta))
 
     def compound_op(self, items):
@@ -2573,52 +2574,29 @@ class ASTBuilder(Transformer):
         (token,) = self._filter_tokens(items, keep_types=self._COMPOUND_OPS.keys())
         return token
 
-    def lvalue_ident(self, items):
-        """Lvalue identifier."""
-        items = self._filter_tokens(items)
-        token = items[0]
-        identifier = _tok(token)
-        return ast.Identifier(
-            name=identifier,
-            source_loc=self._source_loc_from_token(token),
-        )
+    # What an assignment may write: a variable, a register, an array element,
+    # a field, or through a pointer.
+    _PLACE_TYPES = (ast.Identifier, ast.Register, ast.ArrayIndex, ast.FieldAccess,
+                    ast.Dereference)
 
-    def lvalue_register(self, items):
-        """Lvalue register."""
-        items = self._filter_tokens(items, keep_types={'REGISTER'})
-        return ast.Register(name=_tok(items[0]))
-
-    def lvalue_array(self, items):
-        """Lvalue array index."""
-        items = self._filter_tokens(items)
-        return ast.ArrayIndex(array=items[0], index=items[1])
-
-    def lvalue_field(self, items):
-        """Lvalue field access."""
-        items = self._filter_tokens(items, keep_types={'IDENT'})
-        return ast.FieldAccess(base=items[0], field=_tok(items[1]))
-
-    @v_args(tree=True)
-    def lvalue_newtype_field_error(self, tree):
-        """Error handler for assigning to a newtype payload: v.0 = x"""
-        base = None
-        index = 0
-        for item in tree.children:
-            if isinstance(item, LarkToken) and item.type == 'INTEGER':
-                index = int(item.value, 0)
-            elif not isinstance(item, LarkToken):
-                base = item
-        name = base.name if isinstance(base, ast.Identifier) else "value"
+    def _place(self, target, meta):
+        """*target* if an assignment may write it, else a ParseError."""
+        if isinstance(target, self._PLACE_TYPES):
+            return target
+        source_loc = self._make_source_loc(meta)
+        if isinstance(target, ast.NewtypeFieldAccess):
+            base = target.base
+            name = base.name if isinstance(base, ast.Identifier) else "value"
+            raise ParseError(
+                f"a newtype payload is read-only, so '.{target.index}' cannot be assigned",
+                source_loc=source_loc,
+                hint=f"assign the whole value instead: '{name} = TypeName(x);'"
+            )
         raise ParseError(
-            f"a newtype payload is read-only, so '.{index}' cannot be assigned",
-            source_loc=self._make_source_loc(tree.meta),
-            hint=f"assign the whole value instead: '{name} = TypeName(x);'"
+            "invalid assignment target",
+            source_loc=source_loc,
+            hint="assign to a variable, a register, an array element, a field or '*pointer'"
         )
-
-    def lvalue_deref(self, items):
-        """Lvalue pointer dereference."""
-        items = self._filter_tokens(items)
-        return ast.Dereference(pointer=items[0])
 
     @v_args(tree=True)
     def tuple_assign_stmt(self, tree):
