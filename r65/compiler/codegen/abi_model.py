@@ -663,7 +663,7 @@ class _ReturnMarshaller:
                     return {t, 'B'}
                 return {t}
             return {'A', 'B', t}
-        if loc.kind in (LocationKind.STACK, LocationKind.RETURN_SINKABLE):
+        if loc.kind == LocationKind.STACK:
             return {'A', 'B', t}
         return {t}
 
@@ -688,12 +688,7 @@ class _ReturnMarshaller:
         loc = self._loc(m)
         if loc.is_hw(t):
             return
-        if loc.kind == LocationKind.RETURN_SINKABLE:
-            # Deferred load: read the memory source at the return site.
-            loc = isel._get_operand_location(loc.source_location)
-            via_a = True
-        else:
-            via_a = loc.kind == LocationKind.STACK
+        via_a = loc.kind == LocationKind.STACK
         if t == 'A':
             self._set_width(m.width)
             if loc.is_hw():

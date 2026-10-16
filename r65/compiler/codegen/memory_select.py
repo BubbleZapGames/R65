@@ -88,15 +88,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('BIT', src_loc)
             return
 
-        # Check if dest is return-sinkable: load deferred to return site
-        from r65.compiler.mir.nodes import VirtualRegister
-        if isinstance(instr.dest, VirtualRegister):
-            dest_loc = self.parent._get_operand_location(instr.dest)
-            if dest_loc.kind == LocationKind.RETURN_SINKABLE:
-                return  # No-op: load deferred to return site
-        else:
-            dest_loc = self.parent._get_operand_location(instr.dest)
-
+        dest_loc = self.parent._get_operand_location(instr.dest)
         src_loc = self.parent._get_operand_location(instr.source)
 
         if dest_loc.is_hw() and not is_far_pointer_type(instr.type_info):
