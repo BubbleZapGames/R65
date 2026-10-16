@@ -201,6 +201,13 @@ class ProgramCodeGenerator:
             if indices_folded > 0:
                 print(f"Constant-index folding: {indices_folded} access(es) made absolute", file=sys.stderr)
 
+            # Constant-bound compares - `x > K` as `x >= K+1` and `x <= K`
+            # as `x < K+1`: one branch instead of BEQ plus BCS/BCC.
+            from r65.compiler.optimize.compare_bound import CompareBoundFolder
+            bounds_folded = CompareBoundFolder(verbose=False).optimize(mir_program)
+            if bounds_folded > 0:
+                print(f"Constant-bound compares: {bounds_folded} compare(s) made one-branch", file=sys.stderr)
+
             # Loop unrolling - fully unroll small static loops at -O2
             if opt_level >= 2:
                 from r65.compiler.optimize.loop_unroll import LoopUnroller
