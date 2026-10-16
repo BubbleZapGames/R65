@@ -178,6 +178,10 @@ class LocationResolver:
 
         variant_key = resolved.mode.name
         opcode = variants.get(variant_key)
+        if not opcode and variant_key == 'DP_Y':
+            # Only LDX/STX have dp,Y; anything else reaches the same direct
+            # page byte through abs,Y (the emitter writes the operand `.w`).
+            opcode = variants.get('ABSOLUTE_Y')
         if not opcode:
             raise unsupported_addressing_mode(mnemonic, variant_key.lower().replace('_', ' '), source_loc=None)
 

@@ -259,6 +259,8 @@ class MemoryOperationSelector(BaseSelector):
                 value_masked == 0 and
                 dest_loc.kind != LocationKind.STACK and
                 not is_long_under_set_dbr and
+                # STZ indexes by X only: there is no STZ abs,Y
+                dest_loc.index_register != 'Y' and
                 # STZ only supports 16-bit absolute addresses
                 not (dest_loc.kind == LocationKind.MEMORY and
                      dest_loc.memory_addr is not None and
