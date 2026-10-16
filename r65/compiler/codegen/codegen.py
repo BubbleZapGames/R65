@@ -236,6 +236,7 @@ class ProgramCodeGenerator:
             if incdec_folded > 0:
                 print(f"Memory INC/DEC folding: {incdec_folded} step(s) folded", file=sys.stderr)
 
+
         # Emit file header and processor directives
         self.emitter.emit_file_header()
         self.emitter.emit_processor_directive()
@@ -324,6 +325,16 @@ class ProgramCodeGenerator:
         if not disable_loop_promotion:
             from r65.compiler.analysis.loop_register_promotion import analyze_loop_promotion
             analyze_loop_promotion(mir_program)
+
+        # Index streams - of two index values alternating in X, give one Y
+        # for the run, so `oam[spr].x = pool[i].x` stops reloading X per
+        # field. After promotion: it sees who holds Y, and leaves a loop's
+        # induction variable there.
+        if opt_level >= 1:
+            from r65.compiler.optimize.index_streams import IndexStreamSplitter
+            streams_split = IndexStreamSplitter(verbose=False).optimize(mir_program)
+            if streams_split > 0:
+                print(f"Index streams: {streams_split} moved to Y", file=sys.stderr)
 
         # Whether the program needs a shared interrupt-vector placeholder.
         # The vector table is 16-bit and an interrupt clears PB, so
