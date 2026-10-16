@@ -43,6 +43,7 @@ class CompareSelector(BaseSelector):
                 self.parent._ensure_m16_mode()
                 self._emit_instr(Opcode.TXA if mnemonic == 'CPX' else Opcode.TYA,
                                  comment="Signed compare: X/Y to A for SBC")
+                a_is_scratch = True  # A holds the copy, not a value of its own
             self._emit_signed_cmp(operand, is_immediate, restore_a=not a_is_scratch)
             return
         if is_immediate:
@@ -264,6 +265,9 @@ class CompareSelector(BaseSelector):
         self.parent.last_comparison_type = instr.type_info
         self.parent._comparison_reversed = False
         self.parent._compare_form = None
+        # A signed compare puts A back to the left operand afterwards; not
+        # needed when that is a vreg nothing reads after the compare.
+        self._left_dead = self._dead_after(instr.left)
         # Track whether the right operand is immediate 0 for branch optimization
         self.parent._compare_rhs_is_zero = (
             isinstance(instr.right, MIRImmediate) and instr.right.value == 0
@@ -323,6 +327,18 @@ class CompareSelector(BaseSelector):
         # Leave the width as is: branches do not read M, and a loop back-edge
         # must arrive in the header's mode. Code paths that need m8 (like
         # function returns) switch explicitly.
+
+    def _dead_after(self, operand) -> bool:
+        """Whether *operand* is a vreg no instruction reads after the one
+        being selected. A bare register, or an unknown position, is not."""
+        from r65.compiler.mir.nodes import VirtualRegister
+        if type(operand) is not VirtualRegister:
+            return False
+        liveness = self.parent.reg_alloc.instr_liveness
+        pos = self.parent._current_pos
+        if liveness is None or pos is None:
+            return False
+        return operand not in liveness._get_live_after(*pos)
 
     def _is_signed_type(self) -> bool:
         """Check if the current comparison type is signed (i8, i16).
@@ -484,7 +500,8 @@ class CompareSelector(BaseSelector):
         elif reg == 'A':
             if self._can_elide_cmp_zero('A', right_operand, is_immediate):
                 return
-            self._emit_cmp('CMP', right_operand, is_immediate)
+            self._emit_cmp('CMP', right_operand, is_immediate,
+                           a_is_scratch=getattr(self, '_left_dead', False))
         elif reg == 'B':
             # B register - XBA transfers B's value to A (sets N/Z)
             self.parent._access_b_value_in_a()
