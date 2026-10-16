@@ -435,7 +435,9 @@ let zero = x ^ x;                  // Always zero (identity)
 **Type Rules**:
 - Left operand: any integer type
 - Right operand: **must be compile-time constant**
-- Result type matches left operand
+- Result type matches left operand, widened first to a wider destination the
+  shift lands in, directly or through `|`, `&`, `^`, `+` or `-`:
+  `let w: u16 = (hi << 8) | lo;` shifts `hi` as a `u16`
 
 **Behavior**:
 - Shifts left, fills with zeros

@@ -1330,6 +1330,19 @@ class TypeChecker:
     # makes the result that same newtype; comparisons still yield bool.
     _VALUE_PRODUCING_OPS = ('+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>')
 
+    # Operators whose operands land in the result bit for bit.
+    _PACKING_OPS = frozenset({'|', '&', '^', '+', '-'})
+
+    @classmethod
+    def _carries_shift(cls, expr) -> bool:
+        """Whether *expr* is a shift, or a packing op over one."""
+        if not isinstance(expr, HIRBinaryOp):
+            return False
+        if expr.op in ('<<', '>>'):
+            return True
+        return expr.op in cls._PACKING_OPS and (
+            cls._carries_shift(expr.left) or cls._carries_shift(expr.right))
+
     def check_binary_op(self, expr: HIRBinaryOp, context_type: Optional[TypeInfo] = None) -> TypeInfo:
         """Type check binary operation."""
         # The destination type is consulted only for machine-width decisions
@@ -1343,10 +1356,20 @@ class TypeChecker:
         # infers `0` as u16. Do NOT propagate for arithmetic/bitwise (+, -, *, etc.) because
         # intermediate values commonly exceed the target type (e.g., `let x: u8 = 256 - 200`).
         left_context = context_type if expr.op in ('<<', '>>') else None
+        # A shift packed into a wider value with |, &, ^, + or - still lands in
+        # the destination, so it takes the destination's width too: in
+        # `let w: u16 = (hi << 8) | lo` the shift must not run in m8. Only a
+        # shift (or a nested op of this kind) is handed the context; a literal
+        # operand keeps its own inference.
+        if expr.op in self._PACKING_OPS:
+            if self._carries_shift(expr.left):
+                left_context = context_type
         left_type = self.check_expression(expr.left, left_context)
         # For comparison operators, propagate left operand's type as context for right operand
         # This ensures `off >= 32 * 32` (where off is u16) evaluates 32*32 as u16 (1024), not u8 (0)
         right_context = left_type if expr.op in ['==', '!=', '<', '<=', '>', '>='] else None
+        if expr.op in self._PACKING_OPS and self._carries_shift(expr.right):
+            right_context = context_type
         right_type = self.check_expression(expr.right, right_context)
 
         # A newtype inherits its payload's operators. Check the operation against
