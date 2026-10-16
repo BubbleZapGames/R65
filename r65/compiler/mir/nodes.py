@@ -983,7 +983,7 @@ def _write_rr(f): return OperandSpec(f, _W, _SCALAR, True)
 OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     Load:           (_write_rr('dest'), _read_vr('source')),
     Store:          (_read_ri('source'),),
-    IncDecMemory:   (),  # location is a MemoryLocation; X is implicit, as for Load/Store
+    IncDecMemory:   (),  # location is a MemoryLocation; liveness_uses adds its index register, as for Load/Store
     LoadIndirect:   (_write_vr('dest'), _read_vr('pointer')),
     StoreIndirect:  (_read_ri('source'), _read_vr('pointer')),
     Move:           (_write_rr('dest'), _read_ri('source')),

@@ -9,9 +9,12 @@ and basic blocks.
 import pytest
 from r65.compiler.mir.nodes import (
     MIRFunction, BasicBlock, VirtualRegister, HardwareRegister, Immediate,
-    Move, BinaryOp, Call, Return, Jump, CondBranch, Argument, ArgumentMechanism
+    Move, BinaryOp, Call, Return, Jump, CondBranch, Argument, ArgumentMechanism,
+    Load, MemoryLocation,
 )
-from r65.compiler.mir.liveness import LivenessAnalyzer, InstructionLivenessAnalyzer
+from r65.compiler.mir.liveness import (
+    LivenessAnalyzer, InstructionLivenessAnalyzer, liveness_uses,
+)
 from r65.compiler.hir.types import BasicTypeInfo
 
 
@@ -434,3 +437,22 @@ class TestClobberRegionAnalyzer:
 
         # Should have no regions for X (callee preserves it via preserves_attr)
         assert len(regions['X']) == 0
+
+
+def make_loc(index_register=None) -> MemoryLocation:
+    """A static `TBL`, optionally indexed by X or Y."""
+    return MemoryLocation(storage_type='rom', address=0x8000, symbol=None,
+                          index_register=index_register)
+
+
+class TestIndexedMemoryLiveness:
+    """An indexed memory operand reads its index register."""
+
+    def test_indexed_load_uses_index_register(self):
+        load = Load(dest=make_vreg(0), source=make_loc('X'), type_info=BasicTypeInfo('u8'))
+        assert make_hw_reg('X') in liveness_uses(load)
+
+    def test_unindexed_load_uses_no_register(self):
+        load = Load(dest=make_vreg(0), source=make_loc(), type_info=BasicTypeInfo('u8'))
+        assert liveness_uses(load) == []
+

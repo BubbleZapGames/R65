@@ -14,18 +14,23 @@ from r65.compiler.mir.nodes import (
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
     Load, Move, BinaryOp, Call, Return, TraitDispatch,
-    iter_operands, OperandRole, iter_block_targets,
+    iter_operands, OperandRole, iter_block_targets, iter_memory_operands,
 )
 
 # ============================================================================
 # Use/def extraction — the shared operand registry (mir/nodes.py). Both return
 # VirtualRegister and HardwareRegister operands; the analyzer routes VRs into
-# the vreg sets and X/Y into the hw sets (A is never tracked).
+# the vreg sets and X/Y into the hw sets (A is never tracked). An indexed
+# memory operand (`[TBL,X]`) reads its index register, which the registry
+# leaves out because the register is named by a string on the location.
 # ============================================================================
 
 def liveness_uses(instr) -> List:
     """The operands *instr* reads, as liveness counts them."""
-    return [v for _, v in iter_operands(instr, role=OperandRole.READ)]
+    uses = [v for _, v in iter_operands(instr, role=OperandRole.READ)]
+    uses.extend(HardwareRegister(loc.index_register)
+                for loc in iter_memory_operands(instr) if loc.index_register)
+    return uses
 
 
 def liveness_defs(instr) -> List:
