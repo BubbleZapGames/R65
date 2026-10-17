@@ -1330,6 +1330,38 @@ class TypeChecker:
     # makes the result that same newtype; comparisons still yield bool.
     _VALUE_PRODUCING_OPS = ('+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>')
 
+    def _check_shift_amount(self, expr: HIRBinaryOp, left_type: TypeInfo) -> None:
+        """Reject a constant shift of a run-time value by its width or more:
+        nothing of it survives, so `b << 10` on a u8 is a lost value, not 0
+        on purpose. A const fn's values wrap by design and are left alone."""
+        if self.current_function and self.current_function.is_const:
+            return
+        if not isinstance(left_type, BasicTypeInfo):
+            return
+        width = {'u8': 8, 'i8': 8, 'u16': 16, 'i16': 16}.get(left_type.name)
+        if width is None:
+            return
+        from r65.compiler.hir.hir_const_eval import try_eval_const_int
+        # A constant is folded at full precision (`I32!(-42)` splits its
+        # words with `>> 16`); only a run-time value loses its bits.
+        if try_eval_const_int(expr.left, self.symbol_table) is not None:
+            return
+        amount = try_eval_const_int(expr.right, self.symbol_table)
+        if amount is None or amount < width:
+            return
+        if expr.op == '<<' and width == 8:
+            hint = f"widen it first: '(x as u16) << {amount}'"
+        elif expr.op == '>>' and left_type.name.startswith('i'):
+            hint = "every bit but the sign is shifted out: the result is 0 or -1"
+        else:
+            hint = "every bit is shifted out: the result is always 0"
+        article = 'an' if left_type.name.startswith('i') else 'a'
+        raise TypeCheckError(
+            f"shift of {article} {left_type.name} by {amount} is at least its width ({width} bits)",
+            source_loc=expr.source_loc,
+            hint=hint,
+        )
+
     # Operators whose operands land in the result bit for bit.
     _PACKING_OPS = frozenset({'|', '&', '^', '+', '-'})
 
@@ -1584,6 +1616,7 @@ class TypeChecker:
                     expr.left = cast_node
                     left_type = context_type
 
+            self._check_shift_amount(expr, left_type)
             expr.expr_type = left_type
             return left_type
 

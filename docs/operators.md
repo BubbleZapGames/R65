@@ -441,7 +441,7 @@ let zero = x ^ x;                  // Always zero (identity)
 
 **Behavior**:
 - Shifts left, fills with zeros
-- Shift by ≥ bit width is **undefined behavior**
+- Shift by ≥ bit width is a **compile error** (no bit of the value would survive); widen first, e.g. `(b as u16) << 10`
 - Each shift multiplies by 2 (with wrapping)
 
 **Assembly Mapping**:
@@ -474,7 +474,7 @@ let x = a << n;   // ERROR: Use shl8(a, n) for variable shifts
   rounding toward negative infinity (`-7 >> 1 == -4`). The 65816 has none, so
   each bit is `CMP #$80` (carry = sign) + `ROR A`: 4 cycles a bit against 2.
   An i16 shift of 8 or more starts with `XBA` and a sign-extend.
-- Shift by ≥ bit width is **undefined behavior**
+- Shift by ≥ bit width is a **compile error** (the result would be 0, or the sign)
 
 **Assembly Mapping**:
 ```rust

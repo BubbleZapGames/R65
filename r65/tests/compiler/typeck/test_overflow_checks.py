@@ -154,3 +154,25 @@ class TestPointerCoercion:
         fn test() { takes_far(&BUF); }
         '''
         compile_source(source)
+
+
+class TestShiftWidth:
+    """A constant shift of a run-time value by its width or more keeps none of
+    it: `b << 10` on a u8 is an error, not a silent 0."""
+
+    def test_u8_shift_by_eight_rejected(self):
+        with pytest.raises(TypeCheckError, match="shift of a u8 by 8 is at least its width"):
+            compile_source('fn test(b: u8) -> u8 { return b << 8; }')
+
+    def test_compound_shift_rejected(self):
+        with pytest.raises(TypeCheckError, match="shift of a u8 by 9"):
+            compile_source('fn test(b: u8) { let mut x: u8 = b; x <<= 9; }')
+
+    def test_const_amount_rejected(self):
+        with pytest.raises(TypeCheckError, match="shift of a u16 by 16"):
+            compile_source('const SH: u8 = 16; fn test(w: u16) -> u16 { return w >> SH; }')
+
+    def test_wider_destination_accepted(self):
+        """The shift takes its u16 destination's width first."""
+        compile_source('fn test(b: u8) -> u16 { let w: u16 = b << 10; return w; }')
+        compile_source('fn test(b: u8) -> u8 { return b << 7; }')
