@@ -208,6 +208,13 @@ class ProgramCodeGenerator:
             if bounds_folded > 0:
                 print(f"Constant-bound compares: {bounds_folded} compare(s) made one-branch", file=sys.stderr)
 
+            # Constant index offsets - `walkmap[t + 32]` as `walkmap+32,X`
+            # with X = t, so neighbouring cells share one X load.
+            from r65.compiler.optimize.index_offsets import IndexOffsetFolder
+            offsets_folded = IndexOffsetFolder(verbose=False).optimize(mir_program)
+            if offsets_folded > 0:
+                print(f"Index offsets: {offsets_folded} constant(s) folded into addresses", file=sys.stderr)
+
             # Loop unrolling - fully unroll small static loops at -O2
             if opt_level >= 2:
                 from r65.compiler.optimize.loop_unroll import LoopUnroller
