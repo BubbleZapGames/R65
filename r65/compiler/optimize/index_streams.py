@@ -125,6 +125,86 @@ class _ValueKeys:
             self.pure[dest.id] = new_key
 
 
+def writes_x(instr) -> bool:
+    """Whether *instr* changes X."""
+    if type(instr) in CLOBBERS_ALL or 'X' in index_clobbers(instr):
+        return True
+    for d in liveness_defs(instr):
+        if _is_reg(d, 'X'):
+            return True
+        if type(d) is VirtualRegister and d.register_hint == 'X':
+            return True
+    return False
+
+
+def x_segments(instrs: List) -> List[_Segment]:
+    """Split *instrs* at every X write into segments: what X was set to,
+    and the instructions that index by it."""
+    keys = _ValueKeys()
+    segments: List[_Segment] = []
+    cur: Optional[_Segment] = None
+    for i, instr in enumerate(instrs):
+        if type(instr) is Move and _is_reg(instr.dest, 'X'):
+            cur = _Segment(start=i, move=i, last=i,
+                           key=(keys.of(instr.source), _size(instr.type_info)))
+            segments.append(cur)
+        elif writes_x(instr):
+            cur = None
+            segments.append(_Segment(start=i, key=('opaque', i), last=i))
+        else:
+            if _x_indexed(instr):
+                if cur is None:
+                    cur = _Segment(start=i, key=('opaque', i), last=i)
+                    segments.append(cur)
+                cur.accesses.append(i)
+                cur.last = i
+            if cur is not None and any(
+                    _is_reg(v, 'X') for _, v in iter_operands(instr, role=OperandRole.READ)):
+                cur.reads_x = True
+                cur.last = i
+        keys.after(instr)
+    return segments
+
+
+def redundant_x_moves(instrs: List, segments: List[_Segment], skip=frozenset()):
+    """The `X = Move` instructions (indices, with their sources) that find X
+    already holding their value; *skip* are moves no longer writing X."""
+    found, sources = set(), []
+    x_key = None
+    for seg in segments:
+        if seg.move in skip:
+            continue
+        if seg.move is None:
+            x_key = None
+        elif seg.key == x_key and seg.key[0][0] != 'opaque':
+            found.add(seg.move)
+            sources.append(instrs[seg.move].source)
+        else:
+            x_key = seg.key
+    return found, sources
+
+
+def drop_dead(func, block, sources):
+    """Delete the in-block pure computations the dropped loads read."""
+    work = [s.id for s in sources if type(s) is VirtualRegister]
+    while work:
+        reads = count_vreg_reads(func)
+        vid = work.pop()
+        if reads.get(vid, 0):
+            continue
+        keep = []
+        for ins in block.instructions:
+            dest = getattr(ins, 'dest', None)
+            if (type(dest) is VirtualRegister and dest.id == vid
+                    and type(ins) in (BinaryOp, UnaryOp, TypeConvert, Move)
+                    and not any(True for _ in iter_memory_operands(ins))):
+                work.extend(v.id for _, v in iter_operands(ins, role=OperandRole.READ)
+                            if type(v) is VirtualRegister)
+                continue
+            keep.append(ins)
+        block.instructions = keep
+
+
 class IndexStreamSplitter:
     """Give one of a block's alternating X index streams Y instead."""
 
@@ -180,43 +260,6 @@ class IndexStreamSplitter:
 
     # -- analysis ------------------------------------------------------------
 
-    def _segments(self, instrs: List) -> List[_Segment]:
-        keys = _ValueKeys()
-        segments: List[_Segment] = []
-        cur: Optional[_Segment] = None
-        for i, instr in enumerate(instrs):
-            if type(instr) is Move and _is_reg(instr.dest, 'X'):
-                cur = _Segment(start=i, move=i, last=i,
-                               key=(keys.of(instr.source), _size(instr.type_info)))
-                segments.append(cur)
-            elif self._writes_x(instr):
-                cur = None
-                segments.append(_Segment(start=i, key=('opaque', i), last=i))
-            else:
-                if _x_indexed(instr):
-                    if cur is None:
-                        cur = _Segment(start=i, key=('opaque', i), last=i)
-                        segments.append(cur)
-                    cur.accesses.append(i)
-                    cur.last = i
-                if cur is not None and any(
-                        _is_reg(v, 'X') for _, v in iter_operands(instr, role=OperandRole.READ)):
-                    cur.reads_x = True
-                    cur.last = i
-            keys.after(instr)
-        return segments
-
-    @staticmethod
-    def _writes_x(instr) -> bool:
-        if type(instr) in CLOBBERS_ALL or 'X' in index_clobbers(instr):
-            return True
-        for d in liveness_defs(instr):
-            if _is_reg(d, 'X'):
-                return True
-            if type(d) is VirtualRegister and d.register_hint == 'X':
-                return True
-        return False
-
     @staticmethod
     def _y_capable(instr) -> bool:
         """An access abs,Y can do, on a static abs,Y reaches."""
@@ -269,7 +312,7 @@ class IndexStreamSplitter:
 
     def _split_block(self, func, block) -> bool:
         instrs = block.instructions
-        segments = self._segments(instrs)
+        segments = x_segments(instrs)
         groups: Dict[object, List[_Segment]] = {}
         for seg in segments:
             if seg.move is not None:
@@ -332,21 +375,12 @@ class IndexStreamSplitter:
                 map_memory_operands(instrs[a], to_y)
 
         # An X load that now finds X still holding its value goes too.
-        moved = {seg.move for seg in segs}
-        x_key = None
-        for seg in segments:
-            if seg.move in moved:
-                continue
-            if seg.move is None:
-                x_key = None
-            elif seg.key == x_key and not seg.key[0][0] == 'opaque':
-                drop.add(seg.move)
-                moved_sources.append(instrs[seg.move].source)
-            else:
-                x_key = seg.key
+        found, sources = redundant_x_moves(instrs, segments, {seg.move for seg in segs})
+        drop |= found
+        moved_sources += sources
 
         block.instructions = [ins for i, ins in enumerate(instrs) if i not in drop]
-        self._drop_dead(func, block, moved_sources)
+        drop_dead(func, block, moved_sources)
         self._hoist(func, block, y_move)
 
     def _hoist(self, func, block, y_move):
@@ -407,24 +441,3 @@ class IndexStreamSplitter:
             return
         rest = [ins for i, ins in enumerate(instrs) if i not in set(chain)]
         block.instructions = rest[:target] + members + rest[target:]
-
-    @staticmethod
-    def _drop_dead(func, block, sources):
-        """Delete the in-block pure computations the dropped loads read."""
-        work = [s.id for s in sources if type(s) is VirtualRegister]
-        while work:
-            reads = count_vreg_reads(func)
-            vid = work.pop()
-            if reads.get(vid, 0):
-                continue
-            keep = []
-            for ins in block.instructions:
-                dest = getattr(ins, 'dest', None)
-                if (type(dest) is VirtualRegister and dest.id == vid
-                        and type(ins) in (BinaryOp, UnaryOp, TypeConvert, Move)
-                        and not any(True for _ in iter_memory_operands(ins))):
-                    work.extend(v.id for _, v in iter_operands(ins, role=OperandRole.READ)
-                                if type(v) is VirtualRegister)
-                    continue
-                keep.append(ins)
-            block.instructions = keep
