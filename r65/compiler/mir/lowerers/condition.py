@@ -9,6 +9,7 @@ and comparison operations.
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from r65.compiler.hir import HIRBinaryOp, HIRUnaryOp, HIRIntegerLiteral, HIRBooleanLiteral, HIRIdentifier, HIRExpression, HIRRegister, HIRStatusFlagAccess
+from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, MemoryLocation,
     Compare, CondBranch, BitTest, StatusFlagTest, BinaryOp,
@@ -245,6 +246,20 @@ class ConditionLowerer:
             # Add CFG edges
             self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[true_target])
             self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[false_target])
+
+        # Negation swaps the targets - no 0/1 value is built
+        elif isinstance(condition, HIRUnaryOp) and condition.op == '!':
+            self.lower_condition(condition.operand, false_target, true_target)
+
+        # A bare scalar is `!= 0`, so the comparison path reads it in place
+        elif self._is_scalar(condition.expr_type):
+            zero = HIRIntegerLiteral(value=0, source_loc=condition.source_loc)
+            zero.expr_type = condition.expr_type
+            self.lower_condition(
+                HIRBinaryOp(op='!=', left=condition, right=zero,
+                            source_loc=condition.source_loc,
+                            expr_type=BasicTypeInfo('bool')),
+                true_target, false_target)
 
         else:
             # General condition - evaluate to boolean and branch on != 0
@@ -484,6 +499,11 @@ class ConditionLowerer:
         self.ctx.add_cfg_edge(self.ctx.current_block, self.ctx.current_function.blocks[false_target])
 
         return True
+
+    @staticmethod
+    def _is_scalar(ty) -> bool:
+        """An integer or bool: tested against 0 as it sits."""
+        return isinstance(ty, BasicTypeInfo) and ty.name in ('u8', 'i8', 'u16', 'i16', 'bool')
 
     def _is_zero_literal(self, expr: HIRExpression) -> bool:
         """Check if expression is the literal value 0."""
