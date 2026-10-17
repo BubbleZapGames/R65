@@ -51,6 +51,9 @@ class TypeConversionSelector(BaseSelector):
 
         src_operand = instr.source
         dest_loc = self.parent._get_operand_location(instr.dest)
+        # A zero-extend whose high byte nothing reads (MIR known-bits marks
+        # one feeding `<< 8`) leaves B as it is.
+        self._high_undefined = getattr(instr, 'high_undefined', False)
 
         # A conversion is about machine widths, so newtypes answer for their
         # payload. Without this the size falls out of a *name* comparison below
@@ -109,8 +112,7 @@ class TypeConversionSelector(BaseSelector):
             if not src_loc.is_hw():
                 self.parent._ensure_m16_mode()
                 self._emit_load_store('LDA', src_loc)
-                self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF),
-                                 "Zero-extend u8 to u16")
+                self._mask_high_byte()
                 self._emit_load_store('STA', dest_loc)
                 return
 
@@ -157,7 +159,10 @@ class TypeConversionSelector(BaseSelector):
         self.parent._ensure_m8_mode()
         self._load_byte_into_a(src_operand)
         self.parent._ensure_m16_mode()
-        self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend u8 to u16")
+        if source_signed:
+            self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend u8 to u16")
+        else:
+            self._mask_high_byte()
         if source_signed:
             positive = self.parent._get_unique_label()
             self._emit_instr(Opcode.CMP_IMMEDIATE, Immediate(0x0080), "Negative?")
@@ -165,6 +170,13 @@ class TypeConversionSelector(BaseSelector):
             self._emit_instr(Opcode.ORA_IMMEDIATE, Immediate(0xFF00), "Sign-extend")
             self._emit_label(positive)
         self._emit_instr(Opcode.TAX if reg == 'X' else Opcode.TAY)
+
+    def _mask_high_byte(self):
+        """The zero-extend's AND, unless the conversion's high byte is
+        never read."""
+        if getattr(self, '_high_undefined', False):
+            return
+        self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF), "Zero-extend u8 to u16")
 
     def _emit_zero_extension_through_a(self, src_operand, dest_loc) -> bool:
         """Zero-extend in m16 when the source or the result lives in A.
@@ -205,8 +217,7 @@ class TypeConversionSelector(BaseSelector):
                 self._emit_instr(Opcode.TYA, comment="Widen Y to 16-bit")
             elif src_reg is None:
                 self._emit_load_store('LDA', src_loc)
-            self._emit_instr(Opcode.AND_IMMEDIATE, Immediate(0x00FF),
-                             "Zero-extend u8 to u16")
+            self._mask_high_byte()
         if not dest_in_a:
             self._emit_load_store('STA', dest_loc)
         return True

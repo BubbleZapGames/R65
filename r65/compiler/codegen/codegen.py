@@ -208,6 +208,13 @@ class ProgramCodeGenerator:
             if bounds_folded > 0:
                 print(f"Constant-bound compares: {bounds_folded} compare(s) made one-branch", file=sys.stderr)
 
+            # Known bits - a value known below 256 narrowed and widened again,
+            # or zero-extended only to be shifted left by 8, needs no mask.
+            from r65.compiler.optimize.known_bits import KnownBitsSimplifier
+            bits_simplified = KnownBitsSimplifier(verbose=False).optimize(mir_program)
+            if bits_simplified > 0:
+                print(f"Known bits: {bits_simplified} conversion(s) simplified", file=sys.stderr)
+
             # Constant index offsets - `walkmap[t + 32]` as `walkmap+32,X`
             # with X = t, so neighbouring cells share one X load.
             from r65.compiler.optimize.index_offsets import IndexOffsetFolder

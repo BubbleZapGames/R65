@@ -891,10 +891,11 @@ class InstructionSelector:
         elif op == '^':
             self._emit_xor(right_operand, is_u16)
         elif op == '<<':
-            self._emit_shift_left(right_operand, is_u16)
+            self._emit_shift_left(right_operand, is_u16, mask=not instr.mask_free)
         elif op == '>>':
             self._emit_shift_right(right_operand, is_u16,
-                                   is_signed_scalar(instr.type_info))
+                                   is_signed_scalar(instr.type_info),
+                                   mask=not instr.mask_free)
         elif op == '*':
             self._emit_multiply(right_operand, is_u16)
         elif op == '/':
@@ -1035,7 +1036,7 @@ class InstructionSelector:
         for _ in range(count):
             self._emit_implied(opcode)
 
-    def _emit_shift_by(self, count: int, is_u16: bool, left: bool):
+    def _emit_shift_by(self, count: int, is_u16: bool, left: bool, mask: bool = True):
         """
         Emit a constant-distance shift of A.
 
@@ -1059,27 +1060,29 @@ class InstructionSelector:
         if is_u16 and count >= 8:
             direction = "left" if left else "right"
             self._emit_implied(Opcode.XBA, f"Swap bytes (shift {direction} 8)")
-            self._emit_immediate(
-                Opcode.AND_IMMEDIATE,
-                0xFF00 if left else 0x00FF,
-                "Clear low byte" if left else "Clear high byte")
+            if mask:    # off when the byte it clears is 0 already or unread
+                self._emit_immediate(
+                    Opcode.AND_IMMEDIATE,
+                    0xFF00 if left else 0x00FF,
+                    "Clear low byte" if left else "Clear high byte")
             self._emit_repeated_opcode(opcode, count - 8)
             return
 
         self._emit_repeated_opcode(opcode, count)
 
-    def _emit_shift_left(self, right_operand, is_u16: bool):
+    def _emit_shift_left(self, right_operand, is_u16: bool, mask: bool = True):
         """Emit left shift operation (A << count)."""
         count = self._require_immediate(right_operand, "Shift")
-        self._emit_shift_by(count, is_u16, left=True)
+        self._emit_shift_by(count, is_u16, left=True, mask=mask)
 
-    def _emit_shift_right(self, right_operand, is_u16: bool, signed: bool = False):
+    def _emit_shift_right(self, right_operand, is_u16: bool, signed: bool = False,
+                          mask: bool = True):
         """Emit right shift operation (A >> count)."""
         count = self._require_immediate(right_operand, "Shift")
         if signed:
             self._emit_arithmetic_shift_right(count, is_u16)
         else:
-            self._emit_shift_by(count, is_u16, left=False)
+            self._emit_shift_by(count, is_u16, left=False, mask=mask)
 
     def _emit_arithmetic_shift_right(self, count: int, is_u16: bool):
         """Shift A right by *count*, copying the sign bit into the vacated

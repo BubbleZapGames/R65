@@ -110,10 +110,10 @@ class _ValueKeys:
         if type(dest) is VirtualRegister and not any(True for _ in iter_memory_operands(instr)):
             if type(instr) is BinaryOp:
                 new_key = ('bin', instr.op, self.of(instr.left), self.of(instr.right),
-                           _size(instr.type_info))
+                           _size(instr.type_info), instr.mask_free)
             elif type(instr) is TypeConvert:
                 new_key = ('conv', self.of(instr.source), _size(instr.source_type),
-                           _size(instr.target_type))
+                           _size(instr.target_type), instr.high_undefined)
             elif type(instr) is Move:
                 new_key = self.of(instr.source)
         for d in liveness_defs(instr):
@@ -184,6 +184,15 @@ def redundant_x_moves(instrs: List, segments: List[_Segment], skip=frozenset()):
     return found, sources
 
 
+def _pure(ins) -> bool:
+    """Whether deleting *ins* loses nothing but its result: arithmetic and
+    moves between vregs, and a load of a static that is not a #[hw] port."""
+    if type(ins) is Load:
+        return not ins.source.is_volatile
+    return (type(ins) in (BinaryOp, UnaryOp, TypeConvert, Move)
+            and not any(True for _ in iter_memory_operands(ins)))
+
+
 def drop_dead(func, block, sources):
     """Delete the in-block pure computations the dropped loads read."""
     work = [s.id for s in sources if type(s) is VirtualRegister]
@@ -195,9 +204,7 @@ def drop_dead(func, block, sources):
         keep = []
         for ins in block.instructions:
             dest = getattr(ins, 'dest', None)
-            if (type(dest) is VirtualRegister and dest.id == vid
-                    and type(ins) in (BinaryOp, UnaryOp, TypeConvert, Move)
-                    and not any(True for _ in iter_memory_operands(ins))):
+            if type(dest) is VirtualRegister and dest.id == vid and _pure(ins):
                 work.extend(v.id for _, v in iter_operands(ins, role=OperandRole.READ)
                             if type(v) is VirtualRegister)
                 continue

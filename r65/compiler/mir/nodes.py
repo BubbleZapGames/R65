@@ -411,6 +411,9 @@ class TypeConvert(MIRInstruction):
     source: Union[VirtualRegister, HardwareRegister, Immediate]
     source_type: Any  # TypeInfo for source
     target_type: Any  # TypeInfo for destination
+    # A zero-extend whose high byte nothing reads (its one reader shifts
+    # left by 8 or more): codegen may leave the high byte as it is.
+    high_undefined: bool = False
 
     def __repr__(self):
         return f"{self.dest} = TypeConvert {self.source} from {self.source_type} to {self.target_type}"
@@ -470,6 +473,9 @@ class BinaryOp(MIRInstruction):
     right: Union[VirtualRegister, HardwareRegister, Immediate, MemoryLocation]
     op: str  # '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'
     type_info: Any  # TypeInfo determines 8-bit vs 16-bit operation
+    # A u16 shift by 8-15 whose XBA mask clears only bits that are already 0
+    # or that no reader looks at (MIR known-bits): codegen leaves them.
+    mask_free: bool = False
 
     def __repr__(self):
         return f"{self.dest} = {self.left} {self.op} {self.right} : {self.type_info}"
