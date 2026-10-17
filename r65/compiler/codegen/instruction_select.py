@@ -1782,7 +1782,7 @@ class InstructionSelector:
                 offset = getattr(operand, 'offset', 0) or 0
                 label = operand.symbol.rom_label
                 if offset:
-                    label = f"{label}+{offset}"
+                    label = f"{label}{offset:+d}"
                 return PhysicalLocation(
                     kind=LocationKind.MEMORY,
                     memory_label=label,
