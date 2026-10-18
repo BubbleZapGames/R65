@@ -13,7 +13,7 @@ a clobber or an alias would break.
 import sys
 from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
-    CallBase,
+    CallBase, ArgumentMechanism,
     MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate,
     Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, TypeConvert, ToBool, Rotate,
     iter_operands, map_operands, index_clobbers,
@@ -578,6 +578,29 @@ def _prefers_x_register(vreg_id: int, uses: list) -> bool:
     return False
 
 
+def _call_arg_compatible(vreg_id: int, call) -> bool:
+    """Whether a counter in X or Y may feed *call*'s arguments.
+
+    Stack, scratch and variable-bound arguments are set up before any register
+    argument and read it in place (TXA/TYA, STX). A register argument is
+    loaded in a fixed order (B, X and Y, then A) that ignores which registers
+    the others read, so it is safe only while no other register argument of
+    the call targets X or Y - one that did could overwrite the counter before
+    it is read. Not as `self`, which is a pointer.
+    """
+    def index_target(arg):
+        return (arg.mechanism == ArgumentMechanism.REGISTER
+                and getattr(arg.location, 'name', None) in ('X', 'Y'))
+    mine = [a for a in call.args
+            if isinstance(a.value, VirtualRegister) and a.value.id == vreg_id]
+    if any(a.mechanism == ArgumentMechanism.SELF_Y for a in mine):
+        return False
+    if not any(a.mechanism == ArgumentMechanism.REGISTER for a in mine):
+        return True
+    return not any(index_target(a) for a in call.args if a not in mine) and \
+        sum(1 for a in mine if index_target(a)) <= 1
+
+
 def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     """
     Check if all uses of a vreg are compatible with hardware register allocation.
@@ -591,6 +614,7 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
       source before resolving anything as a memory operand, and route it
       through A (_emit_store_from_reg, select_store_indirect).
     - CondBranch (as condition) — okay
+    - Call/TraitDispatch argument — see _call_arg_compatible
     - Jump — okay
 
     - BinaryOp with the vreg as left operand against an Immediate, dest
@@ -602,7 +626,6 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     - BinaryOp where vreg is right operand (needs memory operand for CMP/SBC/etc.)
     - UnaryOp — needs value in A
     - LoadIndirect (as dest) — result comes from A, not X/Y
-    - Call/TraitDispatch (as argument value) — may need memory operand
     - TypeConvert, ToBool, Rotate — need value in A
     """
     for use in uses:
@@ -659,9 +682,8 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
             if isinstance(use.dest, VirtualRegister) and use.dest.id == vreg_id:
                 return False
         elif isinstance(use, CallBase):
-            for arg in use.args:
-                if isinstance(arg.value, VirtualRegister) and arg.value.id == vreg_id:
-                    return False
+            if not _call_arg_compatible(vreg_id, use):
+                return False
         elif isinstance(use, (TypeConvert, ToBool, Rotate)):
             # These need value in A
             if hasattr(use, 'source') and isinstance(use.source, VirtualRegister) and use.source.id == vreg_id:
