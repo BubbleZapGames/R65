@@ -74,6 +74,13 @@ class ActiveRegionState:
         # When X/Y are spilled via per-call fallback (no region), we need to
         # emit PLX/PLY after the call. Maps hw_reg -> SpillInfo.
         self.pending_xy_spills: Dict[str, SpillInfo] = {}
+        # Registers on the stack, in push order. X and Y regions are found
+        # one register at a time, so they need not nest: a reload pulls
+        # everything above its register first (_emit_hw_reloads).
+        self.spill_stack: List[str] = []
+        # Registers pulled early that way while their region goes on: their
+        # region's next call pushes them again.
+        self.respill: Set[str] = set()
 
     def set_block_regions(self, block_id: int, regions: Dict[str, List['ClobberRegion']]):
         """Set pre-computed regions for a block."""
@@ -83,6 +90,8 @@ class ActiveRegionState:
         self.active_regions.clear()
         # Clear any pending per-call X/Y spills
         self.pending_xy_spills.clear()
+        self.spill_stack.clear()
+        self.respill.clear()
         # Reset stack tracker for new block
         self.stack_tracker.reset()
 
@@ -790,6 +799,10 @@ class CallInstructionSelector(BaseSelector):
                         spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
                         # Mark region as active
                         self.region_state.mark_region_active(reg_name, region)
+                    elif reg_name in self.region_state.respill:
+                        # Pulled early to reach a register below it
+                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
+                        self.region_state.respill.discard(reg_name)
                     # Else: already in active region, no spill needed
                     continue
 
@@ -821,6 +834,14 @@ class CallInstructionSelector(BaseSelector):
                     if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
                         spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
 
+        # Push what is restored last first, so the regions starting here nest:
+        # a register reloaded after this call (per-call A or X/Y) goes on top,
+        # an X/Y region on by its last call, latest deepest.
+        def ends(spill):
+            region = (self.region_state.get_region_for_call(spill.hw_reg, instr_idx)
+                      if instr_idx is not None and spill.vreg is None else None)
+            return region.clobbering_calls[-1] if region is not None else -1
+        spills.sort(key=ends, reverse=True)
         return spills
 
     def _compute_hw_reloads(self, instr: Call) -> List[SpillInfo]:
@@ -927,12 +948,14 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_push('A', f"Spill A (m{current_mode})")
                 # Track stack growth based on actual mode
                 self.region_state.stack_tracker.push(2 if current_mode == 16 else 1)
+                self.region_state.spill_stack.append('A')
                 # Save spill info for reload
                 self.region_state.pending_a_spill = spill_with_mode
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
                 self.region_state.stack_tracker.push(2)
+                self.region_state.spill_stack.append(spill.hw_reg)
                 # Track per-call spill for X/Y when no region is active.
                 # Region-based spills have mark_region_active() called before
                 # _emit_hw_spills(), so is_region_active() distinguishes the paths.
@@ -943,7 +966,10 @@ class CallInstructionSelector(BaseSelector):
         """
         Emit pull instructions to reload spilled hardware registers.
 
-        Must be called in reverse order of spills due to stack behavior (LIFO).
+        Pulls in the reverse of the push order, whatever order `spills` is
+        in. A register pushed after one of these (a Y region opened inside an
+        X region that ends first) is pulled too, to reach it, and pushed again
+        at the next call of its region.
         Updates the spill offset to track stack shrinkage.
 
         For region-based spilling, this is only called at region end.
@@ -956,7 +982,27 @@ class CallInstructionSelector(BaseSelector):
         """
         from r65.compiler.codegen.constants import M_FLAG
 
-        for spill in reversed(spills):
+        stack = self.region_state.spill_stack
+        wanted = {spill.hw_reg: spill for spill in spills}
+        on_stack = [reg for reg in wanted if reg in stack]
+        if on_stack:
+            depth = min(stack.index(reg) for reg in on_stack)
+            for reg in stack[depth:]:
+                if reg not in wanted:
+                    if reg not in self.region_state.active_regions:
+                        raise InstructionSelectionError(
+                            f"internal: {reg} spilled above a reloaded register "
+                            f"outside any clobber region",
+                            source_loc=self.parent._current_source_loc)
+                    wanted[reg] = SpillInfo(vreg=None, hw_reg=reg)
+                    self.region_state.respill.add(reg)
+            ordered = ([wanted[reg] for reg in reversed(stack[depth:])]
+                       + [s for s in reversed(spills) if s.hw_reg not in stack])
+            del stack[depth:]
+        else:
+            ordered = list(reversed(spills))
+
+        for spill in ordered:
             if spill.hw_reg == 'A':
                 # Get the mode A was spilled in
                 pending = self.region_state.pending_a_spill

@@ -463,6 +463,37 @@ class TestSpillReloadOrder:
                 if phx_idx < phy_idx:
                     assert ply_idx < plx_idx, "Reloads should be in reverse order of spills"
 
+    def test_crossing_regions_stay_lifo(self):
+        """X and Y regions are found one register at a time, so they need
+        not nest: here X's ends at g() while Y's, opened later, goes on to
+        h(). Pulling X there took Y's bytes. Y is pulled first to reach X
+        and pushed again for h()."""
+        source = """
+        #[lowram(0x0300)] static mut OUT: [u16; 2];
+        #[inline(never)] fn f() { X = 7; Y = 7; }
+        #[inline(never)] fn g() { X = 8; Y = 8; }
+        #[inline(never)] fn h() { X = 9; Y = 9; }
+        #[inline(never)] fn crossing() {
+            X = 0x1111;
+            f();
+            Y = 0x2222;
+            g();
+            OUT[0] = X;
+            h();
+            OUT[1] = Y;
+        }
+        #[entry] fn main() { crossing(); }
+        """
+        body = compile_string(source, "test.r65").split('crossing:', 1)[1].split('RTS', 1)[0]
+        stack = []
+        for line in body.splitlines():
+            op = line.split(';')[0].strip()
+            if op in ('PHX', 'PHY'):
+                stack.append(op[2])
+            elif op in ('PLX', 'PLY'):
+                assert stack and stack.pop() == op[2], f"{op} pulls another register:\n{body}"
+        assert not stack, f"unbalanced:\n{body}"
+
 
 class Test16BitAccumulatorSpilling:
     """Tests for 16-bit A register handling with correct mode."""
