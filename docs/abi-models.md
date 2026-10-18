@@ -213,6 +213,26 @@ restore needs its mode pinned — and it is pinned in **both** directions. A `TY
 executed in m16 writes 16 bits into A, and the high half *is* B, which by then
 holds a `@ B` argument.
 
+### Arguments Read From Each Other's Registers
+
+Register arguments load in a fixed order: `@ B` first (it goes through A),
+then `@ X`/`@ Y`, then `@ A` last. When one argument's source is a register
+another argument is loaded into, that order alone would read the new value, so
+an argument that loads X or Y waits until every other argument reading that
+register has been set up:
+
+```rust
+fn f(a @ X: u16, b @ Y: u16) { }
+f(Y, M);   // X <- Y before Y <- M
+f(Y, X);   // each is the other's source: PHX; TYX; PLY
+```
+
+The swap goes through the stack, so A, B and the accumulator mode are left
+alone. An `@ A` argument read from X or Y that another argument reloads is
+transferred into A first and then kept there like any value already in A (see
+above); if that other argument's own source is A, the two swap the same way
+(`PHX; TAX; PLA`).
+
 ### Storing From an Index Register
 
 X and Y are unconditionally 16-bit in R65, so `STX`/`STY` write **two** bytes. A

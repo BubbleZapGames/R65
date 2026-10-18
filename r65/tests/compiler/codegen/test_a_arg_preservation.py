@@ -423,3 +423,22 @@ fn main() {{ OUT = caller(9); }}
     def test_both_preserved(self):
         after = self.after_call("#[preserves(X, Y)]")
         assert not {'PLX', 'PLY'} & set(after), after
+
+
+class TestIndexArgumentSwap:
+    """`f(Y, X)` into `a @ X, b @ Y`: each register is the other's source, so
+    neither can go first. The swap leaves A, B and the mode alone. Values:
+    tests/e2e/test_register_arg_order.py."""
+
+    def test_swap_through_the_stack(self):
+        source = """
+#[zeropage(0x20)]
+static mut OUT: u16;
+#[inline(never)] far fn f(a @ X: u16, b @ Y: u16) -> u16 { return a + b; }
+fn caller() -> u16 { X = 0x1111; Y = 0x2222; return f(Y, X); }
+#[entry]
+fn main() { OUT = caller(); }
+"""
+        emitted = instrs_for(source)
+        call = next(i for i, s in enumerate(emitted) if s.startswith(('JSR', 'JSL')))
+        assert emitted[call - 3:call] == ['PHX', 'TYX', 'PLY'], emitted

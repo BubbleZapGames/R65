@@ -358,6 +358,8 @@ class ABIModel(ABC):
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.opcodes import Opcode
 
+        other_args = self._read_a_source_first(selector, other_args)
+
         def is_a_resident_priority(arg):
             arg_loc = selector.parent._get_operand_location(arg.value)
             if not arg_loc.is_hw('A'):
@@ -369,6 +371,7 @@ class ABIModel(ABC):
         ordered = sorted(other_args, key=selector.arg_sort_key)
         ordered.sort(key=lambda a: 0 if is_a_resident_priority(a) else 1)
         ordered = self._reorder_scratch_params(selector, ordered)
+        ordered, swap = self._order_index_reads(selector, ordered)
 
         def adjust_loc(loc):
             if loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
@@ -376,9 +379,19 @@ class ABIModel(ABC):
             return loc
 
         def emit(arg):
+            if swap and arg is swap[0]:
+                self._emit_index_swap(selector)
+                return
+            if swap and arg is swap[1]:
+                return                        # the swap delivered it
             # Resolved late: a stack save shifts every stack-relative source.
             arg_loc = adjust_loc(selector.parent._get_operand_location(arg.value))
             selector.emit_argument_setup(arg, arg_loc)
+
+        def clobbers_a(arg, loc):
+            if swap and (arg is swap[0] or arg is swap[1]):
+                return False                  # PHX; TYX; PLY
+            return selector.arg_setup_clobbers_a(arg, loc)
 
         locs = [selector.parent._get_operand_location(a.value) for a in ordered]
         a_idxs = [i for i, l in enumerate(locs) if l.is_hw('A')]
@@ -393,7 +406,7 @@ class ABIModel(ABC):
         span = len(ordered) if sink else last
         clobbering = [j for j in range(span)
                       if j != last
-                      and selector.arg_setup_clobbers_a(ordered[j], locs[j])]
+                      and clobbers_a(ordered[j], locs[j])]
 
         if not clobbering:
             for arg in ordered:
@@ -434,12 +447,120 @@ class ABIModel(ABC):
                 save.close(selector, final=(i == last))
                 dirty = False
             emit(arg)
-            if selector.arg_setup_clobbers_a(arg, locs[i]):
+            if clobbers_a(arg, locs[i]):
                 dirty = True
         if sink:
             if dirty:
                 save.close(selector, final=True)
             emit(ordered[last])               # normally a no-op; that is the point
+
+    def _index_write(self, arg, loc):
+        """The index register setting up *arg* overwrites, or None."""
+        from r65.compiler.mir.nodes import ArgumentMechanism
+        if arg.mechanism == ArgumentMechanism.REGISTER:
+            target = self._register_target_name(arg)
+            if target in ('X', 'Y') and not loc.is_hw(target):
+                return target
+        return None
+
+    def _read_a_source_first(self, selector, args):
+        """Move an `@ A` argument's X/Y source into A before anything writes it.
+
+        A is loaded last, after X and Y, so an `@ A` argument read from an
+        index register another argument is loaded into would read the new
+        value. Transferred first, it is a value sitting in A like any other,
+        which the bracket in _emit_other_args keeps alive to the call.
+
+        When that other argument's own source is A, the two swap: the index
+        register is pushed, takes A, and is pulled back into A (in m16, as
+        it was pushed, then narrowed to the parameter).
+        """
+        from dataclasses import replace
+        from r65.compiler.mir.nodes import ArgumentMechanism, HardwareRegister
+        from r65.compiler.codegen.opcodes import Opcode
+        from r65.compiler.errors import CodegenError
+        locs = [selector.parent._get_operand_location(a.value) for a in args]
+        writer = {self._index_write(a, l): i for i, (a, l) in enumerate(zip(args, locs))}
+        for i, (arg, loc) in enumerate(zip(args, locs)):
+            if not (arg.mechanism == ArgumentMechanism.REGISTER
+                    and self._register_target_name(arg) == 'A'
+                    and loc.is_hw() and loc.hw_register in writer):
+                continue
+            src, w = loc.hw_register, writer[loc.hw_register]
+            in_a = [j for j, l in enumerate(locs) if l.is_hw('A')]
+            width = 16 if self._arg_size(arg) >= 2 else 8
+            out = list(args)
+            out[i] = replace(arg, value=HardwareRegister('A'))
+            if not in_a:
+                _force_accu_mode(selector, width)
+                op = Opcode.TXA if src == 'X' else Opcode.TYA
+                selector._emit_implied(op, "`@ A` argument read before its source is reloaded")
+                return out
+            if in_a != [w] or any(self._register_target_name(a) == 'B' for a in args
+                                  if a.mechanism == ArgumentMechanism.REGISTER):
+                raise CodegenError(
+                    "internal: an `@ A` argument read from an index register "
+                    "another argument overwrites, while A also feeds a third")
+            selector._emit_push(src, f"Swap A and {src} arguments")
+            selector.region_state.stack_tracker.push(2)
+            selector.emit_argument_setup(args[w], locs[w])
+            _force_accu_mode(selector, 16)
+            selector._emit_pull('A')
+            selector.region_state.stack_tracker.pop(2)
+            _force_accu_mode(selector, width)
+            del out[w]
+            return out
+        return args
+
+    def _order_index_reads(self, selector, ordered):
+        """*ordered*, with every read of X or Y before the argument that loads it.
+
+        Register arguments load in rank order (B, X/Y, A) and A-resident
+        sources go first, neither of which sees that one argument's source
+        may be another's target: `f(Y, M)` into `a @ X, b @ Y` loaded Y and
+        passed it twice. An argument that writes X or Y now waits for every
+        other reader of it, and otherwise keeps its place. X and Y each read
+        by the other's argument is a swap, done in one step; the returned
+        (X argument, Y argument) pair marks it.
+        """
+        from r65.compiler.errors import CodegenError
+        locs = [selector.parent._get_operand_location(a.value) for a in ordered]
+        reads = [{r for r in ('X', 'Y') if l.is_hw(r)} for l in locs]
+        writes = [self._index_write(a, l) for a, l in zip(ordered, locs)]
+        xi = next((i for i, w in enumerate(writes) if w == 'X'), None)
+        yi = next((i for i, w in enumerate(writes) if w == 'Y'), None)
+        swap = None
+        if xi is not None and yi is not None and 'Y' in reads[xi] and 'X' in reads[yi]:
+            swap = (ordered[xi], ordered[yi])
+        unit = {xi, yi} if swap else set()
+
+        pending, result = list(range(len(ordered))), []
+        while pending:
+            for i in pending:
+                if i in unit:
+                    blocked = any(reads[j] for j in pending if j not in unit)
+                else:
+                    blocked = writes[i] is not None and any(
+                        writes[i] in reads[j] for j in pending if j != i)
+                if not blocked:
+                    break
+            else:
+                raise CodegenError("internal: register arguments read one "
+                                   "another's targets in a cycle")
+            picked = sorted(unit) if i in unit else [i]
+            for k in picked:
+                pending.remove(k)
+                result.append(ordered[k])
+        return result, swap
+
+    @staticmethod
+    def _emit_index_swap(selector):
+        """X and Y each take the other's value: A, B and the mode untouched."""
+        selector._emit_push('X', "Swap X and Y arguments")
+        selector.region_state.stack_tracker.push(2)
+        selector._emit_transfer('Y', 'X')
+        selector._emit_pull('Y')
+        selector.region_state.stack_tracker.pop(2)
 
     def _emit_self_y(self, selector, self_y_arg):
         """Load Y (and DBR for far self) for a SELF_Y argument."""
