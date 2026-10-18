@@ -372,6 +372,36 @@ class ProgramCodeGenerator:
             asm_includes_by_bank.setdefault(bank_for_inc, []).append(inc)
             functions_by_bank.setdefault(bank_for_inc, [])  # ensure bank window opens
 
+        # Generate callees before callers, so a call sees which index
+        # registers its callee leaves alone (clobber_summary); each body is
+        # laid out in its bank below. Every function starts from the same
+        # emitter state, in its own bank.
+        from r65.compiler.codegen.clobber_summary import (
+            INDEX_REGS, callee_first, has_inline_asm, index_writes)
+        from r65.compiler.codegen.emitter import _snapshot, _restore
+        gen = self.func_gen.func_gen
+        gen.index_writes = {}
+        laid_out = [f for b in sorted(functions_by_bank) for f in functions_by_bank[b]]
+        bank_of = {f.name: b for b, fs in functions_by_bank.items() for f in fs}
+        function_names = frozenset(bank_of)
+        fresh = _snapshot(self.emitter)
+        bodies = {}
+        for mir_func in callee_first(laid_out):
+            _restore(self.emitter, fresh)
+            self.emitter.code_bank = self.emitter.rom_base + bank_of[mir_func.name]
+            outer, self.emitter.nodes = self.emitter.nodes, []
+            try:
+                gen.generate_function(mir_func, scratch_pool=scratch_pool,
+                                      abi_model=abi_model)
+            finally:
+                body, self.emitter.nodes = self.emitter.nodes, outer
+            bodies[mir_func.name] = body
+            if opt_level >= 1:
+                gen.index_writes[mir_func.name] = (
+                    INDEX_REGS if has_inline_asm(mir_func)
+                    else index_writes(body, gen.index_writes, function_names))
+        _restore(self.emitter, fresh)
+
         # Generate code for each bank
         function_starts = []
         entry_modes = {}
@@ -392,11 +422,7 @@ class ProgramCodeGenerator:
             # Generate functions in this bank
             for mir_func in bank_functions:
                 start = len(self.emitter.nodes)
-                self.func_gen.func_gen.generate_function(
-                    mir_func,
-                    scratch_pool=scratch_pool,
-                    abi_model=abi_model
-                )
+                self.emitter.nodes.extend(bodies[mir_func.name])
                 # The peephole optimizer iterates each function separately.
                 if len(self.emitter.nodes) > start:
                     function_starts.append(self.emitter.nodes[start])
@@ -465,6 +491,10 @@ class ProgramCodeGenerator:
                 acc_abi=acc_abi)
             if num_optimizations > 0:
                 print(f"Peephole optimizer: {num_optimizations} optimization(s) applied", file=sys.stderr)
+            from r65.compiler.codegen.clobber_summary import check_after_peephole
+            check_after_peephole(optimized_nodes,
+                                 {n: b[-1] for n, b in bodies.items() if b},
+                                 gen.index_writes, function_names)
         else:
             optimized_nodes = nodes
 

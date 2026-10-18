@@ -35,6 +35,7 @@ from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.abi import StackStateTracker
 from r65.compiler.codegen.type_utils import arg_param_size, scalar_width
 from r65.compiler.codegen.arg_order import arg_sort_key
+from r65.compiler.codegen.clobber_summary import INDEX_REGS
 
 
 class SpillInfo(NamedTuple):
@@ -209,11 +210,57 @@ class CallInstructionSelector(BaseSelector):
             for block in self.parent.current_function.blocks.values():
                 for instr in block.instructions:
                     if isinstance(instr, Call) and isinstance(instr.function, str):
-                        if instr.preserves_attr:
-                            func_name = instr.function
-                            preserves_map[func_name] = set(instr.preserves_attr.registers)
+                        preserved = self.callee_preserves(instr)
+                        if preserved:
+                            preserves_map[instr.function] = preserved
 
         return preserves_map
+
+    def callee_preserves(self, instr) -> Set[str]:
+        """The registers a call leaves as they were: the callee's
+        `#[preserves(...)]` plus the index registers its code never writes."""
+        attr = getattr(instr, 'preserves_attr', None)
+        declared = set(attr.registers) if attr else set()
+        return declared | self._inferred_preserves(instr)
+
+    def _inferred_preserves(self, instr) -> Set[str]:
+        """The index registers a named call keeps because its callee's code,
+        and its callees', never writes them (clobber_summary).
+
+        Not a register the call's own arguments go to (self rides in Y), and
+        nothing for a call with stack arguments: parking A across their setup
+        and pulling them off after both go through X or Y."""
+        if (type(instr) is not Call or not isinstance(instr.function, str)
+                or instr.builtin_name):
+            return set()
+        summaries = getattr(self.parent.func_gen, 'index_writes', None) or {}
+        writes = summaries.get(instr.function)
+        if writes is None:
+            return set()
+        if any(a.mechanism == ArgumentMechanism.STACK for a in instr.args):
+            return set()
+        targets = {getattr(a.location, 'name', None) for a in instr.args
+                   if a.mechanism == ArgumentMechanism.REGISTER}
+        if any(a.mechanism == ArgumentMechanism.SELF_Y for a in instr.args):
+            targets.add('Y')
+        return set(INDEX_REGS - writes) - targets
+
+    def _check_inferred_preserves(self, instr, start: int, inferred: Set[str]):
+        """A call kept an index register unsaved on its callee's summary: the
+        code emitted around the JSR must not write it either - except to
+        land the call's own result there."""
+        from r65.compiler.codegen.asm_nodes import Address, Instruction
+        from r65.compiler.codegen.clobber_summary import index_writes
+        rest = [n for n in self.parent.emitter.nodes[start:]
+                if not (isinstance(n, Instruction) and n.opcode in (Opcode.JSR, Opcode.JSL)
+                        and n.operand == Address(instr.function))]
+        clobbered = ((index_writes(rest, {}, frozenset()) & inferred)
+                     - self._call_result_registers(instr))
+        if clobbered:
+            raise InstructionSelectionError(
+                f"internal: call to '{instr.function}' writes {sorted(clobbered)} "
+                f"while its callee summary keeps it unsaved",
+                source_loc=self.parent._current_source_loc)
 
     # ========================================================================
     # Call-Specific Emission Helpers
@@ -284,6 +331,10 @@ class CallInstructionSelector(BaseSelector):
             self.parent.current_function and
             self.parent.current_function.far_ptr_strategy == FarPtrStrategy.SET_DBR
         )
+
+        call_start = len(self.parent.emitter.nodes)
+        inferred = self._inferred_preserves(instr) - set(
+            instr.preserves_attr.registers if instr.preserves_attr else ())
 
         # Step 0: Compute hardware register spills needed
         # Spill hw registers that are live across this call and not preserved by callee
@@ -374,6 +425,9 @@ class CallInstructionSelector(BaseSelector):
         # Step 8b: SET_DBR: restore ptr-bank DBR after call
         if needs_dbr_management:
             self._emit_dbr_restore_after_call()
+
+        if inferred:
+            self._check_inferred_preserves(instr, call_start, inferred)
 
     # ========================================================================
     # Trait Dispatch
@@ -778,9 +832,7 @@ class CallInstructionSelector(BaseSelector):
         spills: List[SpillInfo] = []
 
         # Get callee's preserved registers
-        preserved: Set[str] = set()
-        if instr.preserves_attr:
-            preserved = set(instr.preserves_attr.registers)
+        preserved = self.callee_preserves(instr)
 
         # Check each hardware register
         reg_alloc = self.parent.reg_alloc
@@ -2263,10 +2315,12 @@ class CallInstructionSelector(BaseSelector):
     def _compute_live_regs_after_call(self, instr: Call, reloads: List[SpillInfo]) -> set:
         """Hardware registers live after return value collection and spill
         reloads (steps 5 through 6.5): every register holding a result
-        (_call_live_after_collection) plus every reloaded register.
+        (_call_live_after_collection) plus every reloaded register, and the
+        index registers the call keeps, which may hold a value never saved.
         """
         live = self._call_live_after_collection(instr)
         live.update(spill.hw_reg for spill in reloads)
+        live.update(self.callee_preserves(instr) & INDEX_REGS)
         return live
 
     def _emit_d_equals_s_restore(self, live_regs: set):

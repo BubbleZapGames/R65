@@ -146,10 +146,9 @@ class ABIModel(ABC):
         if a_save_reg:
             self._restore_a_from(selector, a_save_reg, a_param_is_16bit)
 
-        # The callee's preserved set is exactly what _compute_hw_spills skipped
+        # The call's preserved set is exactly what _compute_hw_spills skipped
         # spilling, so it is exactly what may still hold an unsaved live value.
-        preserved = (set(instr.preserves_attr.registers)
-                     if instr.preserves_attr else frozenset())
+        preserved = selector.callee_preserves(instr)
         self._emit_other_args(selector, other_args, pre_arg_stack_adj, preserved)
 
         self_y_arg = next(
@@ -282,11 +281,12 @@ class ABIModel(ABC):
         TAY/TAX move index-width bits regardless of M, so a register save needs
         no mode pinning when it opens — only when it restores.
 
-        `preserved` is the callee's `#[preserves(...)]` set. Those registers must
-        not be used: `_compute_hw_spills` skips spilling them precisely because
-        the callee promised to restore them, so a live value in one is sitting
-        unsaved. Parking A there destroys it *before* the JSR, where no promise
-        the callee can keep applies. Every other register is either spilled,
+        `preserved` is what the call keeps (`callee_preserves`: the callee's
+        `#[preserves(...)]` and the index registers its code never writes).
+        Those registers must not be used: `_compute_hw_spills` skips spilling
+        them precisely because the callee leaves them, so a live value in one
+        is sitting unsaved. Parking A there destroys it *before* the JSR, where
+        no promise the callee can keep applies. Every other register is either spilled,
         dead, or inside an active clobber region whose start already saved it.
         """
         from r65.compiler.mir.nodes import ArgumentMechanism

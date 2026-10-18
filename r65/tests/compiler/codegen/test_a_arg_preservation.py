@@ -285,7 +285,7 @@ class TestPreservedRegisterNotUsedForParking:
 #[zeropage(0x20)]
 static mut OUT: u16;
 {preserves}
-far fn callee(a @ A: u8, p @ X: u16) -> u8 {{ X = 1; return a; }}
+far fn callee(a @ A: u8, p @ X: u16) -> u8 {{ X = 1; Y = 2; return a; }}
 fn caller(v @ A: u8, w: u16) -> u16 {{
     Y = 0x1234;
     let r: u8 = callee(v, w);
@@ -301,9 +301,9 @@ fn main() {{ OUT = caller(7, 9); }}
             f"Y is live and unspilled because the callee preserves it: {emitted}")
 
     def test_without_the_attribute_y_is_still_used(self):
-        """The control. Without `#[preserves(Y)]` the caller spills Y itself
-        (PHY/PLY), so borrowing it is safe -- this pins the discrimination
-        rather than a blanket 'never use Y'."""
+        """The control. Without `#[preserves(Y)]` the callee's `Y = 2` makes
+        the caller spill Y itself (PHY/PLY), so borrowing it is safe -- this
+        pins the discrimination rather than a blanket 'never use Y'."""
         emitted = instrs_for(self.source(""))
         assert 'TAY' in emitted, f"Y should still be usable here: {emitted}"
         assert 'PHY' in emitted, f"...because the caller spills it: {emitted}"

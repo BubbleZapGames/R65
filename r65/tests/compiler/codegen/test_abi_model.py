@@ -171,6 +171,10 @@ class _MockSelector:
     def load_y_with_self(self, arg, stack_bytes_pushed):
         self.calls.append(('load_y_self',))
 
+    def callee_preserves(self, instr):
+        attr = getattr(instr, 'preserves_attr', None)
+        return set(attr.registers) if attr else set()
+
     def arg_sort_key(self, arg):
         from r65.compiler.mir.nodes import ArgumentMechanism
         order = {
