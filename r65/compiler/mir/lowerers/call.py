@@ -599,9 +599,16 @@ class CallLowerer:
                 mechanism, location = self._get_argument_mechanism(param, arg_value)
                 param_type = param.param_type  # Get parameter type for correct stack push size
             else:
-                # Indirect call or no binding info - use stack
+                # Indirect call or no binding info - use stack. A function
+                # pointer's type still names the parameter, which sizes the
+                # push: an untyped `1` for a u16 is two bytes, not one.
                 mechanism = ArgumentMechanism.STACK
                 location = None
+                from r65.compiler.hir.types import FunctionTypeInfo
+                func_type = getattr(call_expr.func, 'expr_type', None)
+                if (func_decl is None and isinstance(func_type, FunctionTypeInfo)
+                        and i < len(func_type.param_types)):
+                    param_type = func_type.param_types[i]
 
             args.append(Argument(value=arg_value, mechanism=mechanism, location=location, param_type=param_type))
 

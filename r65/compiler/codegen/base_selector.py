@@ -233,6 +233,9 @@ class BaseSelector(ABC):
         byte_info = [("<", f"Load {noun} address low byte"),
                      (">", f"Load {noun} address high byte"),
                      (":", f"Load {noun} bank byte")]
+        # One byte per store: in m16 each STA wrote two, and `FP = g` kept
+        # only g's low byte.
+        self._ensure_m8_mode()
         for i in range(n_bytes):
             prefix, comment = byte_info[i]
             loc = dest_loc if i == 0 else self.parent._offset_location(dest_loc, i)

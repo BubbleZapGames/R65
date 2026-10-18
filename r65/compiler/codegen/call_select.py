@@ -1668,9 +1668,10 @@ class CallInstructionSelector(BaseSelector):
                     source_loc=self.parent._current_source_loc
                 )
 
-        # Adjust ptr_loc for stack arguments pushed before the trampoline
-        if is_stack and stack_bytes_pushed > 0:
-            ptr_loc = self.parent._offset_location(ptr_loc, stack_bytes_pushed)
+        # Stack arguments pushed before the trampoline need no adjustment
+        # here: they are on the stack tracker, which the operand resolver adds
+        # to every stack-relative offset. Only the trampoline's own pushes,
+        # which are not tracked, are counted (pha_count).
 
         # Track how many bytes we've pushed (for stack-relative drift)
         pha_count = 0
@@ -1720,6 +1721,9 @@ class CallInstructionSelector(BaseSelector):
 
             # Step 4: Return label (callee's RTL returns here)
             self.emitter.emit_label(ret_label)
+            # Our RTL took the target and the callee's the return address:
+            # six bytes pushed that no pull in this function took back.
+            self.emitter.stack_depth -= 6
         else:
             # === Near call trampoline (16-bit address) ===
 
@@ -1755,6 +1759,8 @@ class CallInstructionSelector(BaseSelector):
 
             # Step 4: Return label (callee's RTS returns here)
             self.emitter.emit_label(ret_label)
+            # Our RTS took the target and the callee's the return address.
+            self.emitter.stack_depth -= 4
 
     def _emit_trampoline_address_adjust(self, byte_count: int):
         """
