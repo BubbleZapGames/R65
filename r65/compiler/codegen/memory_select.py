@@ -54,7 +54,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(Opcode.STY_DP, temp_addr, "Save Y (self) for indirect access")
             return temp_addr
         else:
-            # Fallback: push Y to stack (adjusts stack offsets by 2)
+            # Fallback: push Y (the emitter counts it for stack offsets)
             self._emit_instr(Opcode.PHY, comment="Save Y (self) for indirect access")
             return None
 
@@ -377,22 +377,9 @@ class MemoryOperationSelector(BaseSelector):
         will_clobber_y = (not instr.index_register and
                           (offset > 0 or needs_y_for_stack))
         if will_clobber_y and self._has_y_self():
+            # A PHY (no scratch free) is in the emitter's displacement, which
+            # every stack-relative operand after it is placed past.
             y_self_save_addr = self._save_y_self()
-            # If PHY was used (no scratch), adjust stack offsets by 2
-            if y_self_save_addr is None:
-                from r65.compiler.codegen.register_alloc import PhysicalLocation
-                if ptr_loc.kind == LocationKind.STACK:
-                    ptr_loc = PhysicalLocation(
-                        kind=LocationKind.STACK,
-                        stack_offset=ptr_loc.stack_offset + 2,
-                        size=ptr_loc.size
-                    )
-                if dest_loc.kind == LocationKind.STACK:
-                    dest_loc = PhysicalLocation(
-                        kind=LocationKind.STACK,
-                        stack_offset=dest_loc.stack_offset + 2,
-                        size=dest_loc.size
-                    )
 
         if instr.index_register:
             # Index register already set by MIR lowerer (e.g., for ptr[i] access)
@@ -534,22 +521,9 @@ class MemoryOperationSelector(BaseSelector):
         will_clobber_y_s = (not instr.index_register and
                             (offset > 0 or needs_y_for_stack))
         if will_clobber_y_s and self._has_y_self():
+            # A PHY (no scratch free) is in the emitter's displacement, which
+            # every stack-relative operand after it is placed past.
             y_self_save_addr_s = self._save_y_self()
-            # If PHY was used (no scratch), adjust stack offsets by 2
-            if y_self_save_addr_s is None:
-                from r65.compiler.codegen.register_alloc import PhysicalLocation
-                if ptr_loc.kind == LocationKind.STACK:
-                    ptr_loc = PhysicalLocation(
-                        kind=LocationKind.STACK,
-                        stack_offset=ptr_loc.stack_offset + 2,
-                        size=ptr_loc.size
-                    )
-                if src_loc.kind == LocationKind.STACK:
-                    src_loc = PhysicalLocation(
-                        kind=LocationKind.STACK,
-                        stack_offset=src_loc.stack_offset + 2,
-                        size=src_loc.size
-                    )
 
         if instr.index_register:
             # Index register already set by MIR lowerer (e.g., for ptr[i] access)
@@ -863,8 +837,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(Opcode.PHA, None, "Save store value")
 
             # Load bank byte from far pointer (3rd byte, at base offset+2)
-            # Account for PHB (+1) and PHA (+1) = +2 to all stack offsets
-            self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 2), "Load ptr bank")
+            self._emit_instr(Opcode.LDA_STACK, self.parent.stack_operand(stack_offset + 2), "Load ptr bank")
             self._emit_instr(Opcode.PHA, None, "Push bank")
             self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
@@ -874,25 +847,20 @@ class MemoryOperationSelector(BaseSelector):
                 index_register = 'Y'
 
             # Restore value to store (PLA pops 1 byte)
-            # Stack is now: +1 (PHB only, since PHA value/PHA bank/PLB cancel)
             self._emit_instr(Opcode.PLA, None, "Restore store value")
 
-            adjusted_offset = stack_offset + 1
-            operand = StackOffset(adjusted_offset)
+            operand = self.parent.stack_operand(stack_offset)
 
             self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "STA through far pointer")
         else:
             # For LDA: bank byte load into A is fine (result goes into A anyway)
             # Load bank byte from far pointer (3rd byte, at base offset+2)
-            # Account for PHB pushing 1 byte onto stack (+1 to all stack offsets)
-            self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 1), "Load ptr bank")
+            self._emit_instr(Opcode.LDA_STACK, self.parent.stack_operand(stack_offset + 2), "Load ptr bank")
             self._emit_instr(Opcode.PHA, None, "Push bank")
             self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
             # Now (d,S),Y will use DBR for the bank byte
-            # Stack offset is +1 from original due to PHB (PHA/PLB cancel out)
-            adjusted_offset = stack_offset + 1
-            operand = StackOffset(adjusted_offset)
+            operand = self.parent.stack_operand(stack_offset)
 
             # The (d,S),Y addressing mode requires Y index register
             # If no index provided, set Y to 0
@@ -989,10 +957,10 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect access")
 
         if mnemonic == 'LDA':
-            self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, StackOffset(stack_offset),
+            self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, self.parent.stack_operand(stack_offset),
                            "LDA through far pointer (d,S),Y")
         elif mnemonic == 'STA':
-            self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, StackOffset(stack_offset),
+            self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, self.parent.stack_operand(stack_offset),
                            "STA through far pointer (d,S),Y")
         else:
             raise InstructionSelectionError(
@@ -1137,7 +1105,7 @@ class MemoryOperationSelector(BaseSelector):
     def _emit_24bit_far_ptr_store_via_set_dbr(self, ptr_loc, src_loc, source, index_register: str = None):
         """Emit 24-bit far pointer store using bare (d,S),Y when DBR is set."""
         self._ensure_m8_mode()
-        operand = StackOffset(ptr_loc.stack_offset)
+        operand = self.parent.stack_operand(ptr_loc.stack_offset)
         words = self._PTR_BYTE_WORDS
         self._emit_indirect_store_bytes(
             3, src_loc, source, index_register,
@@ -1183,7 +1151,7 @@ class MemoryOperationSelector(BaseSelector):
     def _emit_24bit_far_ptr_load_via_set_dbr(self, ptr_loc, dest_loc, index_register: str = None):
         """Emit 24-bit far pointer load using bare (d,S),Y when DBR is set."""
         self._ensure_m8_mode()
-        operand = StackOffset(ptr_loc.stack_offset)
+        operand = self.parent.stack_operand(ptr_loc.stack_offset)
         words = self._PTR_BYTE_WORDS
         self._emit_indirect_load_bytes(
             3, dest_loc, index_register,
@@ -1252,18 +1220,14 @@ class MemoryOperationSelector(BaseSelector):
         self._emit_instr(Opcode.PHB, None, "Save DBR")
 
         # Load bank byte from far pointer (3rd byte, at base offset+2)
-        # Account for PHB pushing 1 byte onto stack
-        self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 1), "Load ptr bank")
+        self._emit_instr(Opcode.LDA_STACK, self.parent.stack_operand(stack_offset + 2), "Load ptr bank")
         self._emit_instr(Opcode.PHA, None, "Push bank")
         self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
-        # Adjusted pointer offset due to PHB (+1 byte on stack)
-        adjusted_offset = stack_offset + 1
-        operand = StackOffset(adjusted_offset)
+        operand = self.parent.stack_operand(stack_offset)
 
-        # Adjust dest_loc for PHB stack shift if it's stack-relative
-        adj_dest = (replace(dest_loc, stack_offset=dest_loc.stack_offset + 1)
-                    if dest_loc.kind == LocationKind.STACK else dest_loc)
+        # dest_loc goes through the resolver, which counts the PHB
+        adj_dest = dest_loc
         words = self._PTR_BYTE_WORDS
         self._emit_indirect_load_bytes(
             2, adj_dest, index_register,
@@ -1303,14 +1267,11 @@ class MemoryOperationSelector(BaseSelector):
             # bank-byte load does not touch.
             self._emit_instr(Opcode.PHA, None, "Save A low byte")
 
-            # Load bank byte (account for PHB+PHA = +2 on stack)
-            self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 2), "Load ptr bank")
+            self._emit_instr(Opcode.LDA_STACK, self.parent.stack_operand(stack_offset + 2), "Load ptr bank")
             self._emit_instr(Opcode.PHA, None, "Push bank")
             self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
-            # Adjusted offset: PHB (+1) + PHA (+1) = +2
-            adjusted_offset = stack_offset + 2
-            operand = StackOffset(adjusted_offset)
+            operand = self.parent.stack_operand(stack_offset)
 
             if index_register == 'Y':
                 pass
@@ -1319,9 +1280,7 @@ class MemoryOperationSelector(BaseSelector):
 
             # Restore and store low byte
             self._emit_instr(Opcode.PLA, None, "Restore A low byte")
-            # Now account for PHB only (+1)
-            adjusted_offset = stack_offset + 1
-            operand = StackOffset(adjusted_offset)
+            operand = self.parent.stack_operand(stack_offset)
             self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, operand, "Store low byte through far pointer")
 
             self._emit_instr(Opcode.INY, None, "Increment for high byte")
@@ -1339,21 +1298,14 @@ class MemoryOperationSelector(BaseSelector):
         self._emit_instr(Opcode.PHB, None, "Save DBR")
 
         # Load bank byte from far pointer (3rd byte, at base offset+2)
-        # Account for PHB pushing 1 byte onto stack
-        self._emit_instr(Opcode.LDA_STACK, StackOffset(stack_offset + 2 + 1), "Load ptr bank")
+        self._emit_instr(Opcode.LDA_STACK, self.parent.stack_operand(stack_offset + 2), "Load ptr bank")
         self._emit_instr(Opcode.PHA, None, "Push bank")
         self._emit_instr(Opcode.PLB, None, "Set DBR to ptr bank")
 
-        # Adjusted offset due to PHB
-        adjusted_offset = stack_offset + 1
-        operand = StackOffset(adjusted_offset)
+        operand = self.parent.stack_operand(stack_offset)
 
-        # Adjust src_loc for PHB stack shift if it's stack-relative
-        from dataclasses import replace as dc_replace
-        if src_loc and src_loc.kind == LocationKind.STACK:
-            adj_src = dc_replace(src_loc, stack_offset=src_loc.stack_offset + 1)
-        else:
-            adj_src = src_loc
+        # src_loc goes through the resolver, which counts the PHB
+        adj_src = src_loc
 
         words = self._PTR_BYTE_WORDS
         self._emit_indirect_word_store(
@@ -1428,7 +1380,7 @@ class MemoryOperationSelector(BaseSelector):
         if not index_register or index_register != 'Y':
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
 
-        self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, StackOffset(stack_offset),
+        self._emit_instr(Opcode.LDA_STACK_INDIRECT_Y, self.parent.stack_operand(stack_offset),
                         "Load u16 through far pointer (d,S),Y")
         self._emit_load_store('STA', dest_loc)
 
@@ -1441,7 +1393,7 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
 
         self._load_word_into_a(src_loc, source)
-        self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, StackOffset(stack_offset),
+        self._emit_instr(Opcode.STA_STACK_INDIRECT_Y, self.parent.stack_operand(stack_offset),
                         "Store u16 through far pointer (d,S),Y")
 
     # ========================================================================
@@ -1482,9 +1434,9 @@ class MemoryOperationSelector(BaseSelector):
             raise InstructionSelectionError(f"Expected STACK location, got: {ptr_loc.kind}", source_loc=self.parent._current_source_loc)
 
         # Stack offset for (d,S),Y addressing
-        # ptr_loc.stack_offset is already the correct offset from S
+        # ptr_loc is frame-relative; the operand is placed past what is pushed
         stack_offset = ptr_loc.stack_offset
-        operand = StackOffset(stack_offset)
+        operand = self.parent.stack_operand(stack_offset)
 
         if mnemonic == 'LDA':
             if index_register == 'Y':

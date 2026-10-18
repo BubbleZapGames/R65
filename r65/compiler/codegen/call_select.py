@@ -32,7 +32,6 @@ from r65.compiler.codegen.opcodes import (
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
-from r65.compiler.codegen.abi import StackStateTracker
 from r65.compiler.codegen.type_utils import arg_param_size, scalar_width
 from r65.compiler.codegen.arg_order import arg_sort_key
 from r65.compiler.mir.call_effects import INDEX_REGS, CallEffects, call_effects
@@ -65,9 +64,6 @@ class ActiveRegionState:
         self.block_regions: Dict[int, Dict[str, List['ClobberRegion']]] = {}
         # Current block ID
         self.current_block_id: Optional[int] = None
-        # Stack state tracker - tracks bytes pushed onto stack for spilling
-        # Used to adjust stack-relative accesses while spills are active
-        self.stack_tracker: StackStateTracker = StackStateTracker()
         # Track pending A spill info for reload (need to restore mode)
         self.pending_a_spill: Optional[SpillInfo] = None
         # Track pending per-call X/Y spills for reload
@@ -92,8 +88,6 @@ class ActiveRegionState:
         self.pending_xy_spills.clear()
         self.spill_stack.clear()
         self.respill.clear()
-        # Reset stack tracker for new block
-        self.stack_tracker.reset()
 
     def get_region_for_call(self, hw_reg: str, call_idx: int) -> Optional['ClobberRegion']:
         """
@@ -352,6 +346,11 @@ class CallInstructionSelector(BaseSelector):
 
         # Step 3: Make the call
         self._emit_call_instruction(instr, stack_bytes_pushed)
+        pascal_result_bytes = getattr(instr, 'pascal_result_bytes', 0)
+        if self.parent.abi_model.kind == ABIKind.PASCAL and stack_bytes_pushed > 0:
+            # A Pascal callee removes its parameters before it returns, so by
+            # here only the result space is left of what was pushed.
+            self.emitter.note_stack(-(stack_bytes_pushed - pascal_result_bytes))
 
         # Invalidate XBA state after call (function may have modified A/B)
         self.parent._invalidate_xba_state()
@@ -365,20 +364,13 @@ class CallInstructionSelector(BaseSelector):
             self._emit_pull('DBR', "Restore data bank (caller)")
 
         # Step 5: Collect return values (in callee's exit mode)
-        pascal_result_bytes = getattr(instr, 'pascal_result_bytes', 0)
         if pascal_result_bytes > 0:
             # Pascal: callee cleaned params, result space is at TOS.
             # PLA the result from the stack instead of reading from registers.
             self._emit_pascal_return_value_collection(instr, pascal_result_bytes)
-            # Callee cleaned params, we PLA'd result — all pushed bytes are gone.
-            self.region_state.stack_tracker.pop(stack_bytes_pushed)
-            # The pulls were seen; the callee's removal of the params was not.
-            self.emitter.stack_depth -= stack_bytes_pushed - pascal_result_bytes
             stack_bytes_pushed = 0
-        elif pascal_result_bytes == 0 and stack_bytes_pushed > 0 and self.parent.abi_model.kind == ABIKind.PASCAL:
+        elif stack_bytes_pushed > 0 and self.parent.abi_model.kind == ABIKind.PASCAL:
             # Pascal void call: callee cleaned all params, nothing remains.
-            self.region_state.stack_tracker.pop(stack_bytes_pushed)
-            self.emitter.stack_depth -= stack_bytes_pushed
             stack_bytes_pushed = 0
         else:
             self._emit_return_value_collection(instr)
@@ -485,7 +477,6 @@ class CallInstructionSelector(BaseSelector):
 
         if emit_phb:
             self._emit_push('DBR', "Save caller's DBR for far self dispatch")
-            self.region_state.stack_tracker.push(1)  # PHB = 1 byte
 
         # Set up arguments (same mechanism as regular calls). The ABI's
         # emit_trait_dispatch_args defers self loading to us via
@@ -526,7 +517,6 @@ class CallInstructionSelector(BaseSelector):
         # Restore caller's DBR after far self dispatch
         if emit_plb:
             self._emit_pull('DBR', "Restore caller's DBR after far self dispatch")
-            self.region_state.stack_tracker.pop(1)  # PLB = 1 byte
 
         # Reload spilled registers
         reloads = self._compute_hw_reloads(instr)
@@ -831,14 +821,12 @@ class CallInstructionSelector(BaseSelector):
                 )
                 self._emit_push('A', f"Spill A (m{current_mode})")
                 # Track stack growth based on actual mode
-                self.region_state.stack_tracker.push(2 if current_mode == 16 else 1)
                 self.region_state.spill_stack.append('A')
                 # Save spill info for reload
                 self.region_state.pending_a_spill = spill_with_mode
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_push(spill.hw_reg, f"Spill {spill.hw_reg} (region start)")
-                self.region_state.stack_tracker.push(2)
                 self.region_state.spill_stack.append(spill.hw_reg)
                 # Track per-call spill for X/Y when no region is active.
                 # Region-based spills have mark_region_active() called before
@@ -908,18 +896,15 @@ class CallInstructionSelector(BaseSelector):
                     self._emit_pull('A', f"Reload A (m{spill_mode})")
 
                     # Track stack shrinkage based on spill mode
-                    self.region_state.stack_tracker.pop(2 if spill_mode == 16 else 1)
 
                     # Clear pending A spill
                     self.region_state.pending_a_spill = None
                 else:
                     # Fallback: no mode info, assume m8
                     self._emit_pull('A', "Reload A (region end)")
-                    self.region_state.stack_tracker.pop(1)
             else:
                 # X/Y are always 16-bit (2 bytes)
                 self._emit_pull(spill.hw_reg, f"Reload {spill.hw_reg} (region end)")
-                self.region_state.stack_tracker.pop(2)
 
     def get_current_spill_offset(self) -> int:
         """
@@ -928,7 +913,7 @@ class CallInstructionSelector(BaseSelector):
         Returns:
             Number of bytes currently pushed for spilling
         """
-        return self.region_state.stack_tracker.displacement
+        return self.parent.emitter.displacement
 
     # ========================================================================
     # Argument Setup
@@ -943,11 +928,9 @@ class CallInstructionSelector(BaseSelector):
     def emit_pha_stack_argument(self, arg, arg_loc, param_size: int):
         """Push one stack argument via PHA (Default and Pascal pass every stack arg this way).
 
-        Source locations are auto-adjusted for current stack displacement by
-        _emit_load -> _get_opcode_for_location. The caller updates the tracker
-        AFTER this method returns (by the full param_size). For multi-byte pushes
-        where intermediate PHAs shift SP, we temporarily adjust the tracker
-        between byte pushes to keep source reads correct.
+        Source locations are placed past everything pushed so far, the bytes
+        of this argument included, by _emit_load -> _get_opcode_for_location
+        reading the emitter's displacement.
 
         Args:
             arg: Argument being emitted
@@ -996,8 +979,6 @@ class CallInstructionSelector(BaseSelector):
                     self._ensure_m8_mode("8-bit A for zero-ext push")
                     self._emit_load_immediate('A', 0, "Zero high byte")
                     self._emit_push('A', "Push high byte (zero)")
-                    # First PHA shifted SP by 1; adjust tracker so source reads are correct
-                    self.region_state.stack_tracker.push(1)
                     if arg_loc.is_hw('X'):
                         self._emit_transfer('X', 'A')
                     elif arg_loc.is_hw('Y'):
@@ -1007,8 +988,6 @@ class CallInstructionSelector(BaseSelector):
                     else:
                         self.parent._emit_load('LDA', arg_loc)
                     self._emit_push('A', "Push low byte")
-                    # Undo temporary adjustment (caller adds full param_size after return)
-                    self.region_state.stack_tracker.pop(1)
             else:
                 # Use PEA for immediate u16 values — pushes 16-bit regardless
                 # of accumulator mode, no REP/SEP needed.
@@ -1049,11 +1028,6 @@ class CallInstructionSelector(BaseSelector):
                     self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
                 self._emit_push('A', f"Push {byte_name} byte")
                 bytes_pushed_so_far += 1
-                # Temporarily adjust tracker for intermediate PHAs
-                if byte_idx > 0:  # Not the last byte
-                    self.region_state.stack_tracker.push(1)
-            # Undo all temporary adjustments (caller adds full param_size after return)
-            self.region_state.stack_tracker.pop(bytes_pushed_so_far - 1)
 
     def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int, live_regs: Set[str]):
         """Pop the PHA-pushed arguments after the call returns.
@@ -1090,6 +1064,7 @@ class CallInstructionSelector(BaseSelector):
                     self._emit_immediate(Opcode.ADC_IMMEDIATE, remaining - 2,
                                          "Drop the arg bytes below it")
                     self._emit_implied(Opcode.TCS)
+                    self.parent.emitter.note_stack(-(remaining - 2))
             self._emit_pull('A', "Pull the parked value back")
         else:
             while remaining >= 2:
@@ -1106,8 +1081,6 @@ class CallInstructionSelector(BaseSelector):
                 else:
                     self._emit_pull('A', "Pop 1 pushed arg byte")
 
-        # Reduce stack tracker to undo the PHA tracking
-        self.region_state.stack_tracker.pop(stack_bytes_pushed)
 
     def emit_register_argument(self, arg, arg_loc):
         """Emit register argument (move to specified register)."""
@@ -1610,8 +1583,8 @@ class CallInstructionSelector(BaseSelector):
             RTL             ; → callee, callee's RTL → __ret_label
         __ret_label:
 
-        Note: For stack-relative locations, each PHA changes the stack pointer,
-        so subsequent loads need their offsets adjusted by +1 for each previous PHA.
+        Note: each PHA moves the stack pointer; the emitter counts it, so a
+        stack-relative pointer slot loaded after it is placed past it.
 
         Args:
             func_ptr_vreg: VirtualRegister holding the function pointer
@@ -1638,7 +1611,6 @@ class CallInstructionSelector(BaseSelector):
         self._ensure_m8_mode("8-bit A for trampoline")
 
         ptr_loc = self.parent._get_operand_location(func_ptr_vreg)
-        is_stack = ptr_loc.kind == LocationKind.STACK
 
         # Handle hardware register fn pointers: spill to scratch before trampoline
         # since we need byte-level access (offset) which hw registers don't support
@@ -1664,20 +1636,15 @@ class CallInstructionSelector(BaseSelector):
                     scratch_addr=scratch_addr,
                     size=needed
                 )
-                is_stack = False
             else:
                 raise InstructionSelectionError(
                     f"Cannot spill hardware register fn pointer for indirect call trampoline",
                     source_loc=self.parent._current_source_loc
                 )
 
-        # Stack arguments pushed before the trampoline need no adjustment
-        # here: they are on the stack tracker, which the operand resolver adds
-        # to every stack-relative offset. Only the trampoline's own pushes,
-        # which are not tracked, are counted (pha_count).
+        # The pointer's slot is frame-relative: the resolver adds every byte
+        # pushed since (stack arguments and the trampoline's own pushes).
 
-        # Track how many bytes we've pushed (for stack-relative drift)
-        pha_count = 0
 
         if is_far:
             # === Far call trampoline (24-bit address) ===
@@ -1686,30 +1653,25 @@ class CallInstructionSelector(BaseSelector):
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f":({ret_label} - 1)"),
                              "Return address bank")
             self._emit_push('A', "Push return bank")
-            pha_count += 1
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">({ret_label} - 1)"),
                              "Return address high")
             self._emit_push('A', "Push return high")
-            pha_count += 1
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<({ret_label} - 1)"),
                              "Return address low")
             self._emit_push('A', "Push return low")
-            pha_count += 1
 
             # Step 2: Push target address (3 bytes from function pointer)
-            bank_offset = 2 + (pha_count if is_stack else 0)
+            bank_offset = 2
             bank_loc = self.parent._offset_location(ptr_loc, bank_offset)
             self.parent._emit_load('LDA', bank_loc, "Load target bank byte")
             self._emit_push('A', "Push target bank")
-            pha_count += 1
 
-            high_offset = 1 + (pha_count if is_stack else 0)
+            high_offset = 1
             high_loc = self.parent._offset_location(ptr_loc, high_offset)
             self.parent._emit_load('LDA', high_loc, "Load target high byte")
             self._emit_push('A', "Push target high")
-            pha_count += 1
 
-            low_offset = 0 + (pha_count if is_stack else 0)
+            low_offset = 0
             if low_offset > 0:
                 low_loc = self.parent._offset_location(ptr_loc, low_offset)
             else:
@@ -1726,7 +1688,7 @@ class CallInstructionSelector(BaseSelector):
             self.emitter.emit_label(ret_label)
             # Our RTL took the target and the callee's the return address:
             # six bytes pushed that no pull in this function took back.
-            self.emitter.stack_depth -= 6
+            self.emitter.note_stack(-6)
         else:
             # === Near call trampoline (16-bit address) ===
 
@@ -1734,20 +1696,17 @@ class CallInstructionSelector(BaseSelector):
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f">({ret_label} - 1)"),
                              "Return address high")
             self._emit_push('A', "Push return high")
-            pha_count += 1
             self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(f"<({ret_label} - 1)"),
                              "Return address low")
             self._emit_push('A', "Push return low")
-            pha_count += 1
 
             # Step 2: Push target address (2 bytes from function pointer)
-            high_offset = 1 + (pha_count if is_stack else 0)
+            high_offset = 1
             high_loc = self.parent._offset_location(ptr_loc, high_offset)
             self.parent._emit_load('LDA', high_loc, "Load target high byte")
             self._emit_push('A', "Push target high")
-            pha_count += 1
 
-            low_offset = 0 + (pha_count if is_stack else 0)
+            low_offset = 0
             if low_offset > 0:
                 low_loc = self.parent._offset_location(ptr_loc, low_offset)
             else:
@@ -1763,7 +1722,7 @@ class CallInstructionSelector(BaseSelector):
             # Step 4: Return label (callee's RTS returns here)
             self.emitter.emit_label(ret_label)
             # Our RTS took the target and the callee's the return address.
-            self.emitter.stack_depth -= 4
+            self.emitter.note_stack(-4)
 
     def _emit_trampoline_address_adjust(self, byte_count: int):
         """
@@ -2100,7 +2059,6 @@ class CallInstructionSelector(BaseSelector):
         the call's return value would be off by 2 bytes.
         """
         self._emit_instr(Opcode.PLD, comment="Restore D from stack before call")
-        self.region_state.stack_tracker.pop(2)
 
     def _emit_d_push_only(self):
         """
@@ -2113,7 +2071,6 @@ class CallInstructionSelector(BaseSelector):
         Updates the stack tracker to undo the displacement from PLD.
         """
         self._emit_instr(Opcode.PHD, comment="Save D back to stack for epilogue")
-        self.region_state.stack_tracker.push(2)
 
     def _compute_live_regs_after_call(self, instr: Call, reloads: List[SpillInfo]) -> set:
         """Hardware registers live after return value collection and spill
@@ -2161,18 +2118,15 @@ class CallInstructionSelector(BaseSelector):
         if 'B' in live_regs or {'A', 'X', 'Y'} <= live_regs:
             # Tier 3: park C on the stack
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
-            self.region_state.stack_tracker.push(2)
             emit_d_equals_s_keeping_c(self.parent.emitter)
         elif 'A' not in live_regs:
             # Tier 1: A is dead — fast path (3 instructions, ~8 cycles)
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
-            self.region_state.stack_tracker.push(2)
             self._emit_instr(Opcode.TSC, comment="A = SP (A is dead)")
             self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
         elif 'X' not in live_regs:
             # Tier 2a: A live, X dead — use TAX/TXA (5 instructions, ~12 cycles)
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
-            self.region_state.stack_tracker.push(2)
             self._emit_instr(Opcode.TAX, comment="Save A in X")
             self._emit_instr(Opcode.TSC, comment="A = SP")
             self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
@@ -2180,7 +2134,6 @@ class CallInstructionSelector(BaseSelector):
         else:
             # Tier 2b: A live, Y dead — use TAY/TYA (5 instructions, ~12 cycles)
             self._emit_instr(Opcode.PHD, comment="Save D back to stack")
-            self.region_state.stack_tracker.push(2)
             self._emit_instr(Opcode.TAY, comment="Save A in Y")
             self._emit_instr(Opcode.TSC, comment="A = SP")
             self._emit_instr(Opcode.TCD, comment="D = SP = frame_base (D = S)")
@@ -2260,7 +2213,6 @@ class CallInstructionSelector(BaseSelector):
         save DBR (PHB) and load the data bank (Emitter.data_bank_load).
         """
         self._emit_instr(Opcode.PHB, comment="Save ptr-bank DBR before call")
-        self.region_state.stack_tracker.push(1)
         self.emitter.emit_data_bank_load("Set DBR to the data bank for callee",
                                          self.parent._current_source_loc)
         # The load's pushes and pulls balance — net zero for stack tracker
@@ -2268,4 +2220,3 @@ class CallInstructionSelector(BaseSelector):
     def _emit_dbr_restore_after_call(self):
         """Restore ptr-bank DBR after a call returns."""
         self._emit_instr(Opcode.PLB, comment="Restore ptr-bank DBR after call")
-        self.region_state.stack_tracker.pop(1)

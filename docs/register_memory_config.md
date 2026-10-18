@@ -239,9 +239,9 @@ single-shot `load_y_with_far_self` calls both.
 Stack accounting for chain MIDDLE/END members: the START member's
 `PHB` byte stays on the stack across the run, so MIDDLE/END dispatches
 that read self from the stack must offset by +1. This is handled
-automatically because `region_state.stack_tracker.push(1)` is called
-at START (and `pop(1)` at END), and the resolver adjusts every
-stack-relative load via `spill_offset` already.
+automatically: the emitter counts the START member's `PHB` in its stack
+displacement until END's `PLB`, and the resolver places every
+stack-relative load past it.
 
 ---
 

@@ -175,21 +175,38 @@ def test_bool_constant_equ_is_numeric():
 def test_capture_leaves_no_trace():
     """A trial emission shows its nodes inside the block and on exit leaves
     the node list and every tracked state as they were."""
-    from r65.compiler.codegen.abi import StackStateTracker
     from r65.compiler.codegen.instruction_select_helpers import XBAStateManager
 
     emitter = AssemblyEmitter()
     emitter.emit_instr(Opcode.TYX)
-    xba, stack = XBAStateManager(emitter), StackStateTracker()
+    xba = XBAStateManager(emitter)
     before = (list(emitter.nodes), dict(vars(emitter)), xba.state)
-    with emitter.capture(xba, stack) as trial:
+    with emitter.capture(xba) as trial:
         emitter.emit_instr(Opcode.REP_IMMEDIATE, Immediate(0x20))
         emitter.emit_accu_mode(16)
         emitter.emit_instr(Opcode.PHA)
         emitter.emit_label("trial")
         xba.emit_xba()
-        stack.push(2)
+        assert emitter.displacement == 2      # the PHA, in m16
         assert [n.opcode for n in trial.nodes if hasattr(n, 'opcode')] == [
             Opcode.REP_IMMEDIATE, Opcode.PHA, Opcode.XBA]
+    # vars(emitter) covers the stack depth and its peak
     assert (emitter.nodes, dict(vars(emitter)), xba.state) == before
-    assert (stack.displacement, stack.peak_displacement) == (0, 0)
+
+
+def test_stack_displacement():
+    """The one record of how far S has moved past the frame: pushes and
+    pulls counted as emitted, moves no opcode shows noted, TCS no reset."""
+    emitter = AssemblyEmitter()
+    emitter.emit_instr(Opcode.PHX)            # a prologue push
+    emitter.start_body()
+    assert emitter.displacement == 0
+    emitter.emit_instr(Opcode.PHA)            # m8: one byte
+    emitter.emit_instr(Opcode.PHY)
+    assert emitter.displacement == 3
+    emitter.emit_instr(Opcode.TCS)            # S set; the emitting code notes by how much
+    assert emitter.displacement == 3
+    emitter.note_stack(-2)                    # say, a callee removed two bytes
+    emitter.emit_instr(Opcode.PLA)
+    assert emitter.displacement == 0
+    assert emitter.peak_displacement == 3

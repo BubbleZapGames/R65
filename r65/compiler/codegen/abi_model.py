@@ -143,7 +143,6 @@ class ABIModel(ABC):
             parked_bytes = 2 if a_param_is_16bit else 1
             _force_accu_mode(selector, 16 if a_param_is_16bit else 8)
             selector._emit_implied(Opcode.PHA, "Park A above the stack args")
-            selector.region_state.stack_tracker.push(parked_bytes)
         elif a_save_reg:
             op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
             selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
@@ -283,7 +282,6 @@ class ABIModel(ABC):
             arg_size = self._arg_size(arg)
             selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
             stack_bytes_pushed += arg_size
-            selector.region_state.stack_tracker.push(arg_size)
 
             if not arg_loc.is_hw('A'):
                 a_clobbered = True
@@ -336,7 +334,7 @@ class ABIModel(ABC):
             return _RegASave(reg, width)
 
         # Always available here: nothing in this pass moves SP, and every
-        # stack-relative source re-resolves against the tracker displacement.
+        # stack-relative source re-resolves against the emitter's displacement.
         return _StackASave(width)
 
     def _emit_other_args(self, selector, other_args, pre_arg_stack_adj,
@@ -511,11 +509,9 @@ class ABIModel(ABC):
                     "internal: an `@ A` argument read from an index register "
                     "another argument overwrites, while A also feeds a third")
             selector._emit_push(src, f"Swap A and {src} arguments")
-            selector.region_state.stack_tracker.push(2)
             selector.emit_argument_setup(args[w], locs[w])
             _force_accu_mode(selector, 16)
             selector._emit_pull('A')
-            selector.region_state.stack_tracker.pop(2)
             _force_accu_mode(selector, width)
             del out[w]
             return out
@@ -566,10 +562,8 @@ class ABIModel(ABC):
     def _emit_index_swap(selector):
         """X and Y each take the other's value: A, B and the mode untouched."""
         selector._emit_push('X', "Swap X and Y arguments")
-        selector.region_state.stack_tracker.push(2)
         selector._emit_transfer('Y', 'X')
         selector._emit_pull('Y')
-        selector.region_state.stack_tracker.pop(2)
 
     def _emit_self_y(self, selector, self_y_arg):
         """Load Y (and DBR for far self) for a SELF_Y argument."""
@@ -685,10 +679,9 @@ class ABIModel(ABC):
             arg_size = self._arg_size(arg)
             selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
             stack_bytes_pushed += arg_size
-            selector.region_state.stack_tracker.push(arg_size)
 
-        # stack_bytes_pushed is tracked via region_state.stack_tracker; the
-        # resolver applies it centrally, so pending_self_y_stack_bytes stays 0.
+        # The pushes are in the emitter's displacement, which the resolver
+        # applies centrally, so pending_self_y_stack_bytes stays 0.
         selector._pending_self_y_arg = self_y_arg
         selector._pending_self_y_stack_bytes = 0
 
@@ -749,8 +742,8 @@ class _ReturnMarshaller:
     occupies B too. Loads into X/Y from the stack go through A, and B is
     written through A (XBA), so X and Y are filled first, then B, then A.
     When every remaining move is blocked, a blocking register source is
-    pushed and later pulled straight into its target (LIFO); the stack
-    tracker shifts stack-relative sources over the pushed bytes meanwhile.
+    pushed and later pulled straight into its target (LIFO); the emitter's
+    displacement shifts stack-relative sources over the pushed bytes meanwhile.
     """
 
     def __init__(self, selector, values, return_registers):
@@ -760,7 +753,6 @@ class _ReturnMarshaller:
 
         self.sel = selector
         self.isel = selector.parent
-        self.tracker = selector.parent.call_selector.region_state.stack_tracker
         func = selector.current_function
         ret_type = func.return_type if func else None
         exit_width = 2 if (func and func.exit_m_mode == ModeState.M16) else 1
@@ -881,7 +873,6 @@ class _ReturnMarshaller:
             n = 2
             self.sel._emit_implied(Opcode.PHX if src == 'X' else Opcode.PHY,
                                    "Park return value")
-        self.tracker.push(n)
         m.pushed = n
         self.parked.append(m)
 
@@ -896,7 +887,6 @@ class _ReturnMarshaller:
             self.isel._invalidate_xba_state()
             if m.target == 'B':
                 self.isel._store_to_b_from_a()
-        self.tracker.pop(m.pushed)
         self.parked.pop()
 
     # -- scheduling --------------------------------------------------------
@@ -1064,7 +1054,6 @@ class ABIPascal(ABIModel):
             if result_bytes % 2:
                 selector._emit_push('DBR', "Result space (Pascal)")
             stack_bytes_pushed += result_bytes
-            selector.region_state.stack_tracker.push(result_bytes)
 
         # Step 2: Push all params left-to-right (param0 first, paramN last).
         # In Pascal, ALL args are stack-pushed regardless of mechanism.
@@ -1132,7 +1121,7 @@ class ABIPascal(ABIModel):
         elif not value_loc.is_hw('A'):
             selector.parent._emit_load('LDA', value_loc)
         selector.emitter.emit_instr(
-            Opcode.STA_STACK, StackOffset(result_offset),
+            Opcode.STA_STACK, selector.parent.stack_operand(result_offset),
             "Store return value to Pascal result space")
 
 
@@ -1288,7 +1277,6 @@ class _StackASave:
         from r65.compiler.codegen.opcodes import Opcode
         _force_accu_mode(selector, self.width)
         selector._emit_implied(Opcode.PHA, "Save '@ A' argument (no free index register)")
-        selector.region_state.stack_tracker.push(self.bytes)
 
     def close(self, selector, final=True):
         from r65.compiler.codegen.opcodes import Opcode
@@ -1303,4 +1291,3 @@ class _StackASave:
             raise NotImplementedError(
                 "multiple restores from a stack-parked '@ A' argument")
         selector._emit_implied(Opcode.PLA, "Restore '@ A' argument")
-        selector.region_state.stack_tracker.pop(self.bytes)

@@ -311,6 +311,7 @@ class FunctionCodeGenerator:
 
         # Emit prologue (if needed)
         self.emit_prologue(mir_func, reg_alloc, frame_size)
+        self.emitter.start_body()
 
         # Generate basic blocks
         block_order = self._compute_block_order(mir_func)
@@ -358,8 +359,10 @@ class FunctionCodeGenerator:
                 # X's slot only when every predecessor is emitted and agrees.
                 exits = [codegen_exit_slots[p] for p in preds if p in codegen_exit_slots]
                 depths = {d for d, _x in exits}
-                if len(depths) == 1:
-                    self.emitter.stack_depth = depths.pop()
+                # A block is entered with the stack balanced: one that follows
+                # a return in the text must not inherit its depth.
+                self.emitter.stack_depth = (depths.pop() if len(depths) == 1
+                                            else self.emitter.frame_base)
                 xs = {x for _d, x in exits}
                 if exits and len(exits) == len(preds) and len(xs) == 1:
                     self.emitter.x_slot = xs.pop()
@@ -440,12 +443,9 @@ class FunctionCodeGenerator:
         if mir_func.interrupt_attr:
             self._reconcile_interrupt_saves(mir_func, instr_selector)
 
-        # Record region-spill high-water for the static stack-usage analyzer.
-        # StackStateTracker.reset() runs per-block but the peak survives, so
-        # this is the function-wide max across all PHA/PHX/PHY/PHD displacements.
-        mir_func.codegen_max_region_spill_bytes = (
-            instr_selector.call_selector.region_state.stack_tracker.peak_displacement
-        )
+        # Record the body's stack high-water for the static stack-usage
+        # analyzer: every push past the frame, spills and arguments alike.
+        mir_func.codegen_max_region_spill_bytes = self.emitter.peak_displacement
 
         # Blank line after function
         self.emitter.emit_blank_line()

@@ -40,3 +40,21 @@ class TestPascalCalls:
                      0x20, 0x00, 0x00, 0x00, 0x21, 0x00, 0x01, 0x00,
                      0x46, 0x02],
         }))
+
+    def test_result_stored_to_a_local(self):
+        """The result is pulled off the stack and stored to a frame slot:
+        the callee has already removed its parameters, so the slot is where
+        it was before the call."""
+        run('''
+            #[lowram(0x0300)] static mut LOG: [u16; 4];
+            #[lowram(0x0340)] static mut N: u16;
+            #[inline(never)] fn note(v: u16) { LOG[N] = v; N = N + 1; }
+            #[inline(never)] fn twice(v: u16) -> u16 { return v + v; }
+            #[inline(never)] fn go() {
+                let a: u16 = twice(3);
+                let b: u16 = twice(5);
+                note(a); note(b);
+            }
+            #[entry]
+            fn main() { N = 0; go(); }
+        ''', ExpectedState(memory={0x0300: [6, 0, 10, 0]}))

@@ -406,11 +406,21 @@ class InstructionSelector:
         label_counter = InstructionSelector._global_label_counter
         region_state = self.call_selector.region_state
         try:
-            with self.emitter.capture(self.xba_manager, region_state,
-                                      region_state.stack_tracker) as trial:
+            with self.emitter.capture(self.xba_manager, region_state) as trial:
                 yield trial
         finally:
             InstructionSelector._global_label_counter = label_counter
+
+    def stack_top(self, offset: int, size: int) -> PhysicalLocation:
+        """The stack slot *offset* bytes from the top (`1,S` is the last byte
+        pushed), as a frame-relative location the resolver puts back there."""
+        return PhysicalLocation(kind=LocationKind.STACK,
+                                stack_offset=offset - self.emitter.displacement, size=size)
+
+    def stack_operand(self, frame_offset: int) -> StackOffset:
+        """A raw `d,S` operand for the frame-relative *frame_offset*, past
+        everything pushed since the frame was set up."""
+        return StackOffset(frame_offset + self.emitter.displacement)
 
     def _get_unique_label(self) -> str:
         """Generate a unique label for inline branching."""
@@ -841,11 +851,9 @@ class InstructionSelector:
                     # PHA/PLA size matches the current accumulator mode (1 byte in m8,
                     # 2 in m16) which already matches is_u16 from the mode switch above.
                     self._emit_implied(Opcode.PHA, "Save right operand (no scratch available)")
-                    # Register the push with the spill tracker so subsequent
-                    # stack-relative accesses to locals (e.g. left_loc) are
-                    # auto-adjusted by _get_opcode_for_location.
+                    # The push is in the emitter's displacement, so the
+                    # stack-relative locals after it (left_loc) resolve past it.
                     pha_size = 2 if is_u16 else 1
-                    self.call_selector.region_state.stack_tracker.push(pha_size)
                     sub_pushed_right_operand = True
                     sub_pushed_size = pha_size
                     # right_operand is unused for this path; the SBC and cleanup
@@ -871,15 +879,7 @@ class InstructionSelector:
         elif op == '-':
             if sub_pushed_right_operand:
                 # Right was PHA'd to the stack; emit SEC + SBC stack-relative inline.
-                # The pushed value is at current "1,S". The resolver adds
-                # stack_tracker.displacement to STACK offsets, so we pre-subtract
-                # it to land at +1 after adjustment.
-                pushed_offset = 1 - sub_pushed_size
-                stack_loc = PhysicalLocation(
-                    kind=LocationKind.STACK,
-                    stack_offset=pushed_offset,
-                    size=sub_pushed_size,
-                )
+                stack_loc = self.stack_top(1, sub_pushed_size)
                 self._emit_implied(Opcode.SEC)
                 self._emit_op("SBC", stack_loc)
             else:
@@ -907,14 +907,9 @@ class InstructionSelector:
         # Clean up the stack slot used for the right operand (PHA fallback path).
         # A holds the result; overwrite the pushed slot, then PLA pops it back into A.
         if sub_pushed_right_operand:
-            cleanup_loc = PhysicalLocation(
-                kind=LocationKind.STACK,
-                stack_offset=1 - sub_pushed_size,
-                size=sub_pushed_size,
-            )
+            cleanup_loc = self.stack_top(1, sub_pushed_size)
             self._emit_store("STA", cleanup_loc, "Stash result into pushed slot")
             self._emit_implied(Opcode.PLA, "Pop result back into A and balance stack")
-            self.call_selector.region_state.stack_tracker.pop(sub_pushed_size)
 
         # Store result from A (if destination is not A)
         if dest_loc.is_hw('A'):
@@ -1524,7 +1519,7 @@ class InstructionSelector:
                             self._ensure_xba_state_normal("Restore A")
                         else:
                             self._emit_implied(Opcode.PHA, "Push A for temp")
-                        temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
+                        temp_loc = self.stack_top(1, 1)
                         self._emit_op(operation, temp_loc)
                         # The pushed byte still has to come off the stack, but a
                         # bare PLA would land in A — which now holds the result,
@@ -1551,7 +1546,7 @@ class InstructionSelector:
                         pull_opcode = Opcode.PLX if right_loc.hw_register == 'X' else Opcode.PLY
                         self._emit_implied(push_opcode, f"Push {right_loc.hw_register} for temp")
                         # Stack-relative location at offset 1 (just pushed)
-                        temp_loc = PhysicalLocation(kind=LocationKind.STACK, stack_offset=1, size=1)
+                        temp_loc = self.stack_top(1, 1)
                         self._emit_op(operation, temp_loc)
                         self._emit_implied(pull_opcode, f"Restore {right_loc.hw_register}")
                 else:

@@ -5,11 +5,12 @@ ABI and stack frame abstractions for the R65 compiler.
 Provides centralized definitions for:
 - ABIInfo: Static calling-convention facts about a function
 - StackFrameLayout: Stack frame structure and offset computations
-- StackStateTracker: Runtime SP displacement tracking during codegen
+
+How far S has moved inside a body is the emitter's (AssemblyEmitter.displacement).
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from r65.compiler.mir.nodes import MIRFunction
@@ -204,55 +205,3 @@ class StackFrameLayout:
     @property
     def has_frame(self) -> bool:
         return self.local_frame_size > 0
-
-
-class StackStateTracker:
-    """Tracks runtime SP displacement during instruction emission.
-
-    At any point: actual_SP = frame_SP - displacement.
-    All stack-relative addresses need +displacement adjustment.
-
-    Also records the peak (high-water) displacement seen across the
-    tracker's lifetime — used by the static stack-usage analyzer to bound
-    region-spill cost per function. `reset()` clears current displacement
-    (block boundary) but preserves the peak.
-    """
-
-    __slots__ = ('_displacement', '_peak')
-
-    def __init__(self):
-        self._displacement: int = 0
-        self._peak: int = 0
-
-    @property
-    def displacement(self) -> int:
-        """Current SP displacement (bytes pushed since frame base)."""
-        return self._displacement
-
-    @property
-    def peak_displacement(self) -> int:
-        """Max displacement observed since construction (survives reset)."""
-        return self._peak
-
-    def push(self, n_bytes: int) -> None:
-        """Record n_bytes pushed onto stack (PHx, PHA for args)."""
-        self._displacement += n_bytes
-        if self._displacement > self._peak:
-            self._peak = self._displacement
-
-    def pop(self, n_bytes: int) -> None:
-        """Record n_bytes popped from stack (PLx, cleanup).
-
-        Displacement can go negative temporarily when the PLD/PHD dance
-        pops the saved D register before pushing call arguments. The
-        subsequent PHAs will bring it back to positive territory.
-        """
-        self._displacement -= n_bytes
-
-    def adjust_offset(self, static_offset: int) -> int:
-        """Adjust a frame-relative offset for current SP displacement."""
-        return static_offset + self._displacement
-
-    def reset(self) -> None:
-        """Reset displacement to 0 (new block boundary). Peak survives."""
-        self._displacement = 0

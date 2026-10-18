@@ -102,20 +102,8 @@ class _FakeLocation:
         self.name = name
 
 
-class _FakeStackTracker:
-    def __init__(self):
-        self.displacement = 0
-        self.pushes = []
-    def push(self, n):
-        self.displacement += n
-        self.pushes.append(n)
-    def pop(self, n):
-        self.displacement -= n
-
-
 class _FakeRegionState:
-    def __init__(self):
-        self.stack_tracker = _FakeStackTracker()
+    pass
 
 
 class _FakePhysicalLocation:
@@ -489,8 +477,8 @@ class TestPascalEmitCallArgs:
         assert pha_calls[0][1] == 'stack'
         assert pha_calls[1][1] == 'stack'
 
-    def test_stack_tracker_updated(self):
-        """Stack tracker reflects all pushed bytes."""
+    def test_returns_bytes_pushed(self):
+        """The count covers the result space and every parameter."""
         from r65.compiler.mir.nodes import Call
         args = [
             _make_arg('stack', param_type=_FakeTypeInfo('u8')),
@@ -502,7 +490,6 @@ class TestPascalEmitCallArgs:
         result = ABI_PASCAL.emit_call_args(selector, instr)
         # 1 result + 2 params = 3 bytes
         assert result == 3
-        assert selector.region_state.stack_tracker.displacement == 3
 
 
 class TestPascalRepr:
@@ -749,8 +736,8 @@ class TestDefaultEmitCallArgs:
         # PHA stack first, then register; the variable arg emits nothing
         assert [c[0] for c in selector.calls] == ['pha_stack', 'register']
 
-    def test_stack_tracker_updated(self):
-        """Stack tracker reflects all PHA-pushed bytes."""
+    def test_returns_bytes_pushed(self):
+        """The count covers every PHA-pushed byte."""
         from r65.compiler.mir.nodes import Call
         args = [
             _make_arg('stack', param_type=_FakeTypeInfo('u8')),
@@ -760,7 +747,6 @@ class TestDefaultEmitCallArgs:
         selector = _MockSelector()
         result = ABI_DEFAULT.emit_call_args(selector, instr)
         assert result == 2
-        assert selector.region_state.stack_tracker.displacement == 2
 
     def test_scratch_param_args(self):
         """Scratch param args emit scratch_param calls."""

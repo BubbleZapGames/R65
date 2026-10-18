@@ -178,9 +178,9 @@ class CompareSelector(BaseSelector):
                 self._emit_instr(getattr(Opcode, f"{mnemonic}_STACK"),
                                  StackOffset(operand.offset + s_shift))
             else:
+                # Resolved now, so past the PHP already (the emitter counts it);
+                # only an operand resolved before it needs the shift above.
                 opcode, op = self.parent._get_opcode_for_location(mnemonic, operand)
-                if s_shift and isinstance(op, StackOffset):
-                    op = StackOffset(op.offset + s_shift)
                 self._emit_instr(opcode, op)
 
         self._emit_instr(Opcode.SEC, comment="Signed compare: lhs - rhs sets V")

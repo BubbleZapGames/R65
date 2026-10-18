@@ -403,6 +403,15 @@ class AssemblyEmitter:
         self.a_slot = None
         self.x_slot = None
         self.stack_depth: int = 0
+        # The one record of how far S has moved inside a function body:
+        # `stack_depth` counts every push and pull emitted, `frame_base` is
+        # its value once the prologue has run, and `note_stack` adds what no
+        # opcode shows (a callee removing its arguments, a trampoline's
+        # return address taken by an RTS). Every stack-relative offset is
+        # frame-relative plus `displacement` (see stack_top/stack_operand on
+        # the instruction selector).
+        self.frame_base: int = 0
+        self.peak_displacement: int = 0
         # Track banks that have had data/code emitted to avoid .ORG 0 overlap
         self._used_banks: set = set()
         # Base bank byte for ROM labels, emitted as `.BASE $xx` before each
@@ -843,6 +852,22 @@ class AssemblyEmitter:
     _PULL_BYTES = {'PLA': None, 'PLX': 'x', 'PLY': 'x', 'PLP': 1, 'PLB': 1,
                    'PLD': 2}
 
+    @property
+    def displacement(self) -> int:
+        """Bytes S has moved down since the frame was set up."""
+        return self.stack_depth - self.frame_base
+
+    def start_body(self):
+        """The prologue is done: S is at the frame base from here."""
+        self.frame_base = self.stack_depth
+        self.peak_displacement = 0
+
+    def note_stack(self, delta: int):
+        """S moved by *delta* bytes (positive: down) with no push or pull
+        to show it."""
+        self.stack_depth += delta
+        self.peak_displacement = max(self.peak_displacement, self.displacement)
+
     def forget_slots(self):
         """Nothing is known about what A or X hold."""
         self.a_slot = None
@@ -875,11 +900,13 @@ class AssemblyEmitter:
         # Stack depth: pushes and pulls move S under the slot offsets.
         if mn in self._PUSH_BYTES:
             self.stack_depth += self._width(self._PUSH_BYTES[mn])
+            self.peak_displacement = max(self.peak_displacement, self.displacement)
         elif mn in self._PULL_BYTES:
             self.stack_depth -= self._width(self._PULL_BYTES[mn])
         if mn in ('TCS', 'TXS'):
-            # S set outright (frame allocation): a new baseline.
-            self.stack_depth = 0
+            # S set outright. Where by how much is known (frame allocation,
+            # dropping pushed arguments) the emitting code notes it
+            # (note_stack); the slots are forgotten either way.
             self.forget_slots()
             return
         if mn in ('JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP', 'MVN', 'MVP',

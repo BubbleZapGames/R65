@@ -2,7 +2,7 @@
 """Tests for ABI, stack frame layout, and stack state tracker abstractions."""
 
 import pytest
-from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout, StackStateTracker
+from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 from r65.compiler.typeck.processor_mode import ModeState
 from r65.compiler.hir.attributes import DataBankMode
 
@@ -168,77 +168,3 @@ class TestStackFrameLayout:
         assert layout.has_frame is False
 
 
-# ========================================================================
-# StackStateTracker Tests
-# ========================================================================
-
-class TestStackStateTracker:
-    def test_initial_displacement(self):
-        tracker = StackStateTracker()
-        assert tracker.displacement == 0
-
-    def test_push(self):
-        tracker = StackStateTracker()
-        tracker.push(2)
-        assert tracker.displacement == 2
-
-    def test_multiple_pushes(self):
-        tracker = StackStateTracker()
-        tracker.push(2)
-        tracker.push(1)
-        assert tracker.displacement == 3
-
-    def test_pop(self):
-        tracker = StackStateTracker()
-        tracker.push(4)
-        tracker.pop(2)
-        assert tracker.displacement == 2
-
-    def test_push_pop_balanced(self):
-        tracker = StackStateTracker()
-        tracker.push(2)
-        tracker.push(2)
-        tracker.pop(2)
-        tracker.pop(2)
-        assert tracker.displacement == 0
-
-    def test_pop_allows_negative_displacement(self):
-        """Negative displacement is valid for PLD/PHD dance in far-ptr functions."""
-        tracker = StackStateTracker()
-        tracker.pop(2)  # Simulates PLD popping saved D
-        assert tracker.displacement == -2
-        tracker.push(3)  # Simulates 3 PHA bytes for far ptr arg
-        assert tracker.displacement == 1
-
-    def test_adjust_offset(self):
-        tracker = StackStateTracker()
-        tracker.push(3)
-        assert tracker.adjust_offset(5) == 8
-
-    def test_adjust_offset_zero_displacement(self):
-        tracker = StackStateTracker()
-        assert tracker.adjust_offset(5) == 5
-
-    def test_reset(self):
-        tracker = StackStateTracker()
-        tracker.push(5)
-        tracker.reset()
-        assert tracker.displacement == 0
-
-    def test_typical_spill_sequence(self):
-        """Simulate a typical X/Y spill + reload sequence."""
-        tracker = StackStateTracker()
-        # Spill X (2 bytes)
-        tracker.push(2)
-        assert tracker.displacement == 2
-        # Spill Y (2 bytes)
-        tracker.push(2)
-        assert tracker.displacement == 4
-        # Adjust a stack local at offset 3
-        assert tracker.adjust_offset(3) == 7
-        # Reload Y
-        tracker.pop(2)
-        assert tracker.displacement == 2
-        # Reload X
-        tracker.pop(2)
-        assert tracker.displacement == 0
