@@ -17,7 +17,7 @@ redundant push/pull operations.
 
 from typing import List, Set, Dict, NamedTuple, Optional, TYPE_CHECKING
 from r65.compiler.mir.nodes import (
-    Call, TraitDispatch, VirtualRegister, ArgumentMechanism,
+    Call, CallBase, TraitDispatch, VirtualRegister, ArgumentMechanism,
     Immediate as MIRImmediate, ChainRole,
 )
 
@@ -35,7 +35,7 @@ from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.abi import StackStateTracker
 from r65.compiler.codegen.type_utils import arg_param_size, scalar_width
 from r65.compiler.codegen.arg_order import arg_sort_key
-from r65.compiler.codegen.clobber_summary import INDEX_REGS
+from r65.compiler.mir.call_effects import INDEX_REGS, CallEffects, call_effects
 
 
 class SpillInfo(NamedTuple):
@@ -157,6 +157,8 @@ class CallInstructionSelector(BaseSelector):
         self.region_state = ActiveRegionState()
         # Pre-computed regions for current function: {block_id: {hw_reg: [ClobberRegion]}}
         self._function_regions: Optional[Dict[int, Dict[str, List]]] = None
+        # call_effects per call of the current function, by id(instr)
+        self._effects: Dict[int, CallEffects] = {}
 
     def initialize_regions_for_function(self):
         """
@@ -164,6 +166,7 @@ class CallInstructionSelector(BaseSelector):
 
         Should be called once per function before processing any blocks.
         """
+        self._effects = {}
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc or not reg_alloc.instr_liveness:
             self._function_regions = None
@@ -171,11 +174,8 @@ class CallInstructionSelector(BaseSelector):
 
         from r65.compiler.mir.liveness import ClobberRegionAnalyzer
 
-        # Build preserves map from function signatures in the current function
-        preserves_map = self._build_preserves_map()
-
         analyzer = ClobberRegionAnalyzer(reg_alloc.instr_liveness)
-        self._function_regions = analyzer.analyze_function(preserves_map)
+        self._function_regions = analyzer.analyze_function(self.effects)
 
     def initialize_regions_for_block(self, block_id: int):
         """
@@ -196,54 +196,19 @@ class CallInstructionSelector(BaseSelector):
         regions = self._function_regions.get(block_id, {'X': [], 'Y': []})
         self.region_state.set_block_regions(block_id, regions)
 
-    def _build_preserves_map(self) -> Dict[str, Set[str]]:
-        """
-        Build a map from function names to their preserved registers.
-
-        Returns:
-            Dictionary mapping function name to set of preserved register names
-        """
-        preserves_map: Dict[str, Set[str]] = {}
-
-        # Scan all call instructions in the function to build the map
-        if self.parent.current_function:
-            for block in self.parent.current_function.blocks.values():
-                for instr in block.instructions:
-                    if isinstance(instr, Call) and isinstance(instr.function, str):
-                        preserved = self.callee_preserves(instr)
-                        if preserved:
-                            preserves_map[instr.function] = preserved
-
-        return preserves_map
+    def effects(self, instr) -> CallEffects:
+        """The register effects of *instr* (mir/call_effects), with the
+        callee's clobber summary when it has been generated."""
+        effects = self._effects.get(id(instr))
+        if effects is None:
+            summaries = getattr(self.parent.func_gen, 'index_writes', None)
+            effects = self._effects[id(instr)] = call_effects(instr, summaries)
+        return effects
 
     def callee_preserves(self, instr) -> Set[str]:
         """The registers a call leaves as they were: the callee's
         `#[preserves(...)]` plus the index registers its code never writes."""
-        attr = getattr(instr, 'preserves_attr', None)
-        declared = set(attr.registers) if attr else set()
-        return declared | self._inferred_preserves(instr)
-
-    def _inferred_preserves(self, instr) -> Set[str]:
-        """The index registers a named call keeps because its callee's code,
-        and its callees', never writes them (clobber_summary).
-
-        Not a register the call's own arguments go to (self rides in Y), and
-        nothing for a call with stack arguments: parking A across their setup
-        and pulling them off after both go through X or Y."""
-        if (type(instr) is not Call or not isinstance(instr.function, str)
-                or instr.builtin_name):
-            return set()
-        summaries = getattr(self.parent.func_gen, 'index_writes', None) or {}
-        writes = summaries.get(instr.function)
-        if writes is None:
-            return set()
-        if any(a.mechanism == ArgumentMechanism.STACK for a in instr.args):
-            return set()
-        targets = {getattr(a.location, 'name', None) for a in instr.args
-                   if a.mechanism == ArgumentMechanism.REGISTER}
-        if any(a.mechanism == ArgumentMechanism.SELF_Y for a in instr.args):
-            targets.add('Y')
-        return set(INDEX_REGS - writes) - targets
+        return set(self.effects(instr).preserved)
 
     def _check_inferred_preserves(self, instr, start: int, inferred: Set[str]):
         """A call kept an index register unsaved on its callee's summary: the
@@ -333,8 +298,8 @@ class CallInstructionSelector(BaseSelector):
         )
 
         call_start = len(self.parent.emitter.nodes)
-        inferred = self._inferred_preserves(instr) - set(
-            instr.preserves_attr.registers if instr.preserves_attr else ())
+        effects = self.effects(instr)
+        inferred = effects.inferred - effects.declared
 
         # Step 0: Compute hardware register spills needed
         # Spill hw registers that are live across this call and not preserved by callee
@@ -456,8 +421,9 @@ class CallInstructionSelector(BaseSelector):
         # TypeId lookup and jump table dispatch.
         dispatch_name = f"{instr.trait_name}__{instr.method_name}__dispatch"
 
-        # Compute hw register spills (no preserves_attr for trait dispatch)
-        spills = self._compute_trait_dispatch_spills(instr)
+        # A dispatch preserves nothing (call_effects), so this spills every
+        # register live across it
+        spills = self._compute_hw_spills(instr)
         self._emit_hw_spills(spills)
 
         # Chain coalescing: SOLO and START dispatches push PHB; SOLO and END
@@ -539,65 +505,6 @@ class CallInstructionSelector(BaseSelector):
         # Reload spilled registers
         reloads = self._compute_trait_dispatch_reloads(instr)
         self._emit_hw_reloads(reloads)
-
-    def _compute_trait_dispatch_spills(self, instr: TraitDispatch) -> List[SpillInfo]:
-        """Compute hw register spills for trait dispatch (no preserves)."""
-        spills: List[SpillInfo] = []
-        reg_alloc = self.parent.reg_alloc
-        if not reg_alloc:
-            return spills
-
-        instr_idx = None
-        if reg_alloc.instr_liveness:
-            pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-            if pos:
-                _, instr_idx = pos
-
-        # Registers the dispatch defines (callee returns and their collected
-        # destinations): never spilled, so never reloaded over the result
-        call_return_set = self._call_result_registers(instr)
-
-        for reg_name in ['A', 'X', 'Y']:
-            if reg_name in call_return_set:
-                continue
-
-            use_region_based = (
-                instr_idx is not None and
-                self._function_regions is not None and
-                reg_name in ('X', 'Y')
-            )
-
-            if use_region_based:
-                region = self.region_state.get_region_for_call(reg_name, instr_idx)
-                if region is not None:
-                    if self.region_state.is_first_call_in_region(reg_name, instr_idx):
-                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        self.region_state.mark_region_active(reg_name, region)
-                    continue
-
-            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
-            vreg = hw_alloc.allocated_vreg
-
-            if vreg is not None:
-                if reg_alloc.instr_liveness:
-                    pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-                    if pos:
-                        block_id, idx = pos
-                        if reg_alloc.instr_liveness.is_live_after(vreg, block_id, idx):
-                            spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
-                else:
-                    if hw_alloc.is_bound:
-                        spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
-                continue
-
-            if reg_name in ('X', 'Y') and reg_alloc.instr_liveness and self._function_regions is None:
-                pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-                if pos:
-                    block_id, idx = pos
-                    if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
-                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
-
-        return spills
 
     def _compute_trait_dispatch_reloads(self, instr: TraitDispatch) -> List[SpillInfo]:
         """Compute hw register reloads after trait dispatch."""
@@ -813,7 +720,7 @@ class CallInstructionSelector(BaseSelector):
     # Hardware Register Spill/Reload (Region-Based)
     # ========================================================================
 
-    def _compute_hw_spills(self, instr: Call) -> List[SpillInfo]:
+    def _compute_hw_spills(self, instr: CallBase) -> List[SpillInfo]:
         """
         Compute which hardware registers need spilling for this call.
 
@@ -952,7 +859,9 @@ class CallInstructionSelector(BaseSelector):
             if hw_reg in call_return_set:
                 # Don't reload — value just placed there is the return value.
                 # The matching spill was also skipped, so the stack stays
-                # balanced.
+                # balanced. The region analysis opened this region because it
+                # sees only the ABI result registers (call_effects), not the
+                # register a result is collected into (_call_result_registers).
                 if self.region_state.is_region_active(hw_reg):
                     self.region_state.clear_active_region(hw_reg)
                 continue
@@ -1944,52 +1853,6 @@ class CallInstructionSelector(BaseSelector):
     # Return Value Collection
     # ========================================================================
 
-    def _get_callee_return_registers(self, instr: Call):
-        """
-        Get the return register order for a callee based on its return type.
-
-        Args:
-            instr: Call instruction with callee info
-
-        Returns:
-            List of register names in order
-        """
-        from r65.compiler.codegen.constants import get_return_registers
-
-        # Try to get callee's return type and mode from the Call instruction
-        callee_return_type = instr.callee_return_type
-        callee_entry_mode = instr.callee_entry_m_mode if hasattr(instr, 'callee_entry_m_mode') else None
-
-        if callee_return_type is not None:
-            return get_return_registers(callee_return_type, callee_entry_mode)
-        return ['A', 'X', 'Y']
-
-    def _call_num_returns(self, instr) -> int:
-        """Number of values a Call/TraitDispatch returns.
-
-        The `returns` list is often empty for tuple destructuring (values are
-        captured by separate Move instructions), so callee_return_type is the
-        source of truth when present.
-        """
-        from r65.compiler.hir.types import MultiReturnTypeInfo
-        callee_return_type = instr.callee_return_type
-        if callee_return_type is not None:
-            if isinstance(callee_return_type, MultiReturnTypeInfo):
-                return len(callee_return_type.element_types)
-            return 1
-        return len(instr.returns)
-
-    def _call_returns_in_a(self, instr) -> bool:
-        """Check if a call returns a value in A (i.e., is not void)."""
-        callee_return_type = instr.callee_return_type
-        if callee_return_type is None:
-            # No return type info — conservatively assume it returns in A
-            return len(instr.returns) > 0
-        from r65.compiler.hir.types import BasicTypeInfo
-        if callee_return_type == BasicTypeInfo('void'):
-            return False
-        return True
-
     def _call_result_registers(self, instr) -> Set[str]:
         """Registers a call defines: what must not be spilled, reloaded or
         pulled into around it.
@@ -2000,8 +1863,7 @@ class CallInstructionSelector(BaseSelector):
         captured by separate Moves, so the count comes from
         callee_return_type.
         """
-        return_regs = self._get_callee_return_registers(instr)
-        regs = set(return_regs[:self._call_num_returns(instr)])
+        regs = set(self.effects(instr).results)
         for return_vreg in instr.returns:
             dest_loc = self.parent._get_operand_location(return_vreg)
             if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
@@ -2016,10 +1878,10 @@ class CallInstructionSelector(BaseSelector):
         Moves capture those later, so they stay in place). A result stored
         to memory leaves its register dead; a void call leaves nothing.
         """
-        if not self._call_returns_in_a(instr):
+        results = self.effects(instr).results
+        if not results:
             return set()
-        return_regs = self._get_callee_return_registers(instr)
-        regs = set(return_regs[len(instr.returns):self._call_num_returns(instr)])
+        regs = set(results[len(instr.returns):])
         for return_vreg in instr.returns:
             dest_loc = self.parent._get_operand_location(return_vreg)
             if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
@@ -2036,7 +1898,7 @@ class CallInstructionSelector(BaseSelector):
         if not instr.returns:
             return
 
-        return_registers = self._get_callee_return_registers(instr)
+        return_registers = self.effects(instr).results
         # Per-return-value size table (in bytes), parallel to instr.returns.
         # u8 returns need zero-extension when transferred A→X/Y because the
         # B register (high byte of A in m16) holds whatever stale value it

@@ -14,9 +14,8 @@ from typing import Dict, FrozenSet, Iterable, List, Optional
 from r65.compiler.codegen.asm_nodes import Address, Immediate, Instruction, RawAsm
 from r65.compiler.codegen.constants import X_FLAG
 from r65.compiler.codegen.opcodes import REGISTER_WRITES, Opcode, addressing_mode, mnemonic
+from r65.compiler.mir.call_effects import INDEX_REGS
 from r65.compiler.mir.nodes import Call, InlineAsm, MIRFunction
-
-INDEX_REGS: FrozenSet[str] = frozenset({'X', 'Y'})
 
 # Control leaves for code whose effect is unknown.
 _UNKNOWN = frozenset({'BRK', 'COP', 'WDM', 'XCE', 'STP'})

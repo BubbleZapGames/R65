@@ -519,6 +519,45 @@ fn example() {
 
 Only values whose live range contains no call are candidates for scratch.
 
+### Call Effects
+
+What a call does to A, B, X and Y is computed in one place,
+`call_effects` (`r65/compiler/mir/call_effects.py`), as a `CallEffects`
+record per call:
+
+| Field | Meaning |
+|---|---|
+| `results` | registers the callee returns in, in order (A, then B or X, then Y) |
+| `arg_regs` | registers arguments are passed in (Y for a `self` pointer) |
+| `has_stack_args` | whether any argument is pushed |
+| `declared` | the callee's `#[preserves(...)]` |
+| `inferred` | index registers the callee's code, and its callees', never writes (`codegen/clobber_summary.py`) |
+
+`inferred` is empty for a call with stack arguments (parking A across their
+setup and pulling them off afterwards both use X or Y), for a register an
+argument goes to, and for anything but a direct call to a generated
+function: a trait dispatch, a function pointer, a builtin or an `extern fn`.
+
+Each consumer reads the view it can afford to trust:
+
+- **Call selection** (`codegen/call_select.py`, `codegen/abi_model.py`)
+  uses `preserved = declared | inferred` to decide which live registers to
+  push around a call and where A may be parked during argument setup. Clobber
+  regions (`ClobberRegionAnalyzer`) read the same record.
+- **Slot allocation's coalescing** (`codegen/slot_allocator.py`) uses
+  `declared` only.
+- **The MIR passes** (register alias check, index streams, loop register
+  promotion, X reuse in the builder) treat every call as clobbering
+  everything (`CLOBBERS_ALL` in `mir/nodes.py`), even a declared
+  `#[preserves]`.
+
+The register a result is *collected* into is not part of the record. A return
+value the allocator placed in X arrives there by `TAX` after the call, which
+depends on slot allocation rather than on the call, so call selection adds
+those registers itself (`_call_result_registers`). The region analysis cannot
+see them, which is why call selection closes a region whose register turns
+out to receive a result.
+
 ---
 
 ## Scratch Register Sizing

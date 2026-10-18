@@ -16,6 +16,7 @@ consecutive slots and tracking the full range for interference checking.
 
 from typing import Dict, Set, List, Optional, Tuple, Any
 from dataclasses import dataclass
+from r65.compiler.mir.call_effects import call_effects
 from r65.compiler.mir.nodes import (
     CallBase,
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
@@ -1136,12 +1137,10 @@ class StackSlotAllocator:
 
         instr_type = type(instr)
 
-        # Calls clobber all registers not in preserves
+        # A call keeps only what it declares: coalescing does not yet lean
+        # on the callee's clobber summary (call_effects' `inferred`)
         if instr_type is Call or instr_type is TraitDispatch:
-            preserved = set()
-            if getattr(instr, 'preserves_attr', None):
-                preserved = set(instr.preserves_attr.registers)
-            return hw_reg not in preserved
+            return call_effects(instr).may_write(hw_reg, declared_only=True)
 
         # InlineAsm: conservatively assume it clobbers everything
         if instr_type is InlineAsm:

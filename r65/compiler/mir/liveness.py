@@ -6,7 +6,7 @@ Determines which virtual registers are live (in use) at each program point,
 enabling optimizations like stack slot reuse and better register allocation.
 """
 
-from typing import Set, Dict, List, Optional, Tuple
+from typing import Callable, Set, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from r65.compiler.errors import InternalCompilerError
 from r65.compiler.mir.nodes import (
@@ -16,6 +16,9 @@ from r65.compiler.mir.nodes import (
     Load, Move, BinaryOp, Call, Return, TraitDispatch,
     iter_operands, OperandRole, iter_block_targets, iter_memory_operands,
 )
+from r65.compiler.mir.call_effects import CallEffects, call_effects
+
+EffectsFor = Callable[[CallBase], CallEffects]
 
 # ============================================================================
 # Use/def extraction — the shared operand registry (mir/nodes.py). Both return
@@ -657,35 +660,35 @@ class ClobberRegionAnalyzer:
         self.block_analyzer = instr_liveness.block_analyzer
         self.liveness = instr_liveness.liveness
 
-    def analyze_block(self, block_id: int, preserves_map: Dict[str, Set[str]] = None
+    def analyze_block(self, block_id: int, effects_for: Optional[EffectsFor] = None
                       ) -> Dict[str, List[ClobberRegion]]:
         """
         Analyze clobber regions for a single basic block.
 
         Args:
             block_id: Block ID to analyze
-            preserves_map: Map from function name to set of preserved registers.
-                          If None, assumes all calls clobber all registers.
+            effects_for: The register effects of a call (call_effects). If
+                          None, a call keeps only its `#[preserves(...)]`.
 
         Returns:
             Dictionary mapping register name ('X', 'Y') to list of ClobberRegions.
             A has no regions: hardware liveness does not track it, so a value
             in A is spilled by its vreg's liveness instead.
         """
-        if preserves_map is None:
-            preserves_map = {}
+        if effects_for is None:
+            effects_for = call_effects
 
         block = self.func.blocks.get(block_id)
         if not block:
             return {'X': [], 'Y': []}
 
         return {
-            hw_reg: self._analyze_register_regions(block, block_id, hw_reg, preserves_map)
+            hw_reg: self._analyze_register_regions(block, block_id, hw_reg, effects_for)
             for hw_reg in ('X', 'Y')
         }
 
     def _analyze_register_regions(self, block: BasicBlock, block_id: int,
-                                   hw_reg: str, preserves_map: Dict[str, Set[str]]
+                                   hw_reg: str, effects_for: EffectsFor
                                   ) -> List[ClobberRegion]:
         """
         Analyze clobber regions for a single register in a block.
@@ -700,7 +703,7 @@ class ClobberRegionAnalyzer:
             block: Basic block to analyze
             block_id: Block ID
             hw_reg: Hardware register name ('X' or 'Y')
-            preserves_map: Map from function name to preserved registers
+            effects_for: The register effects of a call
 
         Returns:
             List of ClobberRegions for this register
@@ -712,8 +715,6 @@ class ClobberRegionAnalyzer:
 
         # Scan instructions to find clobbering calls and uses
         for instr_idx, instr in enumerate(block.instructions):
-            instr_type = type(instr)
-
             # Check if this instruction uses the hw register
             uses = self.block_analyzer._get_uses(instr)
             is_use = any(
@@ -734,9 +735,9 @@ class ClobberRegionAnalyzer:
             # region analyzer would spill/restore the register around the call,
             # clobbering the return value.
             is_call = isinstance(instr, CallBase)
-            if is_call and not is_def:
-                if self._call_returns_in_hw_reg(instr, hw_reg):
-                    is_def = True
+            effects = effects_for(instr) if is_call else None
+            if is_call and not is_def and hw_reg in effects.results:
+                is_def = True
 
             # If we have a current region and hit a use, close the region
             if current_region is not None and is_use:
@@ -747,16 +748,7 @@ class ClobberRegionAnalyzer:
 
             # Check if this is a clobbering call (skip if call defines hw_reg)
             if is_call and not is_def:
-                # Get callee's preserved registers
-                preserved: Set[str] = set()
-                if instr_type is Call and isinstance(instr.function, str):
-                    preserved = preserves_map.get(instr.function, set())
-                # Also check the preserves attribute on the call instruction
-                if hasattr(instr, 'preserves_attr') and instr.preserves_attr:
-                    preserved = preserved | set(instr.preserves_attr.registers)
-
-                # Check if this call clobbers the register
-                if hw_reg not in preserved:
+                if effects.may_write(hw_reg):
                     # Check if register is live after this call
                     if self.instr_liveness.is_hw_reg_live_after(hw_reg, block_id, instr_idx):
                         # This is a clobbering call where register is live across
@@ -790,61 +782,20 @@ class ClobberRegionAnalyzer:
 
         return regions
 
-    @staticmethod
-    def _call_returns_in_hw_reg(instr: Call, hw_reg: str) -> bool:
-        """
-        Check if a Call instruction returns a value in a specific hardware register.
-
-        Uses the callee's return type and mode to determine the return register
-        ordering, then checks if hw_reg is among the registers set by the callee.
-
-        Note: The Call MIR node's `returns` list may be empty even for multi-return
-        functions (return values are captured by separate Move instructions after
-        the call). So we determine the return count from callee_return_type instead.
-
-        Args:
-            instr: Call instruction
-            hw_reg: Hardware register name ('A', 'X', 'Y')
-
-        Returns:
-            True if the call returns a value in hw_reg
-        """
-        from r65.compiler.codegen.constants import get_return_registers
-
-        callee_return_type = instr.callee_return_type
-        if callee_return_type is None:
-            return False
-
-        callee_entry_mode = getattr(instr, 'callee_entry_m_mode', None)
-        return_regs = get_return_registers(callee_return_type, callee_entry_mode)
-
-        # Determine how many registers the callee actually sets from its return type
-        from r65.compiler.hir.types import MultiReturnTypeInfo
-        if isinstance(callee_return_type, MultiReturnTypeInfo):
-            num_returns = len(callee_return_type.element_types)
-        else:
-            # Non-tuple: single return value in A
-            num_returns = 1
-
-        return hw_reg in return_regs[:num_returns]
-
-    def analyze_function(self, preserves_map: Dict[str, Set[str]] = None
+    def analyze_function(self, effects_for: Optional[EffectsFor] = None
                          ) -> Dict[int, Dict[str, List[ClobberRegion]]]:
         """
         Analyze clobber regions for all blocks in a function.
 
         Args:
-            preserves_map: Map from function name to set of preserved registers
+            effects_for: The register effects of a call (see analyze_block)
 
         Returns:
             Dictionary mapping block_id to register regions
         """
-        if preserves_map is None:
-            preserves_map = {}
-
         result: Dict[int, Dict[str, List[ClobberRegion]]] = {}
 
         for block_id in self.func.blocks:
-            result[block_id] = self.analyze_block(block_id, preserves_map)
+            result[block_id] = self.analyze_block(block_id, effects_for)
 
         return result

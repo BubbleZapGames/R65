@@ -374,9 +374,10 @@ class TestClobberRegionAnalyzer:
         instr_liveness = InstructionLivenessAnalyzer(mir_func)
         analyzer = ClobberRegionAnalyzer(instr_liveness)
 
-        # Provide preserves map: call_y preserves X
-        preserves_map = {'clobber_y': {'X'}}
-        regions = analyzer.analyze_block(0, preserves_map)
+        # call_y preserves X
+        from types import SimpleNamespace
+        call_y.preserves_attr = SimpleNamespace(registers=['X'])
+        regions = analyzer.analyze_block(0)
 
         # X region: only call_both clobbers X (call_y preserves it)
         assert len(regions['X']) == 1

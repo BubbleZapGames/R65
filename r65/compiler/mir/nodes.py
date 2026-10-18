@@ -1149,7 +1149,9 @@ def count_vreg_reads(func) -> Dict[int, int]:
 
 
 # Nodes whose codegen may overwrite every register: a call (the ABI's
-# volatile registers) and inline asm (a black box).
+# volatile registers) and inline asm (a black box). What a call actually
+# keeps is in mir/call_effects.py; the MIR passes that test this stay
+# conservative on purpose and ignore even `#[preserves(...)]`.
 CLOBBERS_ALL = (Call, TraitDispatch, InlineAsm)
 
 
