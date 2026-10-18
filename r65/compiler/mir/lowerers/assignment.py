@@ -156,7 +156,13 @@ class AssignmentLowerer:
                     # Direct load from memory to hardware register
                     hw_reg = HardwareRegister(target_reg)
                     mem_loc = self.builder.get_memory_location(symbol)
-                    self.emit(Load(dest=hw_reg, source=mem_loc, type_info=expr.expr_type))
+                    # Into X/Y the load is the static's width (a u8 is
+                    # zero-extended, a u16 read whole); the assignment's type
+                    # is the register's, which says nothing about the source.
+                    load_type = (expr.value.expr_type
+                                 if target_reg in ('X', 'Y') and expr.value.expr_type
+                                 else expr.expr_type)
+                    self.emit(Load(dest=hw_reg, source=mem_loc, type_info=load_type))
                     return hw_reg
 
         # Lower value

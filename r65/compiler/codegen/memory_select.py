@@ -92,8 +92,10 @@ class MemoryOperationSelector(BaseSelector):
         src_loc = self.parent._get_operand_location(instr.source)
 
         if dest_loc.is_hw() and not is_far_pointer_type(instr.type_info):
+            from r65.compiler.codegen.type_utils import get_type_size
             self.parent.move_selector._load_memory_to_hw_register(
-                dest_loc.hw_register, src_loc, self.parent._is_16bit(instr.type_info))
+                dest_loc.hw_register, src_loc, self.parent._is_16bit(instr.type_info),
+                src_bytes=get_type_size(instr.type_info) if instr.type_info else None)
             return
 
         # A far pointer is 3 bytes. It fits neither path below, and

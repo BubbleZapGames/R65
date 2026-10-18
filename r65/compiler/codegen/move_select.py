@@ -156,7 +156,14 @@ class MoveOperationSelector(BaseSelector):
         else:
             raise InstructionSelectionError(f"Cannot load immediate into register {hw_register}", source_loc=self.parent._current_source_loc)
 
-    def _load_memory_to_hw_register(self, hw_register: str, src_loc, is_u16: bool = False):
+    def _needs_long_load(self, src_loc) -> bool:
+        """Whether reading *src_loc* takes long addressing (an LDA long)."""
+        from r65.compiler.codegen.opcodes import addressing_mode
+        opcode, _ = self.parent._get_opcode_for_location('LDA', src_loc)
+        return (addressing_mode(opcode) or '').startswith('LONG')
+
+    def _load_memory_to_hw_register(self, hw_register: str, src_loc, is_u16: bool = False,
+                                    src_bytes: int = None):
         """Load from memory into a hardware register.
 
         Args:
@@ -164,6 +171,8 @@ class MoveOperationSelector(BaseSelector):
             src_loc: Source memory location
             is_u16: Whether this is a 16-bit load (DEST type); a 16-bit A
                 load leaves the accumulator in m16
+            src_bytes: The loaded value's width, when the caller knows it (a
+                Load's type). A static's location carries no real size.
         """
         # X and Y are always 16-bit registers in R65, so the Move's nominal
         # `is_u16` (derived from the dest type) is always True for X/Y dest —
@@ -171,9 +180,11 @@ class MoveOperationSelector(BaseSelector):
         # read 2 bytes from the source. For a u8 source (e.g. an `@ A: u8`
         # scratch param) that picks up the adjacent byte as the high byte of
         # X/Y. Re-derive `is_u16` from the SOURCE size so the zero-extend
-        # path runs whenever the source is 8 bits.
+        # path runs whenever the source is 8 bits - from `src_bytes` when
+        # given: a static's location says size 1 whatever it holds, and
+        # `Y = G` with G a u16 kept only G's low byte.
         if hw_register in ('X', 'Y'):
-            is_u16 = (src_loc.size >= 2)
+            is_u16 = (src_bytes if src_bytes is not None else src_loc.size) >= 2
 
         # Handle 16-bit A register loads
         if hw_register == 'A' and is_u16:
@@ -234,6 +245,12 @@ class MoveOperationSelector(BaseSelector):
                 self._emit_instr(Opcode.TAX, comment="Transfer to X (zero-extended)")
             else:
                 self._emit_instr(Opcode.TAY, comment="Transfer to Y (zero-extended)")
+        elif hw_register in ('X', 'Y') and self._needs_long_load(src_loc):
+            # A 16-bit value out of bank $7E: LDX/LDY have no long form
+            self.parent._ensure_m16_mode()
+            self._emit_load_store('LDA', src_loc)
+            self._emit_instr(Opcode.TAX if hw_register == 'X' else Opcode.TAY,
+                             comment=f"Transfer to {hw_register} (no LDX/LDY long)")
         elif hw_register in LOAD_MNEMONICS:
             self._emit_load_store(LOAD_MNEMONICS[hw_register], src_loc)
         elif hw_register == 'B':
