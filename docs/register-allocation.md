@@ -519,6 +519,25 @@ fn example() {
 
 Only values whose live range contains no call are candidates for scratch.
 
+### Index Registers Live Across a Call
+
+A value the allocator keeps in X or Y - a loop counter promoted there, a
+`self` pointer in Y, a register parameter - or a direct `X`/`Y` the program
+names, survives a call that may write the register by being pushed before it
+and pulled after. The push is placed per *clobber region*
+(`ClobberRegionAnalyzer` in `mir/liveness.py`): a run of calls in one block
+with no use of the register between them is bracketed once, so a loop body
+that makes two calls saves its counter once per pass, not twice. A register
+counts as live after a call when a named use of it is, or when any vreg
+allocation placed in it is.
+
+The two registers' regions are found separately and need not nest. Regions
+starting at the same call push the later-ending one first; when one must be
+pulled from under the other, the one above is pulled too and pushed again at
+its region's next call. A value in A is saved around each call it is live
+across, though the allocator rarely leaves one there: it does not keep a value
+in A across a call that may write it.
+
 ### Call Effects
 
 What a call does to A, B, X and Y is computed in one place,

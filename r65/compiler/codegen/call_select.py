@@ -18,7 +18,7 @@ redundant push/pull operations.
 from typing import List, Set, Dict, NamedTuple, Optional, TYPE_CHECKING
 from r65.compiler.mir.nodes import (
     Call, CallBase, TraitDispatch, VirtualRegister, ArgumentMechanism,
-    Immediate as MIRImmediate, ChainRole,
+    Immediate as MIRImmediate, ChainRole, iter_operands,
 )
 
 if TYPE_CHECKING:
@@ -166,6 +166,8 @@ class CallInstructionSelector(BaseSelector):
         self.region_state = ActiveRegionState()
         # Pre-computed regions for current function: {block_id: {hw_reg: [ClobberRegion]}}
         self._function_regions: Optional[Dict[int, Dict[str, List]]] = None
+        # The vregs allocation placed in A (spilled per call, not by region)
+        self._a_vregs: List[VirtualRegister] = []
         # call_effects per call of the current function, by id(instr)
         self._effects: Dict[int, CallEffects] = {}
 
@@ -183,8 +185,16 @@ class CallInstructionSelector(BaseSelector):
 
         from r65.compiler.mir.liveness import ClobberRegionAnalyzer
 
-        analyzer = ClobberRegionAnalyzer(reg_alloc.instr_liveness)
+        hw_of = {vid: loc.hw_register for vid, loc in reg_alloc.allocations.items()
+                 if loc.kind == LocationKind.HARDWARE}
+        analyzer = ClobberRegionAnalyzer(reg_alloc.instr_liveness, hw_of)
         self._function_regions = analyzer.analyze_function(self.effects)
+        self._region_analyzer = analyzer
+        a_ids = {vid for vid, reg in hw_of.items() if reg == 'A'}
+        self._a_vregs = list({v.id: v for block in self.parent.current_function.blocks.values()
+                              for instr in block.instructions
+                              for _, v in iter_operands(instr)
+                              if type(v) is VirtualRegister and v.id in a_ids}.values())
 
     def initialize_regions_for_block(self, block_id: int):
         """
@@ -200,8 +210,7 @@ class CallInstructionSelector(BaseSelector):
             self.region_state = ActiveRegionState()
             return
 
-        # Hardware liveness tracks X and Y only, so only they get regions;
-        # A always takes the per-call path.
+        # Only X and Y get regions; A takes the per-call path.
         regions = self._function_regions.get(block_id, {'X': [], 'Y': []})
         self.region_state.set_block_regions(block_id, regions)
 
@@ -517,92 +526,8 @@ class CallInstructionSelector(BaseSelector):
             self.region_state.stack_tracker.pop(1)  # PLB = 1 byte
 
         # Reload spilled registers
-        reloads = self._compute_trait_dispatch_reloads(instr)
+        reloads = self._compute_hw_reloads(instr)
         self._emit_hw_reloads(reloads)
-
-    def _compute_trait_dispatch_reloads(self, instr: TraitDispatch) -> List[SpillInfo]:
-        """Compute hw register reloads after trait dispatch."""
-        reloads: List[SpillInfo] = []
-        reg_alloc = self.parent.reg_alloc
-        if not reg_alloc:
-            return reloads
-
-        # Skip registers holding a result: the same rule as the spill side
-        call_return_set = self._call_result_registers(instr)
-
-        instr_idx = None
-        if reg_alloc.instr_liveness:
-            pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-            if pos:
-                _, instr_idx = pos
-
-        for reg_name in ['A', 'X', 'Y']:
-            if reg_name in call_return_set:
-                # Region was entered at first call; clear it so we don't
-                # try to reload over the return value at region end.
-                if self.region_state.is_region_active(reg_name):
-                    self.region_state.clear_active_region(reg_name)
-                continue
-
-            use_region_based = (
-                instr_idx is not None and
-                self._function_regions is not None and
-                reg_name in ('X', 'Y')
-            )
-
-            if use_region_based:
-                region = self.region_state.get_region_for_call(reg_name, instr_idx)
-                if region is not None:
-                    if self.region_state.is_last_call_in_region(reg_name, instr_idx):
-                        reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        self.region_state.clear_active_region(reg_name)
-                    continue
-
-            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
-            vreg = hw_alloc.allocated_vreg
-            if vreg is not None:
-                if reg_alloc.instr_liveness:
-                    pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-                    if pos:
-                        block_id, idx = pos
-                        if reg_alloc.instr_liveness.is_live_after(vreg, block_id, idx):
-                            reloads.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
-                else:
-                    if hw_alloc.is_bound:
-                        reloads.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
-                continue
-
-            if reg_name in ('X', 'Y') and reg_alloc.instr_liveness and self._function_regions is None:
-                pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-                if pos:
-                    block_id, idx = pos
-                    if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
-                        reloads.append(SpillInfo(vreg=None, hw_reg=reg_name))
-
-        # Per-call A spill fallback: _emit_hw_spills records pending_a_spill
-        # whenever it pushes A. If neither the region path nor the vreg-based
-        # path above already produced a reload, emit the matching PLA here so
-        # the stack stays balanced. Clear the marker in all cases so it does
-        # not leak to a later call.
-        if self.region_state.pending_a_spill is not None:
-            if 'A' in call_return_set or any(r.hw_reg == 'A' for r in reloads):
-                self.region_state.pending_a_spill = None
-            else:
-                reloads.append(self.region_state.pending_a_spill)
-
-        # Per-call X/Y spill fallback: same idea for PHX/PHY pushed without
-        # an active region. The vreg-based path above may already have queued
-        # a reload for this reg — skip the pending entry in that case.
-        for reg_name in ('X', 'Y'):
-            if reg_name not in self.region_state.pending_xy_spills:
-                continue
-            if reg_name in call_return_set or any(r.hw_reg == reg_name for r in reloads):
-                del self.region_state.pending_xy_spills[reg_name]
-                continue
-            reloads.append(self.region_state.pending_xy_spills[reg_name])
-            del self.region_state.pending_xy_spills[reg_name]
-
-        return reloads
 
     def _emit_trait_dispatch_args(self, instr: TraitDispatch) -> int:
         """Emit trait dispatch arguments. Delegates to ABIModel.emit_trait_dispatch_args."""
@@ -738,11 +663,10 @@ class CallInstructionSelector(BaseSelector):
         """
         Compute which hardware registers need spilling for this call.
 
-        Uses region-based analysis when available: only returns registers that
-        need to START a new region at this call. Registers that are already
-        in an active region (saved earlier) are not included.
-
-        Falls back to per-call analysis when region analysis is unavailable.
+        X and Y spill by region: only at the call that starts one (or that
+        resumes one pulled early, see _emit_hw_reloads). A region covers a
+        direct use of the register and every vreg allocation placed in it.
+        A spills per call, when a vreg placed in A is live after it.
 
         Args:
             instr: The Call instruction
@@ -750,101 +674,62 @@ class CallInstructionSelector(BaseSelector):
         Returns:
             List of SpillInfo for registers that need spilling at THIS call
         """
-        spills: List[SpillInfo] = []
-
-        # Get callee's preserved registers
-        preserved = self.callee_preserves(instr)
-
-        # Check each hardware register
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc:
-            return spills
+            return []
+        pos = (reg_alloc.instr_liveness.get_instruction_position(instr)
+               if reg_alloc.instr_liveness else None)
+        if self._function_regions is None or pos is None:
+            return self._spills_without_liveness(instr)
+        block_id, instr_idx = pos
 
-        # Get instruction position for region lookup
-        instr_idx = None
-        if reg_alloc.instr_liveness:
-            pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-            if pos:
-                _, instr_idx = pos
-
+        preserved = self.callee_preserves(instr)
         # A register the call defines is never spilled: spilling would save
         # garbage and the matching PLX/PLY would clobber the result.
         call_return_set = self._call_result_registers(instr)
 
-        for reg_name in ['A', 'X', 'Y']:
-            # Skip if callee preserves this register
-            if reg_name in preserved:
+        spills: List[SpillInfo] = []
+        for reg_name in ('A', 'X', 'Y'):
+            if reg_name in preserved or reg_name in call_return_set:
                 continue
-
-            # Skip if this call returns a value in this register
-            if reg_name in call_return_set:
+            if reg_name == 'A':
+                il = reg_alloc.instr_liveness
+                if any(il.is_live_after(v, block_id, instr_idx) for v in self._a_vregs):
+                    spills.append(SpillInfo(vreg=None, hw_reg='A'))
                 continue
-
-            # Check if region-based spilling is available for this register
-            # (X/Y only: A has no regions)
-            use_region_based = (
-                instr_idx is not None and
-                self._function_regions is not None and
-                reg_name in ('X', 'Y')
-            )
-
-            if use_region_based:
-                # Check if this call is in a region for this register
-                region = self.region_state.get_region_for_call(reg_name, instr_idx)
-
-                if region is not None:
-                    # This call is in a clobber region
-                    if self.region_state.is_first_call_in_region(reg_name, instr_idx):
-                        # First call in region - need to spill
-                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        # Mark region as active
-                        self.region_state.mark_region_active(reg_name, region)
-                    elif reg_name in self.region_state.respill:
-                        # Pulled early to reach a register below it
-                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
-                        self.region_state.respill.discard(reg_name)
-                    # Else: already in active region, no spill needed
-                    continue
-
-            # Per-call analysis for A, or for X/Y outside any region
-            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
-            vreg = hw_alloc.allocated_vreg
-
-            # Case 1: Vreg allocated to this hw register
-            if vreg is not None:
-                # Check if the vreg is live after this call
-                if reg_alloc.instr_liveness:
-                    pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-                    if pos:
-                        block_id, idx = pos
-                        if reg_alloc.instr_liveness.is_live_after(vreg, block_id, idx):
-                            spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
-                else:
-                    # Conservative: assume live if we have an allocation
-                    if hw_alloc.is_bound:
-                        spills.append(SpillInfo(vreg=vreg, hw_reg=reg_name))
+            region = self.region_state.get_region_for_call(reg_name, instr_idx)
+            if region is None:
                 continue
-
-            # Case 2: Direct hardware register usage (X and Y only, not A)
-            # For X/Y without region info, fall back to per-call
-            if reg_name in ('X', 'Y') and reg_alloc.instr_liveness and self._function_regions is None:
-                pos = reg_alloc.instr_liveness.get_instruction_position(instr)
-                if pos:
-                    block_id, idx = pos
-                    if reg_alloc.instr_liveness.is_hw_reg_live_after(reg_name, block_id, idx):
-                        spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
+            if self.region_state.is_first_call_in_region(reg_name, instr_idx):
+                spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
+                self.region_state.mark_region_active(reg_name, region)
+            elif reg_name in self.region_state.respill:
+                # Pulled early to reach a register below it
+                spills.append(SpillInfo(vreg=None, hw_reg=reg_name))
+                self.region_state.respill.discard(reg_name)
 
         # Push what is restored last first, so the regions starting here nest:
-        # a register reloaded after this call (per-call A or X/Y) goes on top,
-        # an X/Y region on by its last call, latest deepest.
+        # A, reloaded after this call, goes on top; an X/Y region by its last
+        # call, latest deepest.
         def ends(spill):
-            region = (self.region_state.get_region_for_call(spill.hw_reg, instr_idx)
-                      if instr_idx is not None and spill.vreg is None else None)
+            region = self.region_state.get_region_for_call(spill.hw_reg, instr_idx)
             return region.clobbering_calls[-1] if region is not None else -1
         spills.sort(key=ends, reverse=True)
         return spills
 
-    def _compute_hw_reloads(self, instr: Call) -> List[SpillInfo]:
+    def _spills_without_liveness(self, instr: CallBase) -> List[SpillInfo]:
+        """Per-call spills with no liveness to consult: every register a vreg
+        is bound to, unless the call keeps it or returns in it."""
+        reg_alloc = self.parent.reg_alloc
+        skip = self.callee_preserves(instr) | self._call_result_registers(instr)
+        spills = []
+        for reg_name in ('A', 'X', 'Y'):
+            hw_alloc = reg_alloc.get_hw_alloc(reg_name)
+            if reg_name not in skip and hw_alloc.allocated_vreg is not None and hw_alloc.is_bound:
+                spills.append(SpillInfo(vreg=hw_alloc.allocated_vreg, hw_reg=reg_name))
+        return spills
+
+    def _compute_hw_reloads(self, instr: CallBase) -> List[SpillInfo]:
         """
         Compute which hardware registers need reloading after this call.
 
@@ -908,11 +793,7 @@ class CallInstructionSelector(BaseSelector):
                 # Spill was skipped at the call site, clear the pending marker
                 self.region_state.pending_a_spill = None
 
-        # X/Y per-call spilling: when a vreg allocated to X/Y is live across
-        # a call but no clobber region was created (because the liveness analysis
-        # only tracks direct HardwareRegister usage, not vreg-to-hw mappings),
-        # the per-call fallback emits PHY/PHX but _compute_hw_reloads won't find
-        # an active region. Check pending per-call spills and emit PLY/PLX.
+        # X/Y spilled per call (_spills_without_liveness): pulled right after.
         for hw_reg in ('X', 'Y'):
             if hw_reg in self.region_state.pending_xy_spills:
                 if hw_reg in call_return_set:

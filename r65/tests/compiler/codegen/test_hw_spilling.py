@@ -463,6 +463,24 @@ class TestSpillReloadOrder:
                 if phx_idx < phy_idx:
                     assert ply_idx < plx_idx, "Reloads should be in reverse order of spills"
 
+    def test_vreg_in_y_saved_once_across_calls(self):
+        """A loop counter promoted into Y is a vreg, not a named Y, but the
+        region analysis counts it all the same: one PHY/PLY around both
+        calls, not one around each."""
+        source = """
+        #[lowram(0x0300)] static mut OUT: [u16; 3];
+        #[inline(never)] fn clob() { X = 0x7777; Y = 0x7777; }
+        #[inline(never)] fn loop_call() {
+            let mut i: u16 = 0;
+            while i < 3 { clob(); clob(); OUT[i] = i; i = i + 1; }
+        }
+        #[entry] fn main() { loop_call(); }
+        """
+        body = compile_string(source, "test.r65").split('loop_call:', 1)[1].split('RTS', 1)[0]
+        ops = [l.split(';')[0].strip() for l in body.splitlines()
+               if l.split(';')[0].strip() in ('PHY', 'PLY', 'JSR clob')]
+        assert ops == ['PHY', 'JSR clob', 'JSR clob', 'PLY'], f"{ops}\n{body}"
+
     def test_crossing_regions_stay_lifo(self):
         """X and Y regions are found one register at a time, so they need
         not nest: here X's ends at g() while Y's, opened later, goes on to

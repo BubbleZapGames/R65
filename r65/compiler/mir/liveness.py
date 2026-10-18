@@ -648,17 +648,44 @@ class ClobberRegionAnalyzer:
     Regions never span blocks: one still open at block end restores there.
     """
 
-    def __init__(self, instr_liveness: InstructionLivenessAnalyzer):
+    def __init__(self, instr_liveness: InstructionLivenessAnalyzer,
+                 hw_of: Optional[Dict[int, str]] = None):
         """
         Initialize clobber region analyzer.
 
         Args:
             instr_liveness: Instruction-level liveness analyzer
+            hw_of: vreg id -> the index register allocation placed it in. A
+                register is live where a direct use of it is, or where any
+                vreg placed in it is, so regions cover both.
         """
         self.instr_liveness = instr_liveness
         self.func = instr_liveness.func
         self.block_analyzer = instr_liveness.block_analyzer
         self.liveness = instr_liveness.liveness
+        self.hw_of = {vid: reg for vid, reg in (hw_of or {}).items() if reg in ('X', 'Y')}
+        self.vregs_in: Dict[str, List[VirtualRegister]] = {'X': [], 'Y': []}
+        seen = set()
+        for block in self.func.blocks.values():
+            for instr in block.instructions:
+                for _, v in iter_operands(instr):
+                    if (type(v) is VirtualRegister and v.id in self.hw_of
+                            and v.id not in seen):
+                        seen.add(v.id)
+                        self.vregs_in[self.hw_of[v.id]].append(v)
+
+    def _names(self, operand, hw_reg: str) -> bool:
+        """Whether *operand* is *hw_reg*: by name, or a vreg placed there."""
+        if isinstance(operand, HardwareRegister):
+            return operand.name == hw_reg
+        return type(operand) is VirtualRegister and self.hw_of.get(operand.id) == hw_reg
+
+    def reg_live_after(self, hw_reg: str, block_id: int, instr_idx: int) -> bool:
+        """Whether *hw_reg* holds a value still needed after the instruction."""
+        il = self.instr_liveness
+        return (il.is_hw_reg_live_after(hw_reg, block_id, instr_idx)
+                or any(il.is_live_after(v, block_id, instr_idx)
+                       for v in self.vregs_in.get(hw_reg, ())))
 
     def analyze_block(self, block_id: int, effects_for: Optional[EffectsFor] = None
                       ) -> Dict[str, List[ClobberRegion]]:
@@ -717,17 +744,11 @@ class ClobberRegionAnalyzer:
         for instr_idx, instr in enumerate(block.instructions):
             # Check if this instruction uses the hw register
             uses = self.block_analyzer._get_uses(instr)
-            is_use = any(
-                isinstance(u, HardwareRegister) and u.name == hw_reg
-                for u in uses
-            )
+            is_use = any(self._names(u, hw_reg) for u in uses)
 
             # Check if this instruction defines the hw register
             defs = self.block_analyzer._get_defs(instr)
-            is_def = any(
-                isinstance(d, HardwareRegister) and d.name == hw_reg
-                for d in defs
-            )
+            is_def = any(self._names(d, hw_reg) for d in defs)
 
             # For Call/TraitDispatch instructions, also check if the call returns a value
             # in hw_reg. A call that defines a register via its return value
@@ -750,7 +771,7 @@ class ClobberRegionAnalyzer:
             if is_call and not is_def:
                 if effects.may_write(hw_reg):
                     # Check if register is live after this call
-                    if self.instr_liveness.is_hw_reg_live_after(hw_reg, block_id, instr_idx):
+                    if self.reg_live_after(hw_reg, block_id, instr_idx):
                         # This is a clobbering call where register is live across
 
                         if current_region is None:
