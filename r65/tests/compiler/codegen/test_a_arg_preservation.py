@@ -69,14 +69,36 @@ def simulate_to_call(instrs: list[str], entry_a='v') -> tuple:
     Returns (A, B) at the first JSR/JSL. Anything the model does not understand
     poisons the destination with Unknown rather than being silently ignored, so
     an unmodelled instruction shows up as a test failure, not a false pass.
+
+    The stack is modelled a byte at a time, with the accumulator width from
+    REP/SEP (entry in m8), so `LDA $nn,S` reads back a value pushed inside the
+    prologue. A high byte is never the tracked value.
     """
     a, b, x, y = entry_a, Unknown(), Unknown(), Unknown()
     stack: list = []
+    m16 = False
+
+    def push(value, wide):
+        if wide:
+            stack.append(Unknown())        # high byte, at the higher address
+        stack.append(value)
+
+    def pull(wide):
+        value = stack.pop() if stack else Unknown()
+        if wide and stack:
+            stack.pop()
+        return value
+
     for ins in instrs:
         op = ins.split()[0]
         operand = ins[len(op):].strip()
         if op in ('JSR', 'JSL'):
             return a, b
+        elif op in ('REP', 'SEP') and int(operand.lstrip('#$'), 16) & 0x20:
+            m16 = op == 'REP'
+        elif op == 'LDA' and operand.endswith(',S'):
+            offset = int(operand[:-2].lstrip('$'), 16)
+            a = stack[-offset] if 0 < offset <= len(stack) else f'mem({operand})'
         elif op == 'LDA':
             a = f'mem({operand})'
         elif op == 'XBA':
@@ -90,9 +112,9 @@ def simulate_to_call(instrs: list[str], entry_a='v') -> tuple:
         elif op == 'TXA':
             a = x
         elif op == 'PHA':
-            stack.append(a)
+            push(a, m16)
         elif op == 'PLA':
-            a = stack.pop() if stack else Unknown()
+            a = pull(m16)
         elif op in ('STA', 'STX', 'STY', 'STZ', 'LDX', 'LDY',
                     'REP', 'SEP', 'PHB', 'PLB', 'PHD', 'PLD',
                     'PHX', 'PLX', 'PHY', 'PLY', 'PHP', 'PLP',
@@ -103,11 +125,19 @@ def simulate_to_call(instrs: list[str], entry_a='v') -> tuple:
             elif op == 'LDY':
                 y = f'mem({operand})'
             elif op == 'PLX':
-                x = stack.pop() if stack else Unknown()
+                x = pull(True)
             elif op == 'PLY':
-                y = stack.pop() if stack else Unknown()
+                y = pull(True)
             elif op in ('PHX', 'PHY'):
-                stack.append(x if op == 'PHX' else y)
+                push(x if op == 'PHX' else y, True)
+            elif op in ('PHB', 'PHP'):
+                push(Unknown(), False)
+            elif op == 'PHD':
+                push(Unknown(), True)
+            elif op in ('PLB', 'PLP'):
+                pull(False)
+            elif op == 'PLD':
+                pull(True)
         else:
             a = Unknown()          # unmodelled: fail loudly rather than pass
     raise AssertionError(f"no call found in: {instrs}")
@@ -317,3 +347,79 @@ fn main() {{ OUT = caller(7, 9); }}
         between = [s for s in emitted[ldy + 1:call]
                    if s.startswith(('TAY', 'INY', 'DEY', 'PLY'))]
         assert not between, f"Y clobbered before the call: {emitted}"
+
+
+class TestStackArgSaveRespectsPreserves:
+    """The same rule when the call also has stack arguments. Their setup
+    (`_compute_a_save_for_call`) parked A in Y or X whatever the callee
+    preserved, and when no index register was free it saved A nowhere."""
+
+    def source(self, preserves: str) -> str:
+        return f"""
+#[zeropage(0x20)]
+static mut OUT: u16;
+{preserves}
+far fn callee(s: u8, a @ A: u8) -> u8 {{ X = 1; Y = 2; return a + s; }}
+fn caller(v @ A: u8, w: u8) -> u16 {{
+    Y = 0x1234;
+    let r: u8 = callee(w, v);
+    return Y;
+}}
+#[entry]
+fn main() {{ OUT = caller(7, 9); }}
+"""
+
+    def test_preserved_y_is_not_borrowed(self):
+        emitted = instrs_for(self.source("#[preserves(Y)]"))
+        assert 'TAY' not in emitted, emitted
+        assert simulate_to_call(emitted)[0] == 'v', emitted
+
+    def test_both_preserved_parks_on_the_stack(self):
+        """Pushed above the stack args, so the callee's parameter offsets
+        do not move, and read back in place before the call."""
+        emitted = instrs_for(self.source("#[preserves(X, Y)]"))
+        call = next(i for i, s in enumerate(emitted) if s.startswith(('JSR', 'JSL')))
+        assert not any(s.startswith(('TAX', 'TAY')) for s in emitted[:call]), emitted
+        assert simulate_to_call(emitted)[0] == 'v', emitted
+
+    def test_no_free_index_register(self):
+        """Both index registers are argument targets."""
+        source = caller_body(
+            '#[inline(never)] far fn xy(s: u8, a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
+            '{ return p + q + (s as u16) + (a as u16); }',
+            "xy(w, v, p, q)", params="v @ A: u8, w: u8, p: u16, q: u16",
+            args="7, 9, 1, 2")
+        assert_a_survives(source)
+
+
+class TestStackArgCleanupRespectsPreserves:
+    """Popping the pushed arguments after the call must not pull into a
+    register the callee preserves: the caller did not spill it either."""
+
+    def source(self, preserves: str) -> str:
+        return f"""
+#[zeropage(0x20)] static mut OUT: u16;
+#[zeropage(0x22)] static mut R: u8;
+{preserves}
+#[inline(never)] far fn callee(s: u8, t: u8) -> u8 {{ X = 1; return s + t; }}
+fn caller(w: u8) -> u16 {{
+    X = 0x1234;
+    R = callee(w, 3);
+    return X;
+}}
+#[entry]
+fn main() {{ OUT = caller(9); }}
+"""
+
+    def after_call(self, preserves: str) -> list[str]:
+        emitted = instrs_for(self.source(preserves))
+        call = next(i for i, s in enumerate(emitted) if s.startswith(('JSR', 'JSL')))
+        return emitted[call + 1:]
+
+    def test_preserved_x_is_not_pulled_into(self):
+        after = self.after_call("#[preserves(X)]")
+        assert 'PLX' not in after and 'PLY' in after, after
+
+    def test_both_preserved(self):
+        after = self.after_call("#[preserves(X, Y)]")
+        assert not {'PLX', 'PLY'} & set(after), after

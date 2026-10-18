@@ -131,24 +131,31 @@ class ABIModel(ABC):
         stack_args = [a for a in instr.args if a.mechanism == ArgumentMechanism.STACK]
         other_args = [a for a in instr.args if a.mechanism != ArgumentMechanism.STACK]
 
-        a_save_reg, a_param_is_16bit = (
-            self._compute_a_save_for_call(selector, stack_args, other_args))
+        # The call's preserved set is exactly what _compute_hw_spills skipped
+        # spilling, so it is exactly what may still hold an unsaved live value.
+        preserved = selector.callee_preserves(instr)
 
-        if a_save_reg:
+        a_save_reg, a_param_is_16bit = (
+            self._compute_a_save_for_call(selector, stack_args, other_args, preserved))
+
+        parked_bytes = 0
+        if a_save_reg == 'S':
+            parked_bytes = 2 if a_param_is_16bit else 1
+            _force_accu_mode(selector, 16 if a_param_is_16bit else 8)
+            selector._emit_implied(Opcode.PHA, "Park A above the stack args")
+            selector.region_state.stack_tracker.push(parked_bytes)
+        elif a_save_reg:
             op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
             selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
 
         stack_bytes_pushed = 0
         if stack_args:
             stack_bytes_pushed = self._emit_stack_args_pha(
-                selector, stack_args, a_save_reg, pre_arg_stack_adj)
+                selector, stack_args, a_save_reg, pre_arg_stack_adj, a_param_is_16bit)
 
         if a_save_reg:
-            self._restore_a_from(selector, a_save_reg, a_param_is_16bit)
+            self._restore_a_from(selector, a_save_reg, a_param_is_16bit, stack_bytes_pushed)
 
-        # The call's preserved set is exactly what _compute_hw_spills skipped
-        # spilling, so it is exactly what may still hold an unsaved live value.
-        preserved = selector.callee_preserves(instr)
         self._emit_other_args(selector, other_args, pre_arg_stack_adj, preserved)
 
         self_y_arg = next(
@@ -156,7 +163,8 @@ class ABIModel(ABC):
         if self_y_arg is not None:
             self._emit_self_y(selector, self_y_arg)
 
-        return stack_bytes_pushed
+        # A parked byte is popped with the arguments, which lie below it
+        return stack_bytes_pushed + parked_bytes
 
     @staticmethod
     def _saved_value_size(arg) -> int:
@@ -176,11 +184,18 @@ class ABIModel(ABC):
     def _register_target_name(arg) -> str:
         return arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
 
-    def _compute_a_save_for_call(self, selector, stack_args, other_args):
+    def _compute_a_save_for_call(self, selector, stack_args, other_args,
+                                 preserved=frozenset()):
         """Decide whether A must be saved across stack-arg setup.
 
         Returns (a_save_reg, a_param_is_16bit) where a_save_reg is 'Y', 'X',
-        or None.
+        'S' (pushed above the stack args and read back stack-relative), or
+        None when no save is needed.
+
+        An index register is used only if no argument goes to it and the call
+        does not preserve it (`preserved`, from callee_preserves): a register
+        the callee preserves is not spilled, so a live value in it is sitting
+        unsaved and TAY/TAX would destroy it before the JSR.
 
         A save is needed when:
           - any non-stack arg's value is in A (LDA in stack setup would
@@ -229,13 +244,13 @@ class ABIModel(ABC):
             self._register_target_name(a)
             for a in other_args if a.mechanism == ArgumentMechanism.REGISTER
         }
-        if 'Y' not in reg_targets:
-            return 'Y', a_param_is_16bit
-        if 'X' not in reg_targets:
-            return 'X', a_param_is_16bit
-        return None, a_param_is_16bit
+        for reg in ('Y', 'X'):
+            if reg not in reg_targets and reg not in preserved:
+                return reg, a_param_is_16bit
+        return 'S', a_param_is_16bit
 
-    def _emit_stack_args_pha(self, selector, stack_args, a_save_reg, pre_arg_stack_adj) -> int:
+    def _emit_stack_args_pha(self, selector, stack_args, a_save_reg, pre_arg_stack_adj,
+                             a_param_is_16bit=False) -> int:
         """Push stack args right-to-left via PHA. Returns bytes pushed."""
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.opcodes import Opcode
@@ -245,7 +260,9 @@ class ABIModel(ABC):
         for arg in reversed(stack_args):
             arg_loc = selector.parent._get_operand_location(arg.value)
 
-            if arg_loc.is_hw('A') and a_clobbered and a_save_reg:
+            if arg_loc.is_hw('A') and a_clobbered and a_save_reg == 'S':
+                self._restore_a_from(selector, 'S', a_param_is_16bit, stack_bytes_pushed)
+            elif arg_loc.is_hw('A') and a_clobbered and a_save_reg:
                 _force_accu_mode(
                     selector, 16 if self._saved_value_size(arg) >= 2 else 8)
                 op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
@@ -263,15 +280,22 @@ class ABIModel(ABC):
                 a_clobbered = True
         return stack_bytes_pushed
 
-    def _restore_a_from(self, selector, a_save_reg, a_param_is_16bit):
+    def _restore_a_from(self, selector, a_save_reg, a_param_is_16bit, pushed_since=0):
         """Emit TYA/TXA to restore A, pinned to the width of the saved value.
 
         TYA/TXA are M-sized, so the mode has to be right in both directions: too
         wide and the restore drags B in behind A, too narrow and the high byte
-        is dropped.
+        is dropped. A value parked on the stack ('S') sits just above the
+        `pushed_since` argument bytes pushed after it, and is read in place.
         """
         from r65.compiler.codegen.opcodes import Opcode
         _force_accu_mode(selector, 16 if a_param_is_16bit else 8)
+        if a_save_reg == 'S':
+            from r65.compiler.codegen.asm_nodes import StackOffset
+            selector.parent.emitter.emit_instr(
+                Opcode.LDA_STACK, StackOffset(pushed_since + 1),
+                "Restore A parked above the stack args")
+            return
         op = Opcode.TYA if a_save_reg == 'Y' else Opcode.TXA
         selector._emit_implied(op, f"Restore A from {a_save_reg} after stack arg setup")
 

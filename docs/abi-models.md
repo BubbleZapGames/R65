@@ -193,8 +193,20 @@ setup would clobber A:
 | where | when | cost |
 |---|---|---|
 | **B** (`XBA` … `XBA`) | an 8-bit value, and a `@ B` argument is the only clobberer | free — the `@ B` argument's own `XBA` is the restore |
-| **Y**, then **X** | the register is neither an argument target nor an argument source | `TAY`/`TYA`, 4 cycles |
+| **Y**, then **X** | the register is neither an argument target nor an argument source, and the callee does not preserve it | `TAY`/`TYA`, 4 cycles |
 | **stack** (`PHA`/`PLA`) | both index registers are taken | 7 cycles; stack-relative sources shift with the push automatically |
+
+A register the callee preserves (`#[preserves(...)]`, or an index register its
+code never writes) is never used: the caller does not spill it around the call,
+so it may hold a live value that parking would destroy before the `JSR`. The
+same rule keeps the caller's cleanup of pushed stack arguments from pulling into
+such a register.
+
+When the call also has stack arguments, they are pushed through A first. The
+value is parked in Y or X under the same rule, or otherwise pushed *before* the
+arguments and read back in place (`LDA n,S`) once they are on the stack, so the
+callee's parameter offsets do not move. Its bytes are popped with the arguments
+after the call.
 
 `TAY`/`TAX` move index-width bits whatever the accumulator mode is, so only the
 restore needs its mode pinned — and it is pinned in **both** directions. A `TYA`

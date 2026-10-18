@@ -364,9 +364,14 @@ class CallInstructionSelector(BaseSelector):
 
         # Step 5.5: Caller cleanup of PHA-pushed stack args
         # Done after return value collection, so the cleanup knows which
-        # registers still hold a result and pulls into none of them.
+        # registers still hold a result and pulls into none of them. Nor
+        # into one the callee preserves: it was not spilled, so it may hold
+        # a live value.
         if stack_bytes_pushed > 0:
-            self._emit_caller_arg_cleanup(stack_bytes_pushed, self._call_live_after_collection(instr))
+            self._emit_caller_arg_cleanup(
+                stack_bytes_pushed,
+                self._call_live_after_collection(instr)
+                | (self.callee_preserves(instr) & INDEX_REGS))
 
         # Step 6: Restore mode after receiving return value
         # If callee exited in m16 (u16 return), switch back to m8
