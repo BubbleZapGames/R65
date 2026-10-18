@@ -466,8 +466,9 @@ class TestPascalEmitCallArgs:
         result = ABI_PASCAL.emit_call_args(sel, instr)
         # 1 byte result space + 1 byte param = 2
         assert result == 2
-        # The first call should be a push for result space
-        assert sel._emit_push_calls[0] == ('push', 'A', 'Result space (Pascal)')
+        # The first call should be a push for result space, by a push whose
+        # width does not follow M (PHB: one byte; a PHA in m16 pushes two)
+        assert sel._emit_push_calls[0] == ('push', 'DBR', 'Result space (Pascal)')
 
     def test_left_to_right_param_order(self):
         """Pascal pushes param0 first, param1 second (left-to-right)."""

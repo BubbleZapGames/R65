@@ -372,10 +372,13 @@ class CallInstructionSelector(BaseSelector):
             self._emit_pascal_return_value_collection(instr, pascal_result_bytes)
             # Callee cleaned params, we PLA'd result — all pushed bytes are gone.
             self.region_state.stack_tracker.pop(stack_bytes_pushed)
+            # The pulls were seen; the callee's removal of the params was not.
+            self.emitter.stack_depth -= stack_bytes_pushed - pascal_result_bytes
             stack_bytes_pushed = 0
         elif pascal_result_bytes == 0 and stack_bytes_pushed > 0 and self.parent.abi_model.kind == ABIKind.PASCAL:
             # Pascal void call: callee cleaned all params, nothing remains.
             self.region_state.stack_tracker.pop(stack_bytes_pushed)
+            self.emitter.stack_depth -= stack_bytes_pushed
             stack_bytes_pushed = 0
         else:
             self._emit_return_value_collection(instr)

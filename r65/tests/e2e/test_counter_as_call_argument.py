@@ -34,3 +34,22 @@ class TestCounterAsCallArgument:
                      0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_beside_a_value_in_a(self, e2e):
+        """`pair(i + 0x10, i)`: A holds the first argument while the counter is
+        pushed, so A may not be parked in the counter's register."""
+        result = e2e.run('''
+            #[lowram(0x0300)] static mut LOG: [u16; 8];
+            #[lowram(0x0340)] static mut N: u16;
+            #[inline(never)] fn note(v: u16) { LOG[N] = v; N = N + 1; X = 0x7777; Y = 0x7777; }
+            #[inline(never)] fn pair(a: u16, b: u16) { note(a); note(b); }
+            #[inline(never)] fn go() {
+                let mut i: u16 = 0;
+                while i < 2 { pair(i + 0x10, i); i = i + 1; }
+            }
+            #[entry]
+            fn main() { N = 0; go(); }
+        ''', ExpectedState(memory={
+            0x0300: [0x10, 0x00, 0x00, 0x00, 0x11, 0x00, 0x01, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"

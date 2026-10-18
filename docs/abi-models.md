@@ -828,7 +828,8 @@ Before pushing parameters, the caller pushes **result space** — enough bytes f
 **Caller sequence**:
 ```asm
 ; 1. Push result space (if non-void return)
-PHA                  ; result space byte(s)
+PHX                  ; result space: PHX per two bytes, PHB for an odd one
+                     ; (A is untouched, and the count does not follow M)
 
 ; 2. Push parameters left-to-right
 LDA <param0>

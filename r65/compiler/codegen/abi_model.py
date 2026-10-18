@@ -185,17 +185,21 @@ class ABIModel(ABC):
         return arg.location.name if hasattr(arg.location, 'name') else str(arg.location)
 
     def _compute_a_save_for_call(self, selector, stack_args, other_args,
-                                 preserved=frozenset()):
+                                 preserved=frozenset(), push_order=None):
         """Decide whether A must be saved across stack-arg setup.
 
         Returns (a_save_reg, a_param_is_16bit) where a_save_reg is 'Y', 'X',
         'S' (pushed above the stack args and read back stack-relative), or
         None when no save is needed.
 
-        An index register is used only if no argument goes to it and the call
-        does not preserve it (`preserved`, from callee_preserves): a register
-        the callee preserves is not spilled, so a live value in it is sitting
-        unsaved and TAY/TAX would destroy it before the JSR.
+        An index register is used only if no argument goes to it or is read
+        from it, and the call does not preserve it (`preserved`, from
+        callee_preserves): a register the callee preserves is not spilled, so
+        a live value in it is sitting unsaved and TAY/TAX would destroy it
+        before the JSR.
+
+        `push_order` is the stack arguments in the order they are pushed:
+        right to left (the default) or, for Pascal, left to right.
 
         A save is needed when:
           - any non-stack arg's value is in A (LDA in stack setup would
@@ -206,11 +210,13 @@ class ABIModel(ABC):
         """
         from r65.compiler.mir.nodes import ArgumentMechanism
 
-        if not stack_args:
+        pushed = list(reversed(stack_args)) if push_order is None else list(push_order)
+        if not pushed:
             return None, False
 
+        # An A-resident argument needs saving if anything is pushed before it.
         a_resident_stack_idx = None
-        for i, arg in enumerate(stack_args):
+        for i, arg in enumerate(pushed):
             arg_loc = selector.parent._get_operand_location(arg.value)
             if arg_loc.is_hw('A'):
                 a_resident_stack_idx = i
@@ -230,12 +236,9 @@ class ABIModel(ABC):
             a_param_is_16bit = self._arg_size(arg) >= 2
             break
 
-        a_stack_needs_save = (
-            a_resident_stack_idx is not None
-            and a_resident_stack_idx != len(stack_args) - 1
-        )
+        a_stack_needs_save = a_resident_stack_idx not in (None, 0)
         if not a_in_other and a_stack_needs_save:
-            a_param_is_16bit = self._arg_size(stack_args[a_resident_stack_idx]) >= 2
+            a_param_is_16bit = self._arg_size(pushed[a_resident_stack_idx]) >= 2
 
         if not (a_in_other or a_stack_needs_save):
             return None, a_param_is_16bit
@@ -244,20 +247,26 @@ class ABIModel(ABC):
             self._register_target_name(a)
             for a in other_args if a.mechanism == ArgumentMechanism.REGISTER
         }
+        sources = {loc.hw_register
+                   for loc in (selector.parent._get_operand_location(a.value)
+                               for a in pushed + list(other_args))
+                   if loc.is_hw()}
         for reg in ('Y', 'X'):
-            if reg not in reg_targets and reg not in preserved:
+            if reg not in reg_targets and reg not in preserved and reg not in sources:
                 return reg, a_param_is_16bit
         return 'S', a_param_is_16bit
 
     def _emit_stack_args_pha(self, selector, stack_args, a_save_reg, pre_arg_stack_adj,
-                             a_param_is_16bit=False) -> int:
-        """Push stack args right-to-left via PHA. Returns bytes pushed."""
+                             a_param_is_16bit=False, push_order=None) -> int:
+        """Push stack args via PHA, right to left unless `push_order` says
+        otherwise. Returns bytes pushed."""
         from r65.compiler.codegen.register_alloc import LocationKind
         from r65.compiler.codegen.opcodes import Opcode
 
         stack_bytes_pushed = 0
         a_clobbered = False
-        for arg in reversed(stack_args):
+        pushed = reversed(stack_args) if push_order is None else push_order
+        for arg in pushed:
             arg_loc = selector.parent._get_operand_location(arg.value)
 
             if arg_loc.is_hw('A') and a_clobbered and a_save_reg == 'S':
@@ -1026,32 +1035,42 @@ class ABIPascal(ABIModel):
         All arguments use PHA regardless of their original mechanism.
         Returns total stack_bytes_pushed (result space + param bytes).
         """
-        from r65.compiler.codegen.register_alloc import LocationKind
+        from r65.compiler.codegen.opcodes import Opcode
+        from r65.compiler.errors import CodegenError
 
         stack_bytes_pushed = 0
+        args = list(instr.args)
+
+        # A value in A for a later parameter must survive the pushes before
+        # it, as in the default ABI - only the order is left to right.
+        a_save_reg, a_param_is_16bit = self._compute_a_save_for_call(
+            selector, args, [], selector.callee_preserves(instr), push_order=args)
+        if a_save_reg == 'S':
+            raise CodegenError(
+                "internal: Pascal call with a value in A and both index registers "
+                "holding other arguments")
+        if a_save_reg:
+            op = Opcode.TAY if a_save_reg == 'Y' else Opcode.TAX
+            selector._emit_implied(op, f"Save A to {a_save_reg} before stack arg setup")
 
         # Step 1: Push result space (if non-void return)
         result_bytes = getattr(instr, 'pascal_result_bytes', 0)
         if result_bytes > 0:
-            for _ in range(result_bytes):
-                selector._emit_push('A', "Result space (Pascal)")
-                # A contents don't matter — caller will overwrite later
+            # The bytes' contents do not matter, only their count: PHX pushes
+            # two whatever M says (X is always 16-bit), PHB one, and neither
+            # touches A. A PHA per byte pushed two each in m16.
+            for _ in range(result_bytes // 2):
+                selector._emit_push('X', "Result space (Pascal)")
+            if result_bytes % 2:
+                selector._emit_push('DBR', "Result space (Pascal)")
             stack_bytes_pushed += result_bytes
             selector.region_state.stack_tracker.push(result_bytes)
 
         # Step 2: Push all params left-to-right (param0 first, paramN last).
         # In Pascal, ALL args are stack-pushed regardless of mechanism.
-        for arg in instr.args:
-            arg_loc = selector.parent._get_operand_location(arg.value)
-
-            if arg_loc.kind == LocationKind.STACK and pre_arg_stack_adj != 0:
-                arg_loc = selector.parent._offset_location(arg_loc, pre_arg_stack_adj)
-
-            arg_size = self._arg_size(arg)
-            selector.emit_pha_stack_argument(arg, arg_loc, arg_size)
-            stack_bytes_pushed += arg_size
-            selector.region_state.stack_tracker.push(arg_size)
-
+        stack_bytes_pushed += self._emit_stack_args_pha(
+            selector, args, a_save_reg, pre_arg_stack_adj, a_param_is_16bit,
+            push_order=args)
         return stack_bytes_pushed
 
     def emit_return_values(self, selector, instr):
