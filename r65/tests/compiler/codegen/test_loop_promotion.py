@@ -355,12 +355,9 @@ class TestNestedIfIsNotALoop:
 class TestCounterAsCallArgument:
     """A counter passed to a call used to be refused promotion outright.
 
-    Stack, scratch and variable-bound arguments are set up before any register
-    argument and read a counter in X or Y in place. A register argument is
-    safe too, unless another register argument of the same call targets X or
-    Y: register arguments load in a fixed order that does not see what the
-    others read, so that one could overwrite the counter first. Values:
-    tests/e2e/test_counter_as_call_argument.py.
+    Argument setup reads a counter in X or Y in place, before any argument
+    that loads that register (ABIModel._order_index_reads), so it may feed
+    any argument but `self`. Values: tests/e2e/test_counter_as_call_argument.py.
     """
 
     def instrs(self, callee: str, ty: str, call: str) -> list[str]:
@@ -381,7 +378,7 @@ class TestCounterAsCallArgument:
         emitted = self.instrs(callee, ty, "f(i);")
         assert any(s.startswith(('INX', 'INY')) for s in emitted), emitted
 
-    def test_not_beside_another_index_register_argument(self):
-        """`b` targets Y, so a counter fed to `a` could be overwritten first."""
+    def test_beside_another_index_register_argument(self):
+        """`b` targets Y: if the counter is there, it is read for `a` first."""
         emitted = self.instrs("fn f(a @ X: u16, b @ Y: u16) { VB = a + b; }", "u16", "f(i, M);")
-        assert not any(s.startswith(('INX', 'INY')) for s in emitted), emitted
+        assert any(s.startswith(('INX', 'INY')) for s in emitted), emitted

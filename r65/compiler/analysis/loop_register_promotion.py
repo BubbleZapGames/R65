@@ -579,26 +579,12 @@ def _prefers_x_register(vreg_id: int, uses: list) -> bool:
 
 
 def _call_arg_compatible(vreg_id: int, call) -> bool:
-    """Whether a counter in X or Y may feed *call*'s arguments.
-
-    Stack, scratch and variable-bound arguments are set up before any register
-    argument and read it in place (TXA/TYA, STX). A register argument is
-    loaded in a fixed order (B, X and Y, then A) that ignores which registers
-    the others read, so it is safe only while no other register argument of
-    the call targets X or Y - one that did could overwrite the counter before
-    it is read. Not as `self`, which is a pointer.
-    """
-    def index_target(arg):
-        return (arg.mechanism == ArgumentMechanism.REGISTER
-                and getattr(arg.location, 'name', None) in ('X', 'Y'))
-    mine = [a for a in call.args
-            if isinstance(a.value, VirtualRegister) and a.value.id == vreg_id]
-    if any(a.mechanism == ArgumentMechanism.SELF_Y for a in mine):
-        return False
-    if not any(a.mechanism == ArgumentMechanism.REGISTER for a in mine):
-        return True
-    return not any(index_target(a) for a in call.args if a not in mine) and \
-        sum(1 for a in mine if index_target(a)) <= 1
+    """Whether a counter in X or Y may feed *call*'s arguments: any way but
+    as `self`, which is a pointer. Argument setup reads a hardware source
+    before anything overwrites it (ABIModel._order_index_reads)."""
+    return not any(a.mechanism == ArgumentMechanism.SELF_Y
+                   and isinstance(a.value, VirtualRegister) and a.value.id == vreg_id
+                   for a in call.args)
 
 
 def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
