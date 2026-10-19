@@ -293,13 +293,14 @@ class ProgramCodeGenerator:
             if webs_split > 0:
                 print(f"Web splitting: {webs_split} vreg(s) split", file=sys.stderr)
 
-            # Index stride - a counter read only as a doubled u16 index is
-            # carried doubled (INX / INX), not rebuilt with ASL every pass.
+            # Index stride - a counter read only as an index scaled for 2- or
+            # 4-byte elements is carried scaled (INX x2/x4), not rebuilt with
+            # ASL every pass.
             # After web splitting, so a reused counter has one def per loop.
             from r65.compiler.optimize.index_stride import IndexStrideReducer
             strides_reduced = IndexStrideReducer(verbose=False).optimize(mir_program)
             if strides_reduced > 0:
-                print(f"Index stride: {strides_reduced} counter(s) carried doubled", file=sys.stderr)
+                print(f"Index stride: {strides_reduced} counter(s) carried scaled", file=sys.stderr)
 
 
         # Emit file header and processor directives

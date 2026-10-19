@@ -1,18 +1,22 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
-"""Counters carried doubled, checked on the hardware.
+"""Counters carried scaled, checked on the hardware.
 
 `IndexStrideReducer` (optimize/index_stride.py) starts a counter read only
-as a doubled u16 index at twice its start, steps it by 2 and tests it
-against twice the bound. These pin a non-zero start, a start already past
-the bound (no pass), `<=`, and three arrays written through one index. The
-shapes are pinned in tests/compiler/optimize/test_index_stride.py.
+as a scaled index (u16 arrays, 4-byte structs) at its scaled start, steps
+it by the element size and tests it against the scaled bound. These pin a
+non-zero start, a start already past the bound (no pass), `<=`, three
+arrays written through one index, and a 4-byte struct array from element
+1. The shapes are pinned in tests/compiler/optimize/test_index_stride.py.
 """
 
 from r65.tests.e2e import ExpectedState
 
 
-def test_doubled_counters(e2e):
+def test_scaled_counters(e2e):
     result = e2e.run('''
+        struct E { pos: u16, hp: u8, kind: u8 }
+        #[lowram(0x0340)] static mut POOL: [E; 4];
+        #[lowram(0x0350)] static mut AFTER2: u16;
         #[lowram(0x0300)] static mut W: [u16; 16];
         #[lowram(0x0320)] static mut A1: [u16; 4];
         #[lowram(0x0328)] static mut A2: [u16; 4];
@@ -57,6 +61,12 @@ def test_doubled_counters(e2e):
             }
         }
 
+        #[inline(never)]
+        fn tag() {
+            let mut i: u16 = 1;
+            while i < 4 { POOL[i].pos = 0x1234; POOL[i].kind = 9; i = i + 1; }
+        }
+
         #[entry]
         fn main() {
             let mut k: u16 = 0;
@@ -66,6 +76,12 @@ def test_doubled_counters(e2e):
             PAST = none();         // no pass
             THROUGH = through();   // 16 * 0x100 + (0 + ... + 15)
             fill();
+            let mut e: u16 = 0;
+            while e < 4 { POOL[e].hp = 0x5A; e = e + 1; }
+            POOL[0].pos = 0xAAAA;
+            POOL[0].kind = 0x66;
+            AFTER2 = 0xCAFE;
+            tag();                 // elements 1..3; element 0 untouched
         }
     ''', ExpectedState(memory={
         0x7E0040: [0x2A, 0x07],
@@ -73,5 +89,7 @@ def test_doubled_counters(e2e):
         0x7E0044: [0x78, 0x10],
         0x7E0320: [0x11, 0x11] * 4 + [0x22, 0x22] * 4 + [0x00, 0x00] * 4,
         0x7E0338: [0xEF, 0xBE],
+        0x7E0340: [0xAA, 0xAA, 0x5A, 0x66] + [0x34, 0x12, 0x5A, 0x09] * 3,
+        0x7E0350: [0xFE, 0xCA],
     }), max_instructions=50000)
     assert result.success, f"Failures: {result.failures}"

@@ -2,8 +2,8 @@
 """
 Index Stride Reduction.
 
-A u16 array indexed by a loop counter is addressed with the counter
-doubled, rebuilt every pass::
+An array of 2- or 4-byte elements indexed by a loop counter is addressed
+with the counter scaled by the element size, rebuilt every pass::
 
     %t = %i << #1                   TYA / ASL A / TAX
     X = Move %t                     LDA s / CLC / ADC $0200,X / STA s
@@ -11,23 +11,24 @@ doubled, rebuilt every pass::
     %i = %i + #1                    CPY #$0100
     Compare %i < #256
 
-When the counter is read by nothing but those doubles, its own step and
-its test, it is carried doubled instead: started at twice its start,
-stepped by 2 and tested against twice the bound::
+When the counter is read by nothing but those scaled copies, its own step
+and its test, it is carried scaled instead: its start, step and bound are
+all shifted by the element size (doubled here)::
 
     X = Move %i                     LDA s / CLC / ADC $0200,X / STA s
     ...                             INX / INX
     %i = %i + #2                    CPX #$0200
     Compare %i < #512
 
-`i << 1` and the new `i` agree modulo 2^16 at every pass, so the index
+`i << k` and the new `i` agree modulo 2^16 at every pass, so the index
 reads are exact. Only the test compares a different number: `i < N` and
-`2i < 2N` agree while no value the test sees is 2^15 or more, which a
-constant start and bound can show. The counter must be dead outside the
-loop - nothing else reads the doubled value.
+`(i << k) < (N << k)` agree while no value the test sees shifts past
+2^16, which a constant start and bound can show. The counter must be dead
+outside the loop - nothing else reads the scaled value.
 
-Runs on MIR before loop promotion, which keeps a counter stepped by 2 in X
-or Y (INX / INX).
+Runs on MIR before loop promotion, which keeps a counter stepped by 2 or 4
+in X or Y (INX / INX). Stride 8 is left alone: eight INX cost more than
+the rebuild and an INY.
 """
 
 from typing import Dict, List, Optional, Set, Tuple
@@ -39,8 +40,8 @@ from r65.compiler.mir.nodes import (
     OperandRole, VirtualRegister, iter_operands, map_operands,
 )
 
-# The shift that doubles an index into a u16 array.
-_SHIFT = 1
+# The shifts that scale an index into an array of 2- and 4-byte elements.
+_SHIFTS = (1, 2)
 
 
 def _is_u16(type_info) -> bool:
@@ -55,7 +56,7 @@ def _const(value) -> Optional[int]:
 
 
 class IndexStrideReducer:
-    """Carry a loop counter read only as a doubled index doubled."""
+    """Carry a loop counter read only as a scaled index scaled."""
 
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -110,6 +111,7 @@ class IndexStrideReducer:
         # left in front of it tests the start: every value it can see is
         # covered by the bounds check below.
         compares, doubles = [], []
+        shift = None
         for bid, k, instr in reads:
             if instr is step_op:
                 continue
@@ -120,27 +122,31 @@ class IndexStrideReducer:
                 compares.append(instr)
             elif (bid in body and type(instr) is BinaryOp and instr.op == '<<'
                     and type(instr.left) is VirtualRegister and instr.left.id == vid
-                    and _const(instr.right) == _SHIFT
+                    and _const(instr.right) in _SHIFTS
+                    and shift in (None, _const(instr.right))
                     and type(instr.dest) is VirtualRegister and _is_u16(instr.type_info)):
+                # One counter carries one scale: `i << 1` and `i << 2` together
+                # would need two.
+                shift = _const(instr.right)
                 doubles.append((bid, k, instr))
             else:
                 return False
         if not doubles or not compares:
             return False
 
-        # Every value a test sees is below the bound plus one step: doubled,
+        # Every value a test sees is below the bound plus one step: scaled,
         # it, the start and each bound must stay below 2^16.
         for cmp in compares:
             bound = _const(cmp.right) + (1 if cmp.comparison == '<=' else 0)
-            if (bound << _SHIFT) > 0xFFFF:
+            if (bound << shift) > 0xFFFF:
                 return False
-        if (start << _SHIFT) > 0xFFFF:
+        if (start << shift) > 0xFFFF:
             return False
 
-        init.source = Immediate(start << _SHIFT)
-        step_op.right = Immediate(1 << _SHIFT)
+        init.source = Immediate(start << shift)
+        step_op.right = Immediate(1 << shift)
         for cmp in compares:
-            cmp.right = Immediate(_const(cmp.right) << _SHIFT)
+            cmp.right = Immediate(_const(cmp.right) << shift)
         copies = []
         for bid, k, instr in doubles:
             copy = Move(dest=instr.dest, source=instr.left, type_info=instr.type_info,
@@ -150,7 +156,7 @@ class IndexStrideReducer:
         for bid, copy in copies:
             self._forward_copy(func, bid, copy, vid)
         if self.verbose:
-            print(f"  index-stride: {func.name} %{vid} carried doubled")
+            print(f"  index-stride: {func.name} %{vid} carried << {shift}")
         return True
 
     @staticmethod
