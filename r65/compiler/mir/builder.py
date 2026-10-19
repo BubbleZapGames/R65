@@ -1631,6 +1631,9 @@ class MIRBuilder:
         self._hoist_invariant_index_terms(body)
         self.jump_to(header_block)
         self.current_block = header_block
+        # The header is also entered from the back edge, after the body may
+        # have stored a static: a value loaded before the loop is stale there.
+        self._invalidate_memloc_cache()
 
         const_cond = self._try_eval_const_condition(condition) if condition else None
         if const_cond is False:
@@ -1655,6 +1658,9 @@ class MIRBuilder:
         # Back to the header, unless the body ended with break/return
         if not self._block_has_terminator():
             self.jump_to(header_block)
+        # A load cached in the body does not reach the exit on every path
+        # (the header's exit edge, a `break` before it).
+        self._invalidate_memloc_cache()
         self.current_block = exit_block
 
     def _find_loop_target(self, label: str = None) -> tuple:
