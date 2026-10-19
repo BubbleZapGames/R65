@@ -1362,12 +1362,10 @@ class PeepholeOptimizer:
                 # Find the next SEP/REP, walking past mode-hint
                 # directives and co-located labels.
                 j = i + 1
-                accu_idx = None
                 sep_rep_idx = None
                 while j < n:
                     nj = nodes[j]
                     if isinstance(nj, ModeChange) and nj.flag == 'ACCU':
-                        accu_idx = j
                         j += 1
                         continue
                     if isinstance(nj, Label):
@@ -1398,9 +1396,9 @@ class PeepholeOptimizer:
                             defined == {target_mode} and None not in arriving
                         )
                         if all_match:
-                            new_nodes.append(node)  # the label
-                            if accu_idx is not None:
-                                new_nodes.append(nodes[accu_idx])
+                            # The label, co-located labels (still branch
+                            # targets) and their hints.
+                            new_nodes.extend(nodes[i:sep_rep_idx])
                             # Skip the SEP/REP itself, keeping any flags
                             # it set besides M. Any trailing
                             # `.ACCU` directive codegen paired with it

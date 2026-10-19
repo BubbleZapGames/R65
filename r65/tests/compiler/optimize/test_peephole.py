@@ -272,6 +272,26 @@ class TestDeadModeChangeElimination:
         opt.optimize(nodes)
         assert opt.stats.dead_mode_changes_eliminated == 1
 
+    def test_redundant_switch_keeps_colocated_branch_target(self):
+        """Dropping a SEP every predecessor already arrives in keeps all the
+        labels before it, not only the first: the second is branched to."""
+        nodes = [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            Instruction(opcode=Opcode.BEQ, operand=Address("target")),
+            Instruction(opcode=Opcode.BRA, operand=Address("first")),
+            Label(name="first"),
+            Label(name="target"),
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.STA_DP, operand=Address(0x12)),
+            Instruction(opcode=Opcode.RTS),
+        ]
+        opt = PeepholeOptimizer()
+        opt.optimize([])                  # sets up the dataflow seeds
+        out = opt._eliminate_cross_block_mode_changes(nodes)
+        assert opt.stats.redundant_mode_changes_eliminated == 1
+        assert "target" in {n.name for n in out if isinstance(n, Label)}
+
     def test_instruction_between_blocks_elimination(self):
         """An instruction between the switches runs in the mode the SEP set."""
         nodes = [
