@@ -947,7 +947,7 @@ example:
 The 65816 `LDA d,S` instruction uses an unsigned 8-bit offset (0-255), so a single function can only address 255 bytes from its SP. In practice this is not a limiting factor:
 
 - **Default**: Per-function frame is locals + preserves. No outgoing area inflation, so frames are typically small.
-- **FixedStack**: No outgoing area, no stack params. Frames are just locals + preserves — often just a few bytes.
+- **FixedStack**: No outgoing area, no stack params. Frames are just locals + preserves — often just a few bytes. The frame holds only the locals that stay on the stack. Slot allocation sizes the frame before locals not live across a call move to scratch, and those give their bytes back (`RegisterAllocator._compact_frame`). A function whose locals all fit in scratch has no frame and returns with a plain `RTS`.
 - **Pascal**: Parameters are pushed per-call (not part of the frame), so the frame itself stays small. The callee needs to reach the result space through frame + prologue + return address + params, which could approach the 255-byte limit for functions with many parameters and large frames.
 
 ---

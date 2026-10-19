@@ -680,6 +680,67 @@ class RegisterAllocator:
         for vreg in vregs:
             self.allocate_vreg(vreg)
 
+        if self.slot_allocation:
+            self._compact_frame()
+
+    def _compact_frame(self) -> None:
+        """Drop the frame bytes of locals that went to scratch after all.
+
+        Slot allocation sizes the frame for every local without a register,
+        and only then does `allocate_vreg` move the ones not live across a
+        call into scratch - a FixedStack function whose locals all fit there
+        kept a frame no instruction used but the return value's shuffle.
+        Each frame byte no stack local covers is removed and the ones above
+        it move down: order is kept, so slots that shared bytes still do,
+        disjoint ones stay disjoint, and the call-spanning locals stay at
+        the bottom. Parameters, above the frame, move down by what it lost.
+        A local with a slot and no location yet keeps its bytes.
+        """
+        alloc = self.slot_allocation
+        # A stack location from the sequential fallback has no slot to move.
+        known = {v.id for v in alloc.register_to_slot} | {v.id for v in alloc.param_offsets}
+        if any(loc.kind == LocationKind.STACK and vid not in known
+               for vid, loc in self.allocations.items()):
+            return
+        used = set()
+        for vreg, slot in alloc.register_to_slot.items():
+            loc = self.allocations.get(vreg.id)
+            if loc is None or loc.kind == LocationKind.STACK:
+                size = (alloc.register_to_size.get(vreg, 1) + 1) & ~1
+                used.update(range(slot, slot + size))
+        old_size = alloc.total_slots
+        new_size = len(used)
+        if new_size >= old_size:
+            return
+
+        removed_below = []
+        count = 0
+        for pos in range(old_size + 1):
+            removed_below.append(count)
+            if pos not in used:
+                count += 1
+
+        new_slots = {}
+        for vreg, slot in alloc.register_to_slot.items():
+            loc = self.allocations.get(vreg.id)
+            if loc is not None and loc.kind != LocationKind.STACK:
+                continue
+            new_slot = slot - removed_below[slot]
+            new_slots[vreg] = new_slot
+            if loc is not None:
+                loc.stack_offset -= slot - new_slot
+        alloc.register_to_slot = new_slots
+        alloc.total_slots = new_size
+        if self.layout is not None:
+            self.layout.local_frame_size = new_size
+
+        shrink = old_size - new_size
+        for vreg in list(alloc.param_offsets):
+            alloc.param_offsets[vreg] -= shrink
+            loc = self.allocations.get(vreg.id)
+            if loc is not None and loc.kind == LocationKind.STACK:
+                loc.stack_offset -= shrink
+
     def get_stack_frame_size(self) -> int:
         """Get total stack frame size for spilled registers."""
         if self.slot_allocation:
