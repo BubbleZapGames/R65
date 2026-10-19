@@ -21,6 +21,16 @@ rather than the width the body ends in. The rest is codegen's: each edge
 is explicit and each block is entered in the mode its predecessors leave
 in.
 
+When the first test may fail (`while v != 0`, `while j < 1024` from
+`j = i + i`), each entry keeps its own copy of the test as a guard that
+skips the loop, and the body's end gets one as before::
+
+    P:  v = BUF[i]; Jump H        P:  v = BUF[i]; Compare v != 0
+    H:  Compare v != 0                CondBranch B : E
+        CondBranch B : E   ->
+    B:  ...; Jump H               B:  ...; Compare v != 0
+                                      CondBranch B : E
+
 A rotated loop whose counter steps up by one, is read only by its own
 test and is dead once the loop ends counts down instead - from N - init
 to zero, tested `!= 0` - which drops the compare's operand (`DEY; BNE`
@@ -67,10 +77,11 @@ class LoopRotator:
         self.verbose = verbose
         self.rotated = 0
         self.counted_down = 0
+        self.guarded = 0
 
     def optimize(self, mir_program: MIRProgram) -> int:
         """Rotate every eligible loop. Returns how many were rotated."""
-        self.rotated = self.counted_down = 0
+        self.rotated = self.counted_down = self.guarded = 0
         for func in mir_program.functions:
             # One entry per back edge: a `continue` makes a second one.
             loops: Dict[int, Set[int]] = {}
@@ -95,6 +106,7 @@ class LoopRotator:
         for pred_id in entries:
             init = self._entry_init(func.blocks[pred_id], counter)
             if init is None or not self._holds(cmp, init.source.value):
+                self._guard(func, header_id)
                 return
             inits[pred_id] = init
 
@@ -112,18 +124,40 @@ class LoopRotator:
         self._count_down(func, header_id, body, cmp, branch, inits)
         self._merge_test(func, header_id)
 
+    def _guard(self, func: MIRFunction, header_id: int) -> None:
+        """Rotate a loop whose first test may fail: the test is copied into
+        every block that jumps to it, and the entry's copy is the guard that
+        skips the loop. It costs a compare and branch more in code, and saves
+        the `BRA` back to the test on every pass."""
+        saved = {bid: (list(b.instructions), list(b.successors), list(b.predecessors))
+                 for bid, b in func.blocks.items()}
+        header = func.blocks[header_id]
+        if not self._merge_test(func, header_id):
+            return
+        if not reanalyze_function(func):
+            func.blocks[header_id] = header
+            for bid, (instrs, succs, preds) in saved.items():
+                block = func.blocks[bid]
+                block.instructions, block.successors, block.predecessors = instrs, succs, preds
+            reanalyze_function(func)
+            return
+        self.rotated += 1
+        self.guarded += 1
+        if self.verbose:
+            print(f"  loop-rotate: {func.name} B{header_id} guarded")
+
     @staticmethod
-    def _merge_test(func: MIRFunction, header_id: int) -> None:
+    def _merge_test(func: MIRFunction, header_id: int) -> bool:
         """Give each block that jumps to the test - the body's end and each
         `continue` - its own copy of it. A block of its own would be entered
         in the function's mode rather than the width the body ends in, with
-        a label in front of the compare."""
+        a label in front of the compare. Returns whether it was merged."""
         header = func.blocks[header_id]
         preds = [func.blocks[p] for p in header.predecessors]
         if not preds or len(preds) > _MAX_TEST_COPIES or not all(
                 pred.instructions and type(pred.instructions[-1]) is Jump
                 and pred.instructions[-1].target == header_id for pred in preds):
-            return
+            return False
         for pred in preds:
             pred.instructions[-1:] = [copy(instr) for instr in header.instructions]
             pred.successors = list(header.successors)
@@ -133,6 +167,7 @@ class LoopRotator:
             succ.predecessors.extend(pred.block_id for pred in preds)
         del func.blocks[header_id]
         reanalyze_function(func)
+        return True
 
     @staticmethod
     def _test(header, body: Set[int]):

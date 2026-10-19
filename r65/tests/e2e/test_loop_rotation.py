@@ -160,3 +160,72 @@ class TestLoopRotation:
             0x7E0044: [0x06],
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_guarded_loops_run_zero_and_more_times(self, e2e):
+        # The first test may fail: the guard copy must skip the body.
+        result = e2e.run('''
+            #[lowram] static mut BUF: [u8; 4];
+            #[zeropage(0x40)] static mut BITS: u16;
+            #[zeropage(0x42)] static mut FROM_START: u16;
+            #[zeropage(0x44)] static mut FROM_END: u16;
+            #[zeropage(0x46)] static mut ODD: u16;
+            #[zeropage(0x48)] static mut START: u16;
+
+            #[inline(never)]
+            fn popcount() -> u16 {
+                let mut c: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 4 {
+                    let mut v: u8 = BUF[i];
+                    while v != 0 {
+                        c = c + ((v & 1) as u16);
+                        v = v >> 1;
+                    }
+                    i = i + 1;
+                }
+                return c;
+            }
+
+            #[inline(never)]
+            fn steps(from: u16) -> u16 {
+                let mut i: u16 = from;
+                let mut n: u16 = 0;
+                while i < 10 {
+                    n = n + 1;
+                    i = i + 1;
+                }
+                return n;
+            }
+
+            #[inline(never)]
+            fn odd_sum(from: u16) -> u16 {
+                let mut i: u16 = from;
+                let mut s: u16 = 0;
+                while i < 10 {
+                    i = i + 1;
+                    if i & 1 == 0 { continue; }
+                    s = s + i;
+                }
+                return s;
+            }
+
+            #[entry]
+            fn main() {
+                BUF[0] = 0;
+                BUF[1] = 0xFF;
+                BUF[2] = 0x81;
+                BUF[3] = 0;
+                BITS = popcount();          // 0 + 8 + 2 + 0
+                START = 3;
+                FROM_START = steps(START);  // 7
+                START = 12;
+                FROM_END = steps(START);    // 0: the guard skips the loop
+                ODD = odd_sum(4);           // 5 + 7 + 9
+            }
+        ''', ExpectedState(memory={
+            0x7E0040: [10, 0],
+            0x7E0042: [7, 0],
+            0x7E0044: [0, 0],
+            0x7E0046: [21, 0],
+        }))
+        assert result.success, f"Failures: {result.failures}"

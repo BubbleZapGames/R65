@@ -260,6 +260,7 @@ class ProgramCodeGenerator:
             rotated_count = loop_rotator.optimize(mir_program)
             if rotated_count > 0:
                 print(f"Loop rotation: {rotated_count} loop(s) rotated, "
+                      f"{loop_rotator.guarded} guarded, "
                       f"{loop_rotator.counted_down} counting down", file=sys.stderr)
 
             # Memory-operand folding - read a single-use static directly in

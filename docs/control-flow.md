@@ -366,8 +366,13 @@ for i in 0..10 { process(); }
 // BNE loop_body
 ```
 
-A `continue` gets its own copy of the test. With a start not known to pass
-(`let mut i = n; while i < 10`), the loop stays top-tested as above.
+A `continue` gets its own copy of the test. When the first test may fail
+(`let mut i = n; while i < 10`, `while v != 0`), the entry also gets its own
+copy, which acts as a guard that skips the loop. The body still tests at the
+bottom with no `BRA`, at the cost of one more compare and branch in code. Up to
+four blocks may jump to the test. Rotation copies only a header that is a single
+compare of a variable against a constant. A header that loads the value it
+tests, or compares two variables, stays top-tested.
 
 **Examples**:
 ```rust

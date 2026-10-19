@@ -102,8 +102,9 @@ class TestRotation:
         assert 'LDY #$00' in code
         assert 'CPY #$08' in code
 
-    def test_unknown_start_stays_top_tested(self):
-        # The first test may fail, so it cannot be skipped.
+    def test_unknown_start_is_guarded(self):
+        # The first test may fail: the entry keeps a copy of it as a guard
+        # past the loop, and the body tests at the bottom with no BRA.
         code = _compile('''
             #[zeropage] static mut G: u8;
             #[lowram] static mut OUT: u16;
@@ -115,8 +116,34 @@ class TestRotation:
                 }
                 return i;
             }''')
-        assert 'BCS t__L3' in code
-        assert 'BRA t__L1' in code
+        guard = code.index('BCS t__L3')
+        assert code[guard - 1] == 'CPY #$08'
+        bcc = _back_edge(code)
+        assert code[bcc - 2:bcc] == ['INY', 'CPY #$08']
+        assert not [l for l in code if l.startswith('BRA')]
+
+    def test_while_nonzero_is_guarded(self):
+        # popcount's inner loop: the guard tests the loaded byte, the
+        # back edge the shifted one.
+        code = _compile('''
+            #[lowram] static mut BUF: [u8; 16];
+            #[lowram] static mut OUT: u16;
+            fn t() -> u16 {
+                let mut c: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 16 {
+                    let mut v: u8 = BUF[i];
+                    while v != 0 {
+                        c = c + ((v & 1) as u16);
+                        v = v >> 1;
+                    }
+                    i = i + 1;
+                }
+                return c;
+            }''')
+        assert [l for l in code if l.startswith('BEQ')]
+        assert [l for l in code if l.startswith('BNE')]
+        assert not [l for l in code if l.startswith('BRA')]
 
     def test_counter_stepped_in_an_inner_loop_keeps_counting_up(self):
         # y steps 3 times per pass: counting down from 4 would step past 0.
