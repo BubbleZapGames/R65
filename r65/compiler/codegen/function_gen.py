@@ -737,16 +737,8 @@ class FunctionCodeGenerator:
             reg_alloc: Register allocator
             frame_size: Number of bytes to allocate for local stack frame
         """
-        # Initialize stack pointer for entry functions with custom stack region
-        if mir_func.is_entry and self.mem_alloc.stack_upper is not None:
-            if self.mem_alloc.stack_upper != DEFAULT_STACK_UPPER:
-                stack_addr = self.mem_alloc.stack_upper
-                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG), "16-bit A for stack setup")
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(stack_addr), "Stack top")
-                self._emit_instr(Opcode.TCS, comment="Set stack pointer")
-                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG), "Restore 8-bit A")
-
-        # Entry function setup: switch from emulation mode to native mode
+        # Entry function setup: switch from emulation mode to native mode,
+        # then set S for a custom stack region.
         # This must happen BEFORE frame allocation since PHA behavior differs between modes
         if mir_func.is_entry:
             self._emit_entry_setup(mir_func)
@@ -1051,6 +1043,17 @@ class FunctionCodeGenerator:
 
         # Emit REP to set up x16 mode (always) and m16 mode (if requested)
         self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(rep_mask))
+
+        # A custom #[stack] region: S is set only now. In emulation mode S
+        # is pinned to page 1 and M to 8 bits, so before the XCE a
+        # `REP #$20 / LDA #top / TCS` decodes LDA with a one-byte immediate
+        # and never reaches the TCS, while the low-RAM allocator has already
+        # placed statics where the declared stack was not. X is 16-bit
+        # after the REP, and LDX/TXS leave A and its width alone.
+        stack_top = self.mem_alloc.stack_upper
+        if stack_top is not None and stack_top != DEFAULT_STACK_UPPER:
+            self._emit_instr(Opcode.LDX_IMMEDIATE, Immediate(stack_top), "Stack top")
+            self._emit_instr(Opcode.TXS, comment="Set stack pointer")
 
     def _analyze_interrupt_modified_regs(self, mir_func: MIRFunction) -> set:
         """
