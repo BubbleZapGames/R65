@@ -891,8 +891,8 @@ class StackSlotAllocator:
 
         Move variants just read A (STA/TAX/TAY preserve A); a Store or
         StoreIndirect of the vreg is an STA from A; Compare is CMP, which reads
-        A without modifying it; a BinaryOp's left operand is read before the op
-        overwrites A with its result; a narrowing convert or unsigned widening
+        A without modifying it; a BinaryOp's left operand, or the right of a
+        commutative one, is read before the op overwrites A with its result; a narrowing convert or unsigned widening
         reads A and leaves its own result there; a Call argument is pushed or
         stored from A.
 
@@ -919,6 +919,14 @@ class StackSlotAllocator:
         if (use_type is BinaryOp and
             type(use.left) is VirtualRegister and
             use.left.id == vreg_id):
+            return True
+        # A commutative op with the vreg on the right swaps its operands
+        # (select_binary_op), so it reads A as the left and the left operand
+        # from memory. A left in A or B would need A for itself.
+        if (use_type is BinaryOp and use.op in ('+', '&', '|', '^') and
+            type(use.right) is VirtualRegister and
+            use.right.id == vreg_id and
+            not self._in_accumulator(use.left)):
             return True
         # A narrowing convert or unsigned widening reads A and leaves
         # its own result there — the same read-then-redefine shape as
@@ -947,6 +955,14 @@ class StackSlotAllocator:
         return (type(use) is BinaryOp and use.op in ('+', '-')
                 and is_far_ptr(use.type_info)
                 and type(use.right) is VirtualRegister and use.right.id == vreg_id)
+
+    def _in_accumulator(self, operand: Any) -> bool:
+        """Whether *operand* is A or B, by name or as a vreg pinned there."""
+        if type(operand) is HardwareRegister:
+            return operand.name in ('A', 'B')
+        if type(operand) is VirtualRegister:
+            return self.pre_allocated_hw.get(operand.id) in ('A', 'B')
+        return False
 
     def _in_index_register(self, operand: Any) -> bool:
         """Whether *operand* is X or Y, by name or as a vreg pinned there."""

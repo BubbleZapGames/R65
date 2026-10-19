@@ -29,6 +29,8 @@ The actual register allocation pipeline is more sophisticated than a simple scra
 - **Pass 1**: Find VRegs where the HW register is unclobbered between def and last use
 - **Pass 2**: Re-check remaining candidates treating Pass 1 coalesceable Moves as no-ops (enables cascading coalescence, e.g., A can coalesce when its only "clobber" was a coalesceable B parameter save)
 
+A value computed in A coalesces only when each use reads it from A in place (`_use_reads_a_in_place`). Examples are a store, a compare, a BinaryOp's left operand, and the right operand of `+ & | ^` when the left isn't in A or B. Instruction selection swaps the operands of a commutative op whose right operand is in A, so `s + (BUF[i] as u16)` adds the widened byte straight from A to `s` in memory and doesn't spill it.
+
 ---
 
 ## Core Strategy: Explicit Everything
