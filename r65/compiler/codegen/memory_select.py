@@ -977,13 +977,21 @@ class MemoryOperationSelector(BaseSelector):
     # ========================================================================
 
     def _emit_16bit_indirect_load(self, ptr_loc, dest_loc, is_far: bool, index_register: str = None):
-        """16-bit indirect load as two 8-bit loads through (dp),Y / [dp],Y."""
-        self._ensure_m8_mode()
+        """16-bit indirect load through (dp),Y / [dp],Y."""
         opcode_load, operand = self._get_indirect_opcode('LDA', ptr_loc, is_far, 'Y')
-        words = self._PTR_BYTE_WORDS
-        self._emit_indirect_load_bytes(
-            2, dest_loc, index_register,
-            lambda i: self._emit_instr(opcode_load, operand, f"Load {words[i]} byte through pointer"))
+        self._emit_indirect_word_load(dest_loc, index_register, opcode_load, operand,
+                                      "Load word through pointer")
+
+    def _emit_indirect_word_load(self, dest_loc, index_register, opcode, operand, comment):
+        """One m16 LDA through an indirect,Y mode, which reads both bytes and
+        leaves Y as it was: byte by byte, the INY between them would move an
+        index Y that something else still reads (a loop counter in Y)."""
+        if index_register != 'Y':
+            self._emit_instr(Opcode.LDY_IMMEDIATE, Immediate(0), "Set Y=0 for indirect")
+        self._ensure_m16_mode()
+        self._emit_instr(opcode, operand, comment)
+        if not dest_loc.is_hw('A'):
+            self._emit_load_store('STA', dest_loc)
 
     def _emit_indirect_word_store(self, src_loc, source, index_register, store):
         """Store a 16-bit value byte by byte through *store(i)* (an indirect STA
@@ -1179,12 +1187,9 @@ class MemoryOperationSelector(BaseSelector):
 
     def _emit_16bit_stack_indirect_load(self, ptr_loc, dest_loc, index_register: str = None):
         """16-bit load through a near pointer on the stack, (d,S),Y."""
-        self._ensure_m8_mode()
         opcode_load, operand = self._get_stack_indirect_opcode('LDA', ptr_loc, False, 'Y')
-        words = self._PTR_BYTE_WORDS
-        self._emit_indirect_load_bytes(
-            2, dest_loc, index_register,
-            lambda i: self._emit_instr(opcode_load, operand, f"Load {words[i]} byte through stack pointer"))
+        self._emit_indirect_word_load(dest_loc, index_register, opcode_load, operand,
+                                      "Load word through stack pointer")
 
     def _emit_16bit_stack_indirect_store(self, ptr_loc, src_loc, source, index_register: str = None):
         """16-bit store through a near pointer on the stack, (d,S),Y."""

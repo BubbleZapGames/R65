@@ -223,6 +223,13 @@ class ProgramCodeGenerator:
             if bounds_folded > 0:
                 print(f"Constant-bound compares: {bounds_folded} compare(s) made one-branch", file=sys.stderr)
 
+            # Byte widening - a u8 load or small mask widened to u16 becomes
+            # one m16 load or read plus AND, not an m8 load and a zero-extend.
+            from r65.compiler.optimize.byte_widen import ByteWidener
+            bytes_widened = ByteWidener(verbose=False).optimize(mir_program)
+            if bytes_widened > 0:
+                print(f"Byte widening: {bytes_widened} widening(s) done in m16", file=sys.stderr)
+
             # Known bits - a value known below 256 narrowed and widened again,
             # or zero-extended only to be shifted left by 8, needs no mask.
             from r65.compiler.optimize.known_bits import KnownBitsSimplifier

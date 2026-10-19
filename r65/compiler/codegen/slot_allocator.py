@@ -642,13 +642,14 @@ class StackSlotAllocator:
                             vreg_uses.setdefault(var.id, []).append(instr)
 
                 elif instr_type is LoadIndirect:
-                    # LoadIndirect deposits its result in A via LDA [dp],Y.
-                    # Track dest vreg as defined-in-A for coalescence (u8 only).
+                    # LoadIndirect deposits its result in A via LDA [dp],Y:
+                    # a byte, or through a near pointer a word (one m16 LDA;
+                    # a far pointer's word may go byte by byte through DBR).
                     if type(instr.dest) is VirtualRegister:
                         vreg_id = instr.dest.id
                         if vreg_id not in vreg_defs:
                             dest_size = get_vreg_size(instr.dest)
-                            if dest_size == 1:
+                            if dest_size == 1 or (dest_size == 2 and not instr.is_far):
                                 vreg_defs[vreg_id] = [(instr, 'A')]
 
                     # Track pointer/index uses

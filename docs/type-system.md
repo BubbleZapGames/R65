@@ -555,6 +555,13 @@ The `as` keyword performs explicit type conversions:
 | `T as Newtype` | Payload to newtype, truncating if narrower |
 | `Newtype as Newtype` | Through the payloads, truncating if narrower |
 
+A byte loaded only to be zero-extended is read with one 16-bit load and
+masked (`LDA m / AND #$00FF`) rather than loaded in m8 and widened, and
+`(v & K) as u16` with K below `$100` reads `v` 16-bit and masks with K
+(`optimize/byte_widen.py`). The load reads the byte after `m` too, which
+is harmless except from I/O: a `#[hw]` register, or a pointer not known to
+hold a static's address, is still read one byte in m8.
+
 ### Pointer Auto-Dereference
 
 Struct field access through pointers is automatically dereferenced:
