@@ -802,7 +802,7 @@ class StackSlotAllocator:
             candidates = remaining
 
         coalesceable.update(self._find_a_merge_vregs(coalesced_id_to_hw))
-        coalesceable.update(self._find_a_loop_vregs(coalesced_id_to_hw))
+        coalesceable.update(self._find_a_multi_def_vregs(coalesced_id_to_hw))
         return coalesceable
 
     def _find_a_merge_vregs(self, coalesced_id_to_hw: Dict[int, str]) -> Dict[VirtualRegister, str]:
@@ -862,15 +862,21 @@ class StackSlotAllocator:
             coalesced_id_to_hw[vreg_id] = 'A'
         return merged
 
-    def _find_a_loop_vregs(self, coalesced_id_to_hw: Dict[int, str]) -> Dict[VirtualRegister, str]:
-        """Keep a value carried around a loop in A: `s = s + DATA[i]`.
+    def _find_a_multi_def_vregs(self, coalesced_id_to_hw: Dict[int, str]) -> Dict[VirtualRegister, str]:
+        """Keep a value with several defs in A when nothing else needs A.
 
-        A running value is set before the loop, rewritten in place every pass
-        and read after it, so it has several defs and is live around the back
-        edge - the single-def path and the arm merge both refuse it, and it
-        is loaded and stored every pass. When every def leaves it in A, every
-        use reads A in place, and no instruction it is live across touches A
-        (B, its high byte, goes with A), it needs no home but A.
+        Two shapes are common, and both are refused by the single-def path
+        and the arm merge (whose first def must end an arm of the `if`):
+
+        - a value carried around a loop, set before it, rewritten in place
+          every pass and read after it: `s = s + DATA[i]`, otherwise loaded
+          and stored every pass;
+        - a clamp, set and then maybe overwritten before its use:
+          `let mut n = x; if n > 9 { n = 9; }`.
+
+        When every def leaves the value in A, every use reads A in place,
+        and no instruction it is live across touches A (B, its high byte,
+        goes with A), it needs no home but A.
         """
         defs: Dict[int, list] = {}
         uses: Dict[int, list] = {}

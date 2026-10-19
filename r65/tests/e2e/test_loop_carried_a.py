@@ -1,11 +1,12 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
-"""Values carried around a loop in A, checked on the hardware.
+"""Values with several defs kept in A, checked on the hardware.
 
-The slot allocator keeps a running value in A when nothing it is live
-across touches A (`_find_a_loop_vregs`). These pin a u16 sum, a u8 sum that
-wraps, the value stored every pass, a loop that runs no pass, and a sum
-over a nested loop (the outer counter in Y, the inner in X). The shapes are
-pinned in tests/compiler/codegen/test_loop_carried_a.py.
+The slot allocator keeps such a value in A when nothing it is live across
+touches A (`_find_a_multi_def_vregs`). These pin a u16 sum, a u8 sum that
+wraps, the value stored every pass, a loop that runs no pass, a sum over a
+nested loop (the outer counter in Y, the inner in X), and a byte clamp and
+a word clamp into a table index, each on both sides of its limit. The
+shapes are pinned in tests/compiler/codegen/test_loop_carried_a.py.
 """
 
 from r65.tests.e2e import ExpectedState
@@ -20,6 +21,8 @@ def test_loop_carried_values_in_a(e2e):
         #[zeropage(0x44)] static mut LAST: u16;
         #[zeropage(0x46)] static mut PAST: u16;
         #[zeropage(0x48)] static mut NESTED: u16;
+        #[lowram(0x0330)] static mut T: [u8; 8];
+        #[zeropage(0x4A)] static mut CLAMPED: [u8; 4];
 
         #[inline(never)]
         fn sum() -> u16 {
@@ -64,6 +67,20 @@ def test_loop_carried_values_in_a(e2e):
             return s;
         }
 
+        #[inline(never)]
+        fn clamp(x: u8) -> u8 {
+            let mut n: u8 = x;
+            if n > 9 { n = 9; }
+            return n;
+        }
+
+        #[inline(never)]
+        fn level_row(level: u8) -> u8 {
+            let mut l: u16 = (level as u16) - 1;
+            if l > 5 { l = 5; }
+            return T[l];
+        }
+
         #[entry]
         fn main() {
             let mut k: u16 = 0;
@@ -73,6 +90,12 @@ def test_loop_carried_values_in_a(e2e):
             running();           // the last running total
             PAST = none();       // no pass
             NESTED = nested();   // 3 * 0x0101 * 136
+            k = 0;
+            while k < 8 { T[k] = 0x60 + (k as u8); k = k + 1; }
+            CLAMPED[0] = clamp(7);         // under the limit: kept
+            CLAMPED[1] = clamp(200);       // over: 9
+            CLAMPED[2] = level_row(3);     // T[2]
+            CLAMPED[3] = level_row(40);    // T[5]
         }
     ''', ExpectedState(memory={
         0x7E0040: [0x88, 0x98],
@@ -80,5 +103,6 @@ def test_loop_carried_values_in_a(e2e):
         0x7E0044: [0x88, 0x88],
         0x7E0046: [0x55, 0x00],
         0x7E0048: [0x98, 0x99],
+        0x7E004A: [0x07, 0x09, 0x62, 0x65],
     }), max_instructions=50000)
     assert result.success, f"Failures: {result.failures}"

@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
-"""A value carried around a loop stays in A (slot_allocator
-`_find_a_loop_vregs`): `s = s + W[i]` is `CLC / ADC $0200,X` with no load or
-store of `s`, when nothing it is live across touches A. Values:
+"""A value with several defs stays in A (slot_allocator
+`_find_a_multi_def_vregs`) when nothing it is live across touches A: a
+loop's `s = s + W[i]` is `CLC / ADC $0200,X` with no load or store of `s`,
+and a clamp `if n > 9 { n = 9; }` is `CMP / BCC / LDA #9`. Values:
 tests/e2e/test_loop_carried_a.py.
 """
 
@@ -12,8 +13,10 @@ def _code(body: str, ret: str = 's', params: str = '', sig_ret: str = 'u16') -> 
     src = f'''
         #[lowram] static mut W: [u16; 64];
         #[lowram] static mut V: [u8; 64];
+        #[lowram] static mut T: [u8; 8];
         #[zeropage] static mut OUT: u16;
         #[zeropage] static mut OUT8: u8;
+        #[zeropage] static mut LEVEL: u8;
         #[inline(never)] fn g() {{ OUT8 = 1; }}
         #[inline(never)]
         fn t({params}) -> {sig_ret} {{ {body} return {ret}; }}
@@ -65,3 +68,18 @@ def test_parameter_in_a_keeps_it_in_memory():
     # `k` arrives in A and is read after the loop.
     code = _code(_SUM, ret='s + (k as u16)', params='k @ A: u8')
     assert 'STA $01,S' in code, code
+
+
+def test_byte_clamp_stays_in_a():
+    code = _code('let mut n: u8 = V[3]; if n > 9 { n = 9; } OUT8 = n;', ret='0', sig_ret='u8')
+    assert code[:5] == ['LDA $0283', 'CMP #$0A', 'BCC t__L2', 'LDA #$09', 'STA $02'], code
+    assert 'PHX' not in code, code
+
+
+def test_word_clamp_into_an_index_stays_in_a():
+    # The clamped level indexes a table: TAX straight from A.
+    code = _code('let mut l: u16 = (LEVEL as u16) - 1; if l > 5 { l = 5; } OUT8 = T[l];',
+                 ret='0', sig_ret='u8')
+    assert 'PHX' not in code and not any(l.endswith(',S') for l in code), code
+    k = code.index('LDA #$05')
+    assert code[k + 1] == 'TAX', code
