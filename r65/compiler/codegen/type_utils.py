@@ -157,6 +157,14 @@ def is_a_resident_convert(instr) -> bool:
     return not str(strip_newtype(instr.source_type)).startswith('i')
 
 
+def is_inc_dec_step(value, register: str) -> bool:
+    """Whether `reg = reg ± value` is emitted as repeated INC/DEC: 1 or 2, or
+    3 and 4 in X/Y (INX x4 is 8 cycles to TXA / CLC / ADC #4 / TAX's 9; A
+    takes 3 and 4 as CLC / ADC). The slot allocator relies on X/Y steps
+    leaving A alone."""
+    return value in (1, 2) or (value in (3, 4) and register in ('X', 'Y'))
+
+
 def defines_in_a(instr) -> bool:
     """True for a node whose codegen computes its result in A on the way to
     its dest: arithmetic, a load, a bank byte, or a convert

@@ -28,7 +28,7 @@ from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.codegen.type_utils import (
     get_vreg_size, is_a_resident_convert, convert_operand_widths, defines_in_a,
-    is_far_ptr)
+    is_far_ptr, is_inc_dec_step, is_signed_scalar, pointer_element_size)
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
@@ -802,6 +802,7 @@ class StackSlotAllocator:
             candidates = remaining
 
         coalesceable.update(self._find_a_merge_vregs(coalesced_id_to_hw))
+        coalesceable.update(self._find_a_loop_vregs(coalesced_id_to_hw))
         return coalesceable
 
     def _find_a_merge_vregs(self, coalesced_id_to_hw: Dict[int, str]) -> Dict[VirtualRegister, str]:
@@ -860,6 +861,102 @@ class StackSlotAllocator:
             merged[vreg] = 'A'
             coalesced_id_to_hw[vreg_id] = 'A'
         return merged
+
+    def _find_a_loop_vregs(self, coalesced_id_to_hw: Dict[int, str]) -> Dict[VirtualRegister, str]:
+        """Keep a value carried around a loop in A: `s = s + DATA[i]`.
+
+        A running value is set before the loop, rewritten in place every pass
+        and read after it, so it has several defs and is live around the back
+        edge - the single-def path and the arm merge both refuse it, and it
+        is loaded and stored every pass. When every def leaves it in A, every
+        use reads A in place, and no instruction it is live across touches A
+        (B, its high byte, goes with A), it needs no home but A.
+        """
+        defs: Dict[int, list] = {}
+        uses: Dict[int, list] = {}
+        vregs: Dict[int, VirtualRegister] = {}
+        for block_id, block in self.func.blocks.items():
+            for idx, instr in enumerate(block.instructions):
+                for var in self.liveness_analyzer._get_defs(instr):
+                    if type(var) is VirtualRegister:
+                        defs.setdefault(var.id, []).append(instr)
+                        vregs[var.id] = var
+                for var in self.liveness_analyzer._get_uses(instr):
+                    if type(var) is VirtualRegister:
+                        uses.setdefault(var.id, []).append(instr)
+
+        liveness = self.liveness_analyzer.liveness
+        entry = liveness.get(self.func.entry_block_id)
+        pinned_a = {vid for vid, reg in self.pre_allocated_hw.items() if reg in ('A', 'B')}
+        merged: Dict[VirtualRegister, str] = {}
+        for vreg_id, def_list in defs.items():
+            vreg = vregs[vreg_id]
+            use_list = uses.get(vreg_id)
+            if (len(def_list) < 2 or not use_list or vreg_id in coalesced_id_to_hw
+                    or vreg_id in self.pre_allocated_hw
+                    or vreg in self.pre_allocated_vregs
+                    or vreg_id in self._preassigned_vregs
+                    or get_vreg_size(vreg) > 2
+                    or entry is None or vreg in entry.live_in):
+                continue
+            if not all(self._def_leaves_a(instr) for instr in def_list):
+                continue
+            if not all(self._use_reads_a_in_place(use, vreg_id)
+                       and not self._use_loads_a_first(use, vreg_id) for use in use_list):
+                continue
+            if not self._a_survives_live_range(vreg, pinned_a, coalesced_id_to_hw):
+                continue
+            merged[vreg] = 'A'
+            coalesced_id_to_hw[vreg_id] = 'A'
+        return merged
+
+    @staticmethod
+    def _def_leaves_a(instr: Any) -> bool:
+        """A def whose codegen ends with the value in A: a load of a constant,
+        a word-or-smaller vreg or A/X/Y, or a node `defines_in_a`."""
+        if type(instr) is Move:
+            source = instr.source
+            if type(source) is VirtualRegister:
+                return get_vreg_size(source) <= 2
+            if type(source) is HardwareRegister:
+                return source.name in ('A', 'X', 'Y')
+            return type(source) is Immediate
+        if type(instr) is LoadIndirect:
+            return get_vreg_size(instr.dest) == 1 or not instr.is_far
+        return type(instr) in (Load, BinaryOp, UnaryOp)
+
+    def _a_survives_live_range(self, vreg: VirtualRegister, pinned_a: Set[int],
+                               coalesced_id_to_hw: Dict[int, str]) -> bool:
+        """No instruction *vreg* is live across, other than its own defs,
+        touches A, and no value pinned to A or B (an `@ A` parameter, a
+        register alias) is live in or named by a block it is in."""
+        liveness = self.liveness_analyzer.liveness
+        for block_id, block in self.func.blocks.items():
+            info = liveness.get(block_id)
+            if info is None:
+                return False
+            live = vreg in info.live_out
+            touched = live
+            names_pinned = any(v.id in pinned_a for v in info.live_in | info.live_out)
+            for instr in reversed(block.instructions):
+                instr_defs = self.liveness_analyzer._get_defs(instr)
+                instr_uses = self.liveness_analyzer._get_uses(instr)
+                defined = any(type(d) is VirtualRegister and d.id == vreg.id for d in instr_defs)
+                used = any(type(u) is VirtualRegister and u.id == vreg.id for u in instr_uses)
+                names_pinned = names_pinned or any(
+                    type(v) is VirtualRegister and v.id in pinned_a
+                    for v in list(instr_defs) + list(instr_uses))
+                if (live and not defined and self._instruction_clobbers_register(
+                        instr, 'A', vreg.id, set(), coalesced_id_to_hw)):
+                    return False
+                if defined:
+                    live = False
+                if used:
+                    live = True
+                touched = touched or defined or used
+            if touched and names_pinned:
+                return False
+        return True
 
     def _merge_defs_leave_a(self, vreg_id: int, def_list: list, join: int,
                             coalesced_id_to_hw: Dict[int, str]) -> bool:
@@ -1209,7 +1306,7 @@ class StackSlotAllocator:
         if instr_type is Move:
             # Move to vreg (other than ours): LDA + STA clobbers A
             if type(instr.dest) is VirtualRegister and instr.dest.id != vreg_id:
-                return True
+                return not self._index_op_spares_a(instr)
             # Move to hw register from vreg/immediate: codegen loads through A
             if type(instr.dest) is HardwareRegister:
                 if instr.dest.name in ('X', 'Y'):
@@ -1266,6 +1363,8 @@ class StackSlotAllocator:
             if instr_type is Compare:
                 if type(instr.left) is VirtualRegister and instr.left.id == vreg_id:
                     return False
+            if self._index_op_spares_a(instr):
+                return False
             return True
 
         if instr_type is Load:
@@ -1287,6 +1386,32 @@ class StackSlotAllocator:
             # PHP; PLA; AND - clobbers A
             return True
 
+        return False
+
+    def _index_op_spares_a(self, instr: Any) -> bool:
+        """A loop counter's start, step or test kept in its index register: on
+        a vreg pinned to X/Y, `i = #N` is LDX #N, `i = i ± k` is INX/DEY
+        (is_inc_dec_step), and an unsigned `i < #N` is CPX/CPY #N. None of
+        them touches A."""
+        if type(instr) is Move:
+            return (type(instr.dest) is VirtualRegister
+                    and self.pre_allocated_hw.get(instr.dest.id) in ('X', 'Y')
+                    and type(instr.source) is Immediate)
+        if type(instr) is BinaryOp:
+            dest, left, right = instr.dest, instr.left, instr.right
+            if (instr.op not in ('+', '-') or type(dest) is not VirtualRegister
+                    or type(left) is not VirtualRegister or dest.id != left.id
+                    or type(right) is not Immediate or not isinstance(right.value, int)):
+                return False
+            reg = self.pre_allocated_hw.get(dest.id)
+            scale = pointer_element_size(instr.type_info)
+            step = right.value * scale if scale > 1 else right.value
+            return reg in ('X', 'Y') and is_inc_dec_step(step, reg)
+        if type(instr) is Compare:
+            return (type(instr.left) is VirtualRegister
+                    and self.pre_allocated_hw.get(instr.left.id) in ('X', 'Y')
+                    and type(instr.right) is Immediate
+                    and not is_signed_scalar(instr.type_info))
         return False
 
     def _clobbers_b(self, instr: Any, vreg_id: int) -> bool:
