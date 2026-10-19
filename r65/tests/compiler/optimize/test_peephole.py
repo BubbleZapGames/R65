@@ -243,16 +243,34 @@ class TestDeadModeChangeElimination:
         assert opt.stats.dead_mode_changes_eliminated == 0
 
     def test_label_between_blocks_elimination(self):
-        """A label between the two switches means another path can observe the SEP."""
+        """A label something branches to, between the two switches: the
+        branch's path can observe the SEP."""
         nodes = [
             Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
             Label(name="target"),
             Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
             Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+            # Two references, so the loop-switch hoist (single-reference
+            # labels) leaves the REP where it is.
+            Instruction(opcode=Opcode.BEQ, operand=Address("target")),
+            Instruction(opcode=Opcode.BRA, operand=Address("target")),
         ]
         opt = PeepholeOptimizer()
         opt.optimize(nodes)
         assert opt.stats.dead_mode_changes_eliminated == 0
+
+    def test_unreferenced_label_between_switches(self):
+        """A label nothing names is only fallen into, so the SEP before it
+        is overwritten unseen."""
+        nodes = [
+            Instruction(opcode=Opcode.SEP_IMMEDIATE, operand=Immediate(0x20)),
+            Label(name="fallen_into"),
+            Instruction(opcode=Opcode.REP_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_DP, operand=Address(0x10)),
+        ]
+        opt = PeepholeOptimizer()
+        opt.optimize(nodes)
+        assert opt.stats.dead_mode_changes_eliminated == 1
 
     def test_instruction_between_blocks_elimination(self):
         """An instruction between the switches runs in the mode the SEP set."""

@@ -1115,16 +1115,23 @@ class PeepholeOptimizer:
         The SEP is a 3-cycle, 2-byte no-op: nothing between the two
         reads P, so every bit it set is immediately cleared again.
 
-        A switch at `i` is dead iff the next node that isn't a comment
-        or a `.ACCU`/`.INDEX` hint overwrites every bit `i` wrote —
-        another SEP/REP whose mask covers `i`'s, or a PLP/RTI, which
-        reload the whole of P from the stack. Anything else in between —
-        a real instruction, a label (which could be branched to), inline
-        asm — makes the write observable and stops the rewrite.
+        A switch at `i` is dead iff the next node that isn't a comment,
+        a `.ACCU`/`.INDEX` hint or a label nothing refers to overwrites
+        every bit `i` wrote — another SEP/REP whose mask covers `i`'s, or
+        a PLP/RTI, which reload the whole of P from the stack. Anything
+        else in between — a real instruction, a label something branches
+        to or names, inline asm — makes the write observable and stops
+        the rewrite. A label nothing names is only ever fallen into::
+
+            JSR div16
+            SEP #$20  ; Restore m8 after u16 return
+        game_add_score__L11:          ; no branch to it
+            REP #$20
         """
         from r65.compiler.codegen.asm_nodes import (
-            Instruction, Immediate, Comment, ModeChange,
+            Instruction, Immediate, Comment, ModeChange, Label,
         )
+        unreferenced = self._unreferenced_labels(nodes)
 
         ALL_FLAGS = 0xFF
 
@@ -1163,7 +1170,8 @@ class PeepholeOptimizer:
             j = i + 1
             while j < n:
                 nj = nodes[j]
-                if isinstance(nj, (Comment, ModeChange)):
+                if isinstance(nj, (Comment, ModeChange)) or (
+                        isinstance(nj, Label) and nj.name in unreferenced):
                     j += 1
                     continue
                 break
@@ -1181,6 +1189,27 @@ class PeepholeOptimizer:
 
         self.stats.dead_mode_changes_eliminated += len(dead)
         return [node for i, node in enumerate(nodes) if i not in dead]
+
+    def _unreferenced_labels(self, nodes: List['AsmNode']) -> Set[str]:
+        """Labels in *nodes* that no instruction, directive or inline asm
+        anywhere in the program names, and that are no function entry: they
+        are only entered by falling into them."""
+        from r65.compiler.codegen.asm_nodes import Directive, Instruction, Label, RawAsm
+        from r65.compiler.optimize.mode_directive_rewrite import _IDENTIFIER_RE
+        named: Set[str] = set(self._entry_modes or ())
+        for region in [nodes, *self._outside]:
+            for node in region:
+                if isinstance(node, Instruction):
+                    value = getattr(node.operand, 'value', None)
+                    if isinstance(value, str):
+                        named.update(_IDENTIFIER_RE.findall(value))
+                elif isinstance(node, Directive):
+                    for arg in getattr(node, 'args', ()) or ():
+                        if isinstance(arg, str):
+                            named.update(_IDENTIFIER_RE.findall(arg))
+                elif isinstance(node, RawAsm):
+                    named.update(_IDENTIFIER_RE.findall(node.text))
+        return {n.name for n in nodes if isinstance(n, Label) and n.name not in named}
 
     def _fold_carry_setup_into_rep(self, nodes: List['AsmNode']) -> List['AsmNode']:
         """Fold the carry setup of a stack adjustment into its REP.
