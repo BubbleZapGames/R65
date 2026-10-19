@@ -632,12 +632,14 @@ class InstructionSelector:
     # Arithmetic Operations
     # ========================================================================
 
-    def _try_emit_inc_dec(self, op: str, register: str) -> bool:
-        """Try to emit INX/INY/INC or DEX/DEY/DEC for a register. Returns True if emitted."""
+    def _try_emit_inc_dec(self, op: str, register: str, count: int = 1) -> bool:
+        """Try to emit INX/INY/INC or DEX/DEY/DEC for a register, *count*
+        times. Returns True if emitted."""
         opcodes = INCREMENT_OPCODES if op == '+' else DECREMENT_OPCODES
         opcode = opcodes.get(register)
         if opcode:
-            self._emit_implied(opcode, f"{register}{'++' if op == '+' else '--'}")
+            for _ in range(count):
+                self._emit_implied(opcode, f"{register}{'++' if op == '+' else '--'}")
             return True
         return False
 
@@ -712,27 +714,29 @@ class InstructionSelector:
         # OPTIMIZATION: Detect register increment/decrement patterns
         # reg = reg + 1  →  INX/INY/INC A
         # reg = reg - 1  →  DEX/DEY/DEC A
+        # A step of 2 (a doubled index) is the instruction twice: INX / INX
+        # is 4 cycles to TXA / CLC / ADC #2 / TAX's 9.
         # Check this BEFORE getting operand locations
         if (op in ('+', '-') and
             isinstance(right_operand, MIRImmediate) and
-            right_operand.value == 1 and
+            right_operand.value in (1, 2) and
             isinstance(instr.left, HardwareRegister) and
             isinstance(instr.dest, HardwareRegister) and
             instr.left.name == instr.dest.name):
-            if self._try_emit_inc_dec(op, instr.dest.name):
+            if self._try_emit_inc_dec(op, instr.dest.name, right_operand.value):
                 return
 
         # OPTIMIZATION: Same pattern for VirtualRegisters allocated to hardware registers
         # After loop register promotion, operands are VirtualRegister (allocated to Y),
         # not HardwareRegister. Check before mode switch logic to avoid REP/SEP.
         if (op in ('+', '-') and
-            isinstance(right_operand, MIRImmediate) and right_operand.value == 1 and
+            isinstance(right_operand, MIRImmediate) and right_operand.value in (1, 2) and
             isinstance(instr.dest, VirtualRegister) and
             isinstance(instr.left, VirtualRegister) and
             instr.dest.id == instr.left.id):
             dest_loc = self._get_operand_location(instr.dest)
             if dest_loc.is_hw() and dest_loc.hw_register in ('A', 'X', 'Y'):
-                if self._try_emit_inc_dec(op, dest_loc.hw_register):
+                if self._try_emit_inc_dec(op, dest_loc.hw_register, right_operand.value):
                     return
 
         # FAR POINTER ARITHMETIC: 3-byte pointers need special handling.

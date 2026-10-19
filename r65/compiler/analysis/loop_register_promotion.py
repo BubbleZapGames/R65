@@ -22,6 +22,10 @@ from r65.compiler.hir.types import PointerTypeInfo
 from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
 
+# Steps a counter in X/Y takes in place: INX, or INX / INX for a doubled
+# index (the width model, analysis/width_demand.py, assumes the same).
+_INDEX_STEPS = (1, 2)
+
 
 def analyze_loop_promotion(mir_program: MIRProgram):
     """
@@ -605,7 +609,7 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
 
     A vreg in X/Y can be used in:
     - Move (source or dest) — emits TXA/TAX, LDX, etc.
-    - BinaryOp with +1/-1 where vreg is left operand — emits INX/INY/DEX/DEY
+    - BinaryOp with ±1/±2 where vreg is left operand — emits INX/INY/DEX/DEY (twice for 2)
     - Compare (as left or right) — emits CPX/CPY
     - Return (as return value) — emits TXA/TYA
     - Store / StoreIndirect (as source) — both store paths test for a hardware
@@ -620,7 +624,7 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
 
     Incompatible uses (codegen tries to resolve hw register as memory operand):
     - Other BinaryOps with the vreg as left operand (non-immediate right side,
-      or an in-place op other than +1/-1)
+      or an in-place op other than ±1/±2)
     - BinaryOp where vreg is right operand (needs memory operand for CMP/SBC/etc.)
     - UnaryOp — needs value in A
     - LoadIndirect (as dest) — result comes from A, not X/Y
@@ -628,13 +632,13 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
     """
     for use in uses:
         if isinstance(use, BinaryOp):
-            # Allow +1/-1 where our vreg is the left operand AND dest
+            # Allow ±1/±2 where our vreg is the left operand AND dest
             # (this is the in-place increment/decrement that maps to INX/INY/DEX/DEY)
             if isinstance(use.left, VirtualRegister) and use.left.id == vreg_id:
                 is_inc_dec = (
                     use.op in ('+', '-') and
                     isinstance(use.right, Immediate) and
-                    use.right.value == 1 and
+                    use.right.value in _INDEX_STEPS and
                     isinstance(use.dest, VirtualRegister) and
                     use.dest.id == vreg_id
                 )
@@ -783,11 +787,12 @@ def _get_vregs_from_instr(instr) -> List[VirtualRegister]:
 
 def _find_loop_counters(func: MIRFunction, loop_blocks: Set[int]) -> Set[int]:
     """
-    Find vreg IDs that are loop counters (incremented/decremented by 1 in loop body).
+    Find vreg IDs that are loop counters (stepped by 1 or 2 in loop body:
+    a step of 2 is a doubled index, INX / INX).
 
     Patterns:
-    1. BinaryOp(dest=V, left=V, op='-'|'+', right=Immediate(1))  — in-place
-    2. BinaryOp(dest=T, left=V, op='-'|'+', right=Immediate(1))  — via temporary
+    1. BinaryOp(dest=V, left=V, op='-'|'+', right=Immediate(1|2))  — in-place
+    2. BinaryOp(dest=T, left=V, op='-'|'+', right=Immediate(1|2))  — via temporary
        followed by Move(dest=V, source=T)
     """
     counters = set()
@@ -801,7 +806,7 @@ def _find_loop_counters(func: MIRFunction, loop_blocks: Set[int]) -> Set[int]:
             if isinstance(instr, BinaryOp) and instr.op in ('+', '-'):
                 if not (isinstance(instr.left, VirtualRegister) and
                         isinstance(instr.right, Immediate) and
-                        instr.right.value == 1 and
+                        instr.right.value in _INDEX_STEPS and
                         isinstance(instr.dest, VirtualRegister)):
                     continue
 

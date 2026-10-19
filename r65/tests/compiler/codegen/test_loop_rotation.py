@@ -46,9 +46,11 @@ class TestRotation:
                 }
                 return s;
             }''')
+        # `i` is read only as the doubled index: it is carried doubled in X
+        # (optimize/index_stride.py).
         bcc = _back_edge(code)
-        assert code[bcc - 2:bcc] == ['INY', 'CPY #$0100']
-        loop = code[code.index('LDY #$00') + 1:bcc]
+        assert code[bcc - 3:bcc] == ['INX', 'INX', 'CPX #$0200']
+        loop = code[code.index('LDX #$00') + 1:bcc]
         assert not [l for l in loop if l.startswith(('SEP', 'REP', 'BRA'))]
 
     def test_exit_switches_back_to_m8(self):
