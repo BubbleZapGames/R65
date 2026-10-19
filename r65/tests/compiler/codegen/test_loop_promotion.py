@@ -382,3 +382,43 @@ class TestCounterAsCallArgument:
         """`b` targets Y: if the counter is there, it is read for `a` first."""
         emitted = self.instrs("fn f(a @ X: u16, b @ Y: u16) { VB = a + b; }", "u16", "f(i, M);")
         assert any(s.startswith(('INX', 'INY')) for s in emitted), emitted
+
+
+class TestCounterBesideAnotherLoopsIndex:
+    """A counter whose loop is over before another value is moved into X.
+
+    `sieve` clears its flags with `i` and reuses `i` for the prime loop,
+    whose inner loop indexes with `j`. Web splitting (optimize/web_split.py)
+    gives the first loop's `i` its own vreg, and `_x_loaded_from_other`
+    counts only the X writes it is live across, so it rides in X. Values:
+    tests/e2e/test_web_split.py.
+    """
+
+    def test_first_loop_counts_in_x(self):
+        src = '''
+            #[lowram] static mut FLAGS: [u8; 1024];
+            #[zeropage] static mut OUT: u16;
+            #[inline(never)]
+            fn go() -> u16 {
+                let mut count: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 1024 { FLAGS[i] = 0; i = i + 1; }
+                i = 2;
+                while i < 1024 {
+                    if FLAGS[i] == 0 {
+                        count = count + 1;
+                        let mut j: u16 = i + i;
+                        while j < 1024 { FLAGS[j] = 1; j = j + i; }
+                    }
+                    i = i + 1;
+                }
+                return count;
+            }
+            #[entry]
+            fn main() { OUT = go(); }
+        '''
+        emitted = [i.split(';')[0].strip() for i in
+                   _instruction_lines(_get_function_asm(compile_string(src), "go"))]
+        stz = emitted.index('STZ $0200,X')
+        assert emitted[stz + 1:stz + 3] == ['INX', 'CPX #$0400']
+        assert emitted[stz + 3].startswith('BCC')

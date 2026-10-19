@@ -282,6 +282,14 @@ class ProgramCodeGenerator:
             if incdec_folded > 0:
                 print(f"Memory INC/DEC folding: {incdec_folded} step(s) folded", file=sys.stderr)
 
+            # Web splitting - a local reassigned with a value its old one
+            # never meets (`i` reused by a second loop) gets a vreg per
+            # value, so loop promotion and slot allocation see each apart.
+            from r65.compiler.optimize.web_split import WebSplitter
+            webs_split = WebSplitter(verbose=False).optimize(mir_program)
+            if webs_split > 0:
+                print(f"Web splitting: {webs_split} vreg(s) split", file=sys.stderr)
+
 
         # Emit file header and processor directives
         self.emitter.emit_file_header()

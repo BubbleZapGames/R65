@@ -249,6 +249,14 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
     already_promoted = {v.id for v in func.loop_promoted_hw_vregs.values()}
     used_hints = set(func.loop_promoted_hw_vregs.keys())
 
+    from r65.compiler.mir.liveness import InstructionLivenessAnalyzer
+    analyzer = []
+
+    def liveness():
+        if not analyzer:
+            analyzer.append(InstructionLivenessAnalyzer(func))
+        return analyzer[0]
+
     promoted = 0
     for vreg_id in sorted(loop_counter_vregs):
         if vreg_id in param_vreg_ids:
@@ -287,7 +295,7 @@ def _promote_local_loop_counters(func: MIRFunction) -> int:
         # (`X = Move %offset`) - would destroy a counter kept there, so
         # such a counter must ride in Y and reach X by TYX when it indexes
         # directly; with Y taken it stays on the stack.
-        x_taken_in_loop = _x_loaded_from_other(func, loop_blocks, vreg_id)
+        x_taken_in_loop = _x_loaded_from_other(func, loop_blocks, vreg, liveness)
         prefers_x = (not x_taken_in_loop and
                      _prefers_x_register(vreg_id, vreg_uses.get(vreg_id, [])))
         if prefers_x and 'X' not in used_hints:
@@ -552,13 +560,17 @@ def _enforce_live_range_clobber_safety(func: MIRFunction) -> int:
     return rewritten
 
 
-def _x_loaded_from_other(func: MIRFunction, loop_blocks: Set[int], vreg_id: int) -> bool:
-    """Does any loop block move a value other than *vreg_id* into X?"""
+def _x_loaded_from_other(func: MIRFunction, loop_blocks: Set[int], vreg: VirtualRegister,
+                         liveness) -> bool:
+    """Does any loop block move a value other than *vreg* into X while *vreg*
+    is still live? A write where it is dead - another loop's index, once
+    this counter's loop is done - destroys nothing."""
     for bid in loop_blocks:
-        for instr in func.blocks[bid].instructions:
+        for idx, instr in enumerate(func.blocks[bid].instructions):
             if (isinstance(instr, Move) and
                     isinstance(instr.dest, HardwareRegister) and instr.dest.name == 'X' and
-                    not (isinstance(instr.source, VirtualRegister) and instr.source.id == vreg_id)):
+                    not (isinstance(instr.source, VirtualRegister) and instr.source.id == vreg.id)
+                    and liveness().is_live_after(vreg, bid, idx)):
                 return True
     return False
 

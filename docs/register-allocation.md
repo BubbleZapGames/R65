@@ -31,6 +31,8 @@ The actual register allocation pipeline is more sophisticated than a simple scra
 
 A value computed in A coalesces only when each use reads it from A in place (`_use_reads_a_in_place`). Examples are a store, a compare, a BinaryOp's left operand, and the right operand of `+ & | ^` when the left isn't in A or B. Instruction selection swaps the operands of a commutative op whose right operand is in A, so `s + (BUF[i] as u16)` adds the widened byte straight from A to `s` in memory and doesn't spill it.
 
+MIR is not SSA, so a local that is assigned again keeps its vreg, and every per-vreg decision would see all of its values at once. Before allocation, `WebSplitter` (`optimize/web_split.py`) gives each def-use web its own vreg. A web is the set of defs that the same uses read, joined at merges and back edges. When `sieve` reuses `i` for a second loop, the first loop's `i` is a separate vreg. Loop promotion can then put it in X, even though the prime loop reads its own `i` as the right operand of `j + i`. Parameters and vregs with a register hint are not split. A def nothing reads stays with the original vreg. Promotion's check for "another value is moved into X" (`_x_loaded_from_other`) counts only writes made while the counter is still live, so a later loop's index in X doesn't block an earlier loop's counter.
+
 ---
 
 ## Core Strategy: Explicit Everything

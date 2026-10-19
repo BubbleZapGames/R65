@@ -1056,16 +1056,19 @@ def iter_operands(instr, *, role=None, accepts_hr=None):
                     yield spec, arg.value
 
 
-def map_operands(instr, fn):
+def map_operands(instr, fn, *, role=None):
     """In place, apply fn to every register-operand slot of instr, writing the
-    result back. fn receives the raw slot value (possibly None/Immediate/str)
-    and must return it unchanged for non-register values. Unknown node types
-    are left untouched.
+    result back, optionally only the slots of one role (READ/WRITE). fn
+    receives the raw slot value (possibly None/Immediate/str) and must return
+    it unchanged for non-register values. Unknown node types are left
+    untouched.
     """
     specs = OPERAND_SPECS.get(type(instr))
     if specs is None:
         return
     for spec in specs:
+        if role is not None and spec.role is not role:
+            continue
         if spec.container is _SCALAR:
             setattr(instr, spec.field, fn(getattr(instr, spec.field)))
         elif spec.container is OperandContainer.LIST:
