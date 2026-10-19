@@ -116,6 +116,15 @@ a compare and its branch. A wrong prediction costs a switch, never
 correctness: the emitter still switches before each instruction that
 needs a width.
 
+The peephole keeps three mode passes for what codegen cannot see:
+`_eliminate_redundant_mode_changes` drops a switch another peephole edit
+made redundant, `_eliminate_dead_mode_changes` one overwritten before
+anything reads it (mostly at the seams between prologue, argument setup,
+body and epilogue, which each set their own width), and
+`_eliminate_cross_block_mode_changes` one at a label every predecessor
+already satisfies. Hoisting a loop header's switch out of the loop is
+codegen's now: the preheader switches before its jump in.
+
 ---
 
 ## Data Bank Management
