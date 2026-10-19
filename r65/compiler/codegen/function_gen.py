@@ -332,10 +332,16 @@ class FunctionCodeGenerator:
         # actually exits in another mode.
         pending_back_edge_switches = []
         # The width each block is entered in (analysis/width_demand.py).
-        def on_stack(vreg) -> bool:
+        def locate(vreg):
             location = reg_alloc.allocations.get(vreg.id)
-            return location is not None and location.kind == LocationKind.STACK
-        entry_widths = WidthAssignment(mir_func, on_stack).entry
+            if location is None:
+                return None
+            if location.kind == LocationKind.STACK:
+                return 'stack'
+            if location.kind == LocationKind.HARDWARE:
+                return location.hw_register
+            return None
+        entry_widths = WidthAssignment(mir_func, locate).entry
 
         for block_id in block_order:
             block = mir_func.blocks[block_id]

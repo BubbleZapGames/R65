@@ -108,3 +108,21 @@ def test_bit_loop_compiles_without_a_mode_switch():
                  next(k for k, l in enumerate(lines) if l.startswith('BNE '))]
     assert loop
     assert not [l for l in loop if l.startswith(('SEP', 'REP'))]
+
+
+def test_a_counter_allocation_put_in_x_takes_no_width():
+    # Loop promotion is not the only way into X: register allocation may
+    # put a counter there too, and its step and test are then INX/CPX.
+    from r65.compiler.analysis.width_demand import instruction_width
+    from r65.compiler.hir.types import BasicTypeInfo
+    from r65.compiler.mir.nodes import BinaryOp, Compare, Immediate, MIRFunction, VirtualRegister
+
+    u16 = BasicTypeInfo('u16')
+    i = VirtualRegister(1, u16, 'i')
+    func = MIRFunction(name='t')
+    step = BinaryOp(dest=i, left=i, op='+', right=Immediate(1), type_info=u16)
+    test = Compare(left=i, right=Immediate(192), comparison='<', type_info=u16)
+    in_x = {1: 'X'}.get
+    assert instruction_width(step, func) == (16, 16)
+    assert instruction_width(step, func, locate=lambda v: in_x(v.id)) == (None, None)
+    assert instruction_width(test, func, locate=lambda v: in_x(v.id)) == (None, None)

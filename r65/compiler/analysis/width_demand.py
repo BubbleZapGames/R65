@@ -55,31 +55,33 @@ def _mode_bits(state, default: int = 8) -> int:
 
 
 def _index_regs(func: MIRFunction) -> set:
-    """Ids of the vregs codegen keeps in X or Y."""
+    """Ids of the vregs loop register promotion keeps in X or Y."""
     promoted = getattr(func, 'loop_promoted_hw_vregs', None) or {}
     return {v.id for v in promoted.values()}
 
 
-def _in_index(value, index_ids: set) -> bool:
-    """Whether *value* lives in X or Y (or is a constant loaded there)."""
+def _in_index(value, index_ids: set, locate=None) -> bool:
+    """Whether *value* lives in X or Y: by loop promotion, or where
+    register allocation (*locate*) put it."""
     if isinstance(value, HardwareRegister):
         return value.name in ('X', 'Y')
     if isinstance(value, VirtualRegister):
-        return value.id in index_ids
+        return value.id in index_ids or (
+            locate is not None and locate(value) in ('X', 'Y'))
     return False
 
 
-def _on_stack(on_stack, value) -> bool:
-    return (on_stack is not None and isinstance(value, VirtualRegister)
-            and on_stack(value))
+def _on_stack(locate, value) -> bool:
+    return (locate is not None and isinstance(value, VirtualRegister)
+            and locate(value) == 'stack')
 
 
 def instruction_width(instr, func: MIRFunction, index_ids: Optional[set] = None,
-                      prev=None, on_stack=None) -> Tuple[Width, Width]:
+                      prev=None, locate=None) -> Tuple[Width, Width]:
     """`(need, leaves)` for *instr*, which follows *prev* in its block (None
-    at the block's start); see the module docstring. *on_stack(vreg)* says
-    whether register allocation put a vreg in a stack slot (codegen passes
-    it; without it, none is assumed to be)."""
+    at the block's start); see the module docstring. *locate(vreg)* is where
+    register allocation put a vreg - 'X', 'Y', 'stack' or None for anywhere
+    else (codegen passes it; without it only loop promotion is known)."""
     if index_ids is None:
         index_ids = _index_regs(func)
     cls = type(instr)
@@ -102,7 +104,7 @@ def instruction_width(instr, func: MIRFunction, index_ids: Optional[set] = None,
         return 8, 8
 
     if cls is Compare:
-        if _in_index(instr.left, index_ids):
+        if _in_index(instr.left, index_ids, locate):
             return None, None        # CPX/CPY follow the x flag
         bits = _bits(instr.type_info)
         if (bits == 16 and instr.comparison in ('==', '!=')
@@ -114,25 +116,26 @@ def instruction_width(instr, func: MIRFunction, index_ids: Optional[set] = None,
 
     if cls is Move:
         source_free = (isinstance(instr.source, Immediate)
-                       or _in_index(instr.source, index_ids))
+                       or _in_index(instr.source, index_ids, locate))
         word = scalar_width(instr.type_info) == 2
-        if _in_index(instr.dest, index_ids):
+        if _in_index(instr.dest, index_ids, locate):
             # LDX #, TXY, TAX of a value just computed in A, LDX dp; only a
             # stack slot (no LDX d,S) goes through LDA.
             if source_free or (word and (
                     getattr(prev, 'dest', None) == instr.source
-                    or not _on_stack(on_stack, instr.source))):
+                    or not _on_stack(locate, instr.source))):
                 return None, None
-        elif (word and _in_index(instr.source, index_ids)
+        elif (word and _in_index(instr.source, index_ids, locate)
                 and isinstance(instr.dest, VirtualRegister)
-                and not _on_stack(on_stack, instr.dest)):
+                and not _on_stack(locate, instr.dest)):
             return None, None        # STX dp
         bits = _bits(instr.type_info)
         return bits, bits
 
     if cls is BinaryOp:
         width = scalar_width(instr.type_info)
-        if (_in_index(instr.dest, index_ids) and _in_index(instr.left, index_ids)
+        if (_in_index(instr.dest, index_ids, locate)
+                and _in_index(instr.left, index_ids, locate)
                 and instr.op in ('+', '-') and isinstance(instr.right, Immediate)
                 and instr.right.value in (1, 2)):
             return None, None        # INX/DEY
@@ -142,7 +145,7 @@ def instruction_width(instr, func: MIRFunction, index_ids: Optional[set] = None,
         return bits, bits
 
     if cls is Store:
-        if (_in_index(instr.source, index_ids)
+        if (_in_index(instr.source, index_ids, locate)
                 and scalar_width(instr.type_info) == 2):
             return None, None        # STX/STY
         bits = _bits(instr.type_info)
@@ -213,7 +216,7 @@ def _asm_leaves(instr: InlineAsm) -> Width:
 
 
 def block_width(block, func: MIRFunction, index_ids: Optional[set] = None,
-                on_stack=None) -> Tuple[Width, Width]:
+                locate=None) -> Tuple[Width, Width]:
     """`(first_need, exit)` for *block*: the width its first width-reading
     instruction wants, and the width it ends in (None: its entry width)."""
     if index_ids is None:
@@ -222,7 +225,7 @@ def block_width(block, func: MIRFunction, index_ids: Optional[set] = None,
     exit_width = None
     prev = None
     for instr in block.instructions:
-        need, leaves = instruction_width(instr, func, index_ids, prev, on_stack)
+        need, leaves = instruction_width(instr, func, index_ids, prev, locate)
         prev = instr
         if first is None and exit_width is None and need is not None:
             first = need
@@ -271,10 +274,10 @@ class WidthAssignment:
     function's entry width.
     """
 
-    def __init__(self, func: MIRFunction, on_stack=None):
+    def __init__(self, func: MIRFunction, locate=None):
         self.func = func
         index_ids = _index_regs(func)
-        self.summary = {bid: block_width(block, func, index_ids, on_stack)
+        self.summary = {bid: block_width(block, func, index_ids, locate)
                         for bid, block in func.blocks.items()}
         depths = _loop_depths(func)
         self.weight = {bid: _LOOP_WEIGHT ** min(depths.get(bid, 0), _MAX_DEPTH)

@@ -100,8 +100,9 @@ restore m8 at each one, inside loops too.
   and the width it leaves. That is usually the width of the
   instruction's type. A call needs its first argument's width and leaves
   the callee's exit width; inline asm runs in the function's width. The
-  prediction runs after register allocation, so it knows a u16 move into
-  X goes through A only from a stack slot.
+  prediction runs after register allocation, so it knows which values
+  live in X or Y and that a u16 move into X goes through A only from a
+  stack slot.
 - **Assignment.** `WidthAssignment` picks each block's entry width (the
   entry block keeps the function's) to run the fewest switches, each
   weighted 10× per loop level. A tie keeps the function's width.
