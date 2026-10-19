@@ -2,11 +2,11 @@
 """Counters carried scaled, checked on the hardware.
 
 `IndexStrideReducer` (optimize/index_stride.py) starts a counter read only
-as a scaled index (u16 arrays, 4-byte structs) at its scaled start, steps
-it by the element size and tests it against the scaled bound. These pin a
-non-zero start, a start already past the bound (no pass), `<=`, three
-arrays written through one index, and a 4-byte struct array from element
-1. The shapes are pinned in tests/compiler/optimize/test_index_stride.py.
+as a scaled index (u16 arrays, 3- and 4-byte elements) at its scaled
+start, steps it by the element size and tests it against the scaled bound.
+These pin a non-zero start, a start already past the bound (no pass), `<=`,
+three arrays written through one index, a 4-byte struct array from element
+1, and a far-pointer table and 3-byte struct array (stride 3). The shapes are pinned in tests/compiler/optimize/test_index_stride.py.
 """
 
 from r65.tests.e2e import ExpectedState
@@ -17,6 +17,12 @@ def test_scaled_counters(e2e):
         struct E { pos: u16, hp: u8, kind: u8 }
         #[lowram(0x0340)] static mut POOL: [E; 4];
         #[lowram(0x0350)] static mut AFTER2: u16;
+        struct T { tag: u8, val: u16 }
+        #[lowram(0x0360)] static mut TRIP: [T; 5];
+        #[lowram(0x036F)] static mut AFTER3: u16;
+        #[ram] static mut CELLS: [u8; 6];
+        #[ram] static mut PTRS: [far *u8; 6];
+        #[zeropage(0x46)] static mut VIA: u16;
         #[lowram(0x0300)] static mut W: [u16; 16];
         #[lowram(0x0320)] static mut A1: [u16; 4];
         #[lowram(0x0328)] static mut A2: [u16; 4];
@@ -67,6 +73,20 @@ def test_scaled_counters(e2e):
             while i < 4 { POOL[i].pos = 0x1234; POOL[i].kind = 9; i = i + 1; }
         }
 
+        #[inline(never)]
+        fn via_ptrs() -> u16 {
+            let mut s: u16 = 0;
+            let mut i: u16 = 1;
+            while i <= 4 { let p: far *u8 = PTRS[i]; s = s + (*p as u16); i = i + 1; }
+            return s;
+        }
+
+        #[inline(never)]
+        fn trip() {
+            let mut i: u16 = 1;
+            while i < 5 { TRIP[i].tag = 0x77; TRIP[i].val = 0xA1B2; i = i + 1; }
+        }
+
         #[entry]
         fn main() {
             let mut k: u16 = 0;
@@ -82,6 +102,13 @@ def test_scaled_counters(e2e):
             POOL[0].kind = 0x66;
             AFTER2 = 0xCAFE;
             tag();                 // elements 1..3; element 0 untouched
+            let mut c: u16 = 0;
+            while c < 6 { CELLS[c] = (c as u8) * 16; PTRS[c] = &CELLS[c]; c = c + 1; }
+            VIA = via_ptrs();      // 0x10 + 0x20 + 0x30 + 0x40
+            TRIP[0].tag = 0x11;
+            TRIP[0].val = 0x2233;
+            AFTER3 = 0xD00D;
+            trip();                // elements 1..4; element 0 untouched
         }
     ''', ExpectedState(memory={
         0x7E0040: [0x2A, 0x07],
@@ -91,5 +118,7 @@ def test_scaled_counters(e2e):
         0x7E0338: [0xEF, 0xBE],
         0x7E0340: [0xAA, 0xAA, 0x5A, 0x66] + [0x34, 0x12, 0x5A, 0x09] * 3,
         0x7E0350: [0xFE, 0xCA],
+        0x7E0046: [0xA0, 0x00],
+        0x7E0360: [0x11, 0x33, 0x22] + [0x77, 0xB2, 0xA1] * 4 + [0x0D, 0xD0],
     }), max_instructions=50000)
     assert result.success, f"Failures: {result.failures}"

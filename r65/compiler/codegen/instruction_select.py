@@ -634,8 +634,8 @@ class InstructionSelector:
 
     @staticmethod
     def _inc_dec_step(value, register: str) -> bool:
-        """A step taken as repeated INC/DEC: 1 or 2, or 4 in X/Y."""
-        return value in (1, 2) or (value == 4 and register in ('X', 'Y'))
+        """A step taken as repeated INC/DEC: 1 or 2, or 3 and 4 in X/Y."""
+        return value in (1, 2) or (value in (3, 4) and register in ('X', 'Y'))
 
     def _try_emit_inc_dec(self, op: str, register: str, count: int = 1) -> bool:
         """Try to emit INX/INY/INC or DEX/DEY/DEC for a register, *count*
@@ -719,8 +719,9 @@ class InstructionSelector:
         # OPTIMIZATION: Detect register increment/decrement patterns
         # reg = reg + 1  →  INX/INY/INC A
         # reg = reg - 1  →  DEX/DEY/DEC A
-        # A step of 2 or 4 (a scaled index) repeats the instruction: INX x4
-        # is 8 cycles to TXA / CLC / ADC #4 / TAX's 9. A takes 4 as CLC / ADC.
+        # A step of 2-4 (a scaled index) repeats the instruction: INX x4
+        # is 8 cycles to TXA / CLC / ADC #4 / TAX's 9. A takes 3 and 4 as
+        # CLC / ADC.
         # Check this BEFORE getting operand locations
         if (op in ('+', '-') and
             isinstance(right_operand, MIRImmediate) and
@@ -735,7 +736,7 @@ class InstructionSelector:
         # After loop register promotion, operands are VirtualRegister (allocated to Y),
         # not HardwareRegister. Check before mode switch logic to avoid REP/SEP.
         if (op in ('+', '-') and
-            isinstance(right_operand, MIRImmediate) and right_operand.value in (1, 2, 4) and
+            isinstance(right_operand, MIRImmediate) and right_operand.value in (1, 2, 3, 4) and
             isinstance(instr.dest, VirtualRegister) and
             isinstance(instr.left, VirtualRegister) and
             instr.dest.id == instr.left.id):

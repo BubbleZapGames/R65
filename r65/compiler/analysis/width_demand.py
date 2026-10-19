@@ -137,8 +137,8 @@ def instruction_width(instr, func: MIRFunction, index_ids: Optional[set] = None,
         if (_in_index(instr.dest, index_ids, locate)
                 and _in_index(instr.left, index_ids, locate)
                 and instr.op in ('+', '-') and isinstance(instr.right, Immediate)
-                and instr.right.value in (1, 2, 4)):
-            return None, None        # INX/DEY, repeated for a step of 2 or 4
+                and instr.right.value in (1, 2, 3, 4)):
+            return None, None        # INX/DEY, repeated for a step of 2-4
         if width == 3:
             return 16, 8
         bits = _bits(instr.type_info)

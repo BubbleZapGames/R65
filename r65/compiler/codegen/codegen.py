@@ -293,9 +293,9 @@ class ProgramCodeGenerator:
             if webs_split > 0:
                 print(f"Web splitting: {webs_split} vreg(s) split", file=sys.stderr)
 
-            # Index stride - a counter read only as an index scaled for 2- or
-            # 4-byte elements is carried scaled (INX x2/x4), not rebuilt with
-            # ASL every pass.
+            # Index stride - a counter read only as an index scaled for 2- to
+            # 4-byte elements is carried scaled (INX x2-x4), not rebuilt with
+            # ASL (and ADC) every pass.
             # After web splitting, so a reused counter has one def per loop.
             from r65.compiler.optimize.index_stride import IndexStrideReducer
             strides_reduced = IndexStrideReducer(verbose=False).optimize(mir_program)

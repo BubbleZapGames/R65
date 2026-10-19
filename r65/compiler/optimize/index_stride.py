@@ -2,8 +2,9 @@
 """
 Index Stride Reduction.
 
-An array of 2- or 4-byte elements indexed by a loop counter is addressed
-with the counter scaled by the element size, rebuilt every pass::
+An array of 2-, 3- or 4-byte elements indexed by a loop counter is
+addressed with the counter scaled by the element size, rebuilt every pass
+(`i * 3` is `(i << 1) + i`)::
 
     %t = %i << #1                   TYA / ASL A / TAX
     X = Move %t                     LDA s / CLC / ADC $0200,X / STA s
@@ -11,24 +12,24 @@ with the counter scaled by the element size, rebuilt every pass::
     %i = %i + #1                    CPY #$0100
     Compare %i < #256
 
-When the counter is read by nothing but those scaled copies, its own step
-and its test, it is carried scaled instead: its start, step and bound are
-all shifted by the element size (doubled here)::
+When the counter is read by nothing but that scaling, its own step and its
+test, it is carried scaled instead: its start, step and bound are all
+multiplied by the element size (doubled here)::
 
     X = Move %i                     LDA s / CLC / ADC $0200,X / STA s
     ...                             INX / INX
     %i = %i + #2                    CPX #$0200
     Compare %i < #512
 
-`i << k` and the new `i` agree modulo 2^16 at every pass, so the index
-reads are exact. Only the test compares a different number: `i < N` and
-`(i << k) < (N << k)` agree while no value the test sees shifts past
-2^16, which a constant start and bound can show. The counter must be dead
+`i * N` and the new `i` agree modulo 2^16 at every pass, so the index
+reads are exact. Only the test compares a different number: `i < B` and
+`i * N < B * N` agree while no value the test sees scales past 2^16,
+which a constant start and bound can show. The counter must be dead
 outside the loop - nothing else reads the scaled value.
 
-Runs on MIR before loop promotion, which keeps a counter stepped by 2 or 4
-in X or Y (INX / INX). Stride 8 is left alone: eight INX cost more than
-the rebuild and an INY.
+Runs on MIR before loop promotion, which keeps a counter stepped by 2, 3
+or 4 in X or Y (INX repeated). Larger strides are left alone: five INX
+already cost more than the rebuild and an INY.
 """
 
 from typing import Dict, List, Optional, Set, Tuple
@@ -40,8 +41,9 @@ from r65.compiler.mir.nodes import (
     OperandRole, VirtualRegister, iter_operands, map_operands,
 )
 
-# The shifts that scale an index into an array of 2- and 4-byte elements.
-_SHIFTS = (1, 2)
+# The element sizes whose counter is carried scaled: each step is that many
+# INX. The scaling is the shift-and-add of mir/lowerers/multiply.py.
+_STRIDES = (2, 3, 4)
 
 
 def _is_u16(type_info) -> bool:
@@ -107,57 +109,98 @@ class IndexStrideReducer:
             return False
         step_op = step[0]
 
+        scale, scaling = self._scaling(func, body, vid)
+
         # A compare may also sit outside the loop - the guard a rotation
         # left in front of it tests the start: every value it can see is
         # covered by the bounds check below.
-        compares, doubles = [], []
-        shift = None
+        compares = []
         for bid, k, instr in reads:
-            if instr is step_op:
+            if instr is step_op or id(instr) in scaling:
                 continue
             if (type(instr) is Compare and type(instr.left) is VirtualRegister
                     and instr.left.id == vid and instr.comparison in ('<', '<=')
                     and _const(instr.right) is not None and _is_u16(instr.type_info)
                     and self._branch_follows(func, bid, k, instr)):
                 compares.append(instr)
-            elif (bid in body and type(instr) is BinaryOp and instr.op == '<<'
-                    and type(instr.left) is VirtualRegister and instr.left.id == vid
-                    and _const(instr.right) in _SHIFTS
-                    and shift in (None, _const(instr.right))
-                    and type(instr.dest) is VirtualRegister and _is_u16(instr.type_info)):
-                # One counter carries one scale: `i << 1` and `i << 2` together
-                # would need two.
-                shift = _const(instr.right)
-                doubles.append((bid, k, instr))
             else:
                 return False
-        if not doubles or not compares:
+        if not compares:
             return False
+
+        # The scaled values read by anything but more scaling. One counter
+        # carries one scale: `i << 1` and `i << 2` together would need two.
+        sites = self._sites(func)
+        roots = {v for v in scale if v != vid
+                 and any(id(i) not in scaling for _, _, i in sites.get(v, ([], []))[1])}
+        strides = {scale[v] for v in roots}
+        if len(strides) != 1 or next(iter(strides)) not in _STRIDES:
+            return False
+        stride = strides.pop()
 
         # Every value a test sees is below the bound plus one step: scaled,
         # it, the start and each bound must stay below 2^16.
         for cmp in compares:
             bound = _const(cmp.right) + (1 if cmp.comparison == '<=' else 0)
-            if (bound << shift) > 0xFFFF:
+            if bound * stride > 0xFFFF:
                 return False
-        if (start << shift) > 0xFFFF:
+        if start * stride > 0xFFFF:
             return False
 
-        init.source = Immediate(start << shift)
-        step_op.right = Immediate(1 << shift)
+        init.source = Immediate(start * stride)
+        step_op.right = Immediate(stride)
         for cmp in compares:
-            cmp.right = Immediate(_const(cmp.right) << shift)
+            cmp.right = Immediate(_const(cmp.right) * stride)
+        # A root becomes a copy of the counter; the scaling under it goes.
         copies = []
-        for bid, k, instr in doubles:
-            copy = Move(dest=instr.dest, source=instr.left, type_info=instr.type_info,
-                        source_loc=getattr(instr, 'source_loc', None))
-            func.blocks[bid].instructions[k] = copy
-            copies.append((bid, copy))
+        for bid, block in func.blocks.items():
+            kept = []
+            for instr in block.instructions:
+                if id(instr) not in scaling:
+                    kept.append(instr)
+                elif instr.dest.id in roots:
+                    copy = Move(dest=instr.dest, source=VirtualRegister(vid, instr.type_info),
+                                type_info=instr.type_info,
+                                source_loc=getattr(instr, 'source_loc', None))
+                    kept.append(copy)
+                    copies.append((bid, copy))
+            block.instructions[:] = kept
         for bid, copy in copies:
             self._forward_copy(func, bid, copy, vid)
         if self.verbose:
-            print(f"  index-stride: {func.name} %{vid} carried << {shift}")
+            print(f"  index-stride: {func.name} %{vid} carried * {stride}")
         return True
+
+    def _scaling(self, func: MIRFunction, body: Set[int], vid: int):
+        """The values the loop computes from the counter by shift-and-add,
+        as multiples of it: `t = i << 1` is 2, `u = t + i` is 3. Returns
+        {vreg id: multiple} (the counter itself is 1) and the ids of the
+        instructions computing them. Each must have one def, in the loop."""
+        sites = self._sites(func)
+        scale = {vid: 1}
+        scaling = {}
+        changed = True
+        while changed:
+            changed = False
+            for bid in body:
+                for instr in func.blocks[bid].instructions:
+                    if (id(instr) in scaling or type(instr) is not BinaryOp
+                            or type(instr.dest) is not VirtualRegister
+                            or instr.dest.id == vid or not _is_u16(instr.type_info)
+                            or len(sites[instr.dest.id][0]) != 1):
+                        continue
+                    left = instr.left.id if type(instr.left) is VirtualRegister else None
+                    right = instr.right.id if type(instr.right) is VirtualRegister else None
+                    if instr.op == '<<' and left in scale and _const(instr.right) in (1, 2, 3, 4):
+                        value = scale[left] << _const(instr.right)
+                    elif instr.op in ('+', '-') and left in scale and right in scale:
+                        value = scale[left] + (scale[right] if instr.op == '+' else -scale[right])
+                    else:
+                        continue
+                    scale[instr.dest.id] = value
+                    scaling[id(instr)] = instr
+                    changed = True
+        return scale, scaling
 
     @staticmethod
     def _step(func: MIRFunction, vid: int, site) -> Optional[Tuple[BinaryOp, Optional[Move]]]:

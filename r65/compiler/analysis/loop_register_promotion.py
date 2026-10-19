@@ -23,9 +23,9 @@ from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.analysis.loop_analysis import find_loops as _find_loops
 
 # Steps a counter in X/Y takes in place: INX, repeated for an index scaled
-# for 2- or 4-byte elements (optimize/index_stride.py). The width model,
+# for 2- to 4-byte elements (optimize/index_stride.py). The width model,
 # analysis/width_demand.py, assumes the same.
-_INDEX_STEPS = (1, 2, 4)
+_INDEX_STEPS = (1, 2, 3, 4)
 
 
 def analyze_loop_promotion(mir_program: MIRProgram):
