@@ -64,3 +64,50 @@ class TestIncDecMemory:
             }
         ''', ExpectedState(memory={0x7E0060: [1, 0, 0, 0]}), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
+
+def test_direct_page_locals_shift_in_place():
+    """Under FixedStack the locals are in direct page: the peephole folds
+    `LDA v / LSR A / STA v` to `LSR v` once A is dead (`_fold_memory_rmw`)."""
+    from r65.tests.e2e.framework import E2ETest
+    result = E2ETest(abi="FixedStack").run('''
+        #[lowram] static mut BUF: [u8; 4];
+        #[zeropage(0x20)] static mut BITS: u16;
+        #[zeropage(0x22)] static mut CRC: u16;
+
+        #[inline(never)]
+        fn popcount() -> u16 {
+            let mut c: u16 = 0;
+            let mut i: u16 = 0;
+            while i < 4 {
+                let mut v: u8 = BUF[i];
+                while v != 0 {
+                    c = c + ((v & 1) as u16);
+                    v = v >> 1;
+                }
+                i = i + 1;
+            }
+            return c;
+        }
+
+        #[inline(never)]
+        fn halve(n: u16) -> u16 {
+            let mut w: u16 = 0xF0F1;
+            let mut k: u16 = 0;
+            while k < n {
+                w = w >> 1;
+                k = k + 1;
+            }
+            return w;
+        }
+
+        #[entry]
+        fn main() {
+            BUF[0] = 0xFF; BUF[1] = 0x10; BUF[2] = 0; BUF[3] = 0x81;
+            BITS = popcount();      // 8 + 1 + 0 + 2
+            CRC = halve(4);         // 0xF0F1 >> 4
+        }
+    ''', ExpectedState(memory={
+        0x7E0020: [11, 0],
+        0x7E0022: [0x0F, 0x0F],
+    }), max_instructions=100000)
+    assert result.success, f"Failures: {result.failures}"

@@ -181,6 +181,7 @@ class OptimizationStats:
     unreachable_nodes_eliminated: int = 0
     stz_conversions: int = 0
     inc_dec_folded: int = 0
+    memory_rmw_folded: int = 0
     redundant_cmp_zero_eliminated: int = 0
 
     @property
@@ -574,6 +575,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_unreachable_code(nodes)
             nodes = self._convert_zero_stores_to_stz(nodes)
             nodes = self._fold_inc_dec_accumulator(nodes)
+            nodes = self._fold_memory_rmw(nodes)
             nodes = self._eliminate_redundant_cmp_zero(nodes)
             changed = self.stats.total > prev_total
 
@@ -2125,6 +2127,76 @@ class PeepholeOptimizer:
             optimized.append(node)
             i += 1
 
+        return optimized
+
+    # The read-modify-write form of each accumulator op, by the addressing
+    # mode of the load and store around it.
+    _RMW_OPCODES = {
+        Opcode.INC: {Opcode.LDA_DP: Opcode.INC_DP, Opcode.LDA_DP_X: Opcode.INC_DP_X,
+                     Opcode.LDA_ABSOLUTE: Opcode.INC_ABSOLUTE,
+                     Opcode.LDA_ABSOLUTE_X: Opcode.INC_ABSOLUTE_X},
+        Opcode.DEC: {Opcode.LDA_DP: Opcode.DEC_DP, Opcode.LDA_DP_X: Opcode.DEC_DP_X,
+                     Opcode.LDA_ABSOLUTE: Opcode.DEC_ABSOLUTE,
+                     Opcode.LDA_ABSOLUTE_X: Opcode.DEC_ABSOLUTE_X},
+        Opcode.ASL: {Opcode.LDA_DP: Opcode.ASL_DP, Opcode.LDA_DP_X: Opcode.ASL_DP_X,
+                     Opcode.LDA_ABSOLUTE: Opcode.ASL_ABSOLUTE,
+                     Opcode.LDA_ABSOLUTE_X: Opcode.ASL_ABSOLUTE_X},
+        Opcode.LSR: {Opcode.LDA_DP: Opcode.LSR_DP, Opcode.LDA_DP_X: Opcode.LSR_DP_X,
+                     Opcode.LDA_ABSOLUTE: Opcode.LSR_ABSOLUTE,
+                     Opcode.LDA_ABSOLUTE_X: Opcode.LSR_ABSOLUTE_X},
+        Opcode.ROL: {Opcode.LDA_DP: Opcode.ROL_DP, Opcode.LDA_DP_X: Opcode.ROL_DP_X,
+                     Opcode.LDA_ABSOLUTE: Opcode.ROL_ABSOLUTE,
+                     Opcode.LDA_ABSOLUTE_X: Opcode.ROL_ABSOLUTE_X},
+        Opcode.ROR: {Opcode.LDA_DP: Opcode.ROR_DP, Opcode.LDA_DP_X: Opcode.ROR_DP_X,
+                     Opcode.LDA_ABSOLUTE: Opcode.ROR_ABSOLUTE,
+                     Opcode.LDA_ABSOLUTE_X: Opcode.ROR_ABSOLUTE_X},
+    }
+    _LOAD_TO_STORE = {Opcode.LDA_DP: Opcode.STA_DP, Opcode.LDA_DP_X: Opcode.STA_DP_X,
+                      Opcode.LDA_ABSOLUTE: Opcode.STA_ABSOLUTE,
+                      Opcode.LDA_ABSOLUTE_X: Opcode.STA_ABSOLUTE_X}
+
+    def _fold_memory_rmw(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Fold LDA m / op A / STA m → op m, for INC DEC ASL LSR ROL ROR.
+
+        The memory form leaves the same value in m and the same N, Z and C,
+        and saves the load and store: `LSR $30` is 5 cycles in m8 against
+        8. Only A differs - it keeps what it held before the load - so the
+        fold needs A dead after the store, and B too in m16, where the load
+        writes it. Direct page and absolute, plain or X-indexed: there is no
+        read-modify-write on a long or stack-relative address. Never on a
+        `#[hw]` register.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction
+
+        def match(k):
+            if k + 2 >= len(nodes):
+                return None
+            load, op, store = nodes[k], nodes[k + 1], nodes[k + 2]
+            if not (isinstance(load, Instruction) and isinstance(op, Instruction)
+                    and isinstance(store, Instruction)):
+                return None
+            rmw = self._RMW_OPCODES.get(op.opcode, {}).get(load.opcode)
+            if (rmw is None or store.opcode != self._LOAD_TO_STORE[load.opcode]
+                    or load.operand != store.operand
+                    or self._is_hardware_register(load.operand)):
+                return None
+            dead = ('A',) if self._get_accu_mode_at(nodes, k) == 8 else ('A', 'B')
+            if self._acc_live_after(nodes, k + 3, dead):
+                return None
+            return Instruction(rmw, store.operand, store.comment)
+
+        optimized = []
+        i = 0
+        while i < len(nodes):
+            folded = match(i)
+            if folded is not None:
+                optimized.append(folded)
+                self.stats.memory_rmw_folded += 1
+                i += 3
+                continue
+            optimized.append(nodes[i])
+            i += 1
         return optimized
 
     # ========================================================================

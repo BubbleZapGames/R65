@@ -629,3 +629,52 @@ def test_x_only_rep_does_not_declare_the_accumulator_mode():
         Instruction(opcode=Opcode.RTS),
     ]
     assert first_constraining_mode_after(nodes, compute_modes(nodes), 0) == 8
+
+
+class TestMemoryRmwFold:
+    """`LDA m / op A / STA m` → `op m` once nothing reads A after it
+    (`_fold_memory_rmw`)."""
+
+    @staticmethod
+    def _run(width, body, **kw):
+        sep = Opcode.SEP_IMMEDIATE if width == 8 else Opcode.REP_IMMEDIATE
+        nodes = [Label('fn'), Instruction(opcode=sep, operand=Immediate(0x20)),
+                 ModeChange('ACCU', width), *body]
+        return [n for n in PeepholeOptimizer(**kw).optimize(nodes)
+                if isinstance(n, Instruction)][1:]
+
+    @staticmethod
+    def _rmw(load, op, store, addr=0x30):
+        return [Instruction(opcode=load, operand=Address(addr)),
+                Instruction(opcode=op),
+                Instruction(opcode=store, operand=Address(addr))]
+
+    def test_shift_folds_when_a_is_reloaded(self):
+        out = self._run(8, self._rmw(Opcode.LDA_DP, Opcode.LSR, Opcode.STA_DP) + [
+            Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(1)),
+            Instruction(opcode=Opcode.RTS)])
+        assert [n.opcode for n in out] == [Opcode.LSR_DP, Opcode.LDA_IMMEDIATE, Opcode.RTS]
+
+    def test_m16_fold_needs_b_dead_too(self):
+        tail = [Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(1)),
+                Instruction(opcode=Opcode.RTS)]
+        out = self._run(16, self._rmw(Opcode.LDA_ABSOLUTE_X, Opcode.INC,
+                                      Opcode.STA_ABSOLUTE_X, 0x0300) + tail)
+        assert out[0].opcode == Opcode.INC_ABSOLUTE_X
+        # XBA reads B, which the 16-bit load wrote.
+        out = self._run(16, self._rmw(Opcode.LDA_DP, Opcode.ASL, Opcode.STA_DP) + [
+            Instruction(opcode=Opcode.XBA), *tail])
+        assert out[0].opcode == Opcode.LDA_DP
+
+    def test_value_read_from_a_after_is_kept(self):
+        out = self._run(8, self._rmw(Opcode.LDA_DP, Opcode.INC, Opcode.STA_DP) + [
+            Instruction(opcode=Opcode.CMP_IMMEDIATE, operand=Immediate(8)),
+            Instruction(opcode=Opcode.RTS)])
+        assert out[0].opcode == Opcode.LDA_DP
+
+    def test_hw_register_keeps_its_load_and_store(self):
+        out = self._run(8, self._rmw(Opcode.LDA_ABSOLUTE, Opcode.INC, Opcode.STA_ABSOLUTE,
+                                     0x2100) + [
+            Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(1)),
+            Instruction(opcode=Opcode.RTS)], volatile_addresses={0x2100})
+        assert out[0].opcode == Opcode.LDA_ABSOLUTE
