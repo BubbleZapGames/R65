@@ -1177,15 +1177,20 @@ static OAM_BIT_MASKS: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80]
 // is a 128-entry loop where JSL overhead is negligible.
 //
 // set_full!/set_size! wrap their `let` bindings in `{ ... }` so multiple
-// invocations in the same scope don't collide on the local name.
+// invocations in the same scope don't collide on the local name. set! and
+// set_full! bind `chr` once that way: pasted into both the tile and the attr
+// store it would be computed twice.
 impl OamBuffer {
     // Fast write — sprite X is 8-bit, `chr` packs (tile | attr << 8).
     // Usage: oam_buffer.set!(OAM_PLAYER, sx, sy, tile | ATR);
     macro_rules! set($idx:expr, $sx:expr, $sy:expr, $chr:expr) {
         self.sprites[$idx].x = $sx;
         self.sprites[$idx].y = $sy;
-        self.sprites[$idx].tile = ($chr) as u8;
-        self.sprites[$idx].attr = (($chr) >> 8) as u8;
+        {
+            let oam_chr: u16 = ($chr) as u16;
+            self.sprites[$idx].tile = oam_chr as u8;
+            self.sprites[$idx].attr = (oam_chr >> 8) as u8;
+        }
     }
 
     // Full write — sprite X is 9-bit (u16); also updates the X-high bit
@@ -1193,8 +1198,11 @@ impl OamBuffer {
     macro_rules! set_full($idx:expr, $sx:expr, $sy:expr, $chr:expr) {
         self.sprites[$idx].x = ($sx) as u8;
         self.sprites[$idx].y = $sy;
-        self.sprites[$idx].tile = ($chr) as u8;
-        self.sprites[$idx].attr = (($chr) >> 8) as u8;
+        {
+            let oam_chr: u16 = ($chr) as u16;
+            self.sprites[$idx].tile = oam_chr as u8;
+            self.sprites[$idx].attr = (oam_chr >> 8) as u8;
+        }
         {
             let ext_idx: u16 = ($idx as u16) >> 2;
             let mask: u8 = OAM_BIT_MASKS[(($idx as u8) & 3) << 1];

@@ -145,6 +145,7 @@ class TestPointerDerefArrayIndex:
             struct Inner { arr: [u8; 8] }
             struct Outer { pad: u8, inner: Inner }
             #[lowram] static mut buf: Outer;
+            #[lowram] static mut idx: u8;
 
             impl Outer {
                 #[inline]
@@ -153,8 +154,9 @@ class TestPointerDerefArrayIndex:
                 }
             }
 
+            // A run-time index: a constant one folds with the offset.
             #[entry]
-            fn main() { buf.poke(3, 0xCD); }
+            fn main() { buf.poke(idx, 0xCD); }
         ''', cfg_options=['snes'])
         assert _STORE_INDIRECT_INDEXED.search(asm), (
             f"expected `STA (d,S),Y` indirect-indexed store, asm:\n{asm}"

@@ -341,6 +341,8 @@ class TestStackOffsetAdjustment:
         source = """
         #[hw(0x2100)]
         static mut BRIGHTNESS: u8;
+        #[lowram]
+        static mut SRC: u8;
 
         fn clobbers_xy() {
             X = 999;
@@ -348,7 +350,7 @@ class TestStackOffsetAdjustment:
         }
 
         fn test_local_during_spill() -> u16 {
-            let local: u8 = 42;
+            let local: u8 = SRC + 1;  // computed: a constant would be propagated
             X = 0;
             Y = 1;
             clobbers_xy();   // Spills X, Y (+4 bytes on stack)

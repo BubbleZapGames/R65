@@ -225,9 +225,10 @@ class TestNestedStructArrayCodegen:
             struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
             struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
             #[lowram] static mut BUF: OamBuffer;
+            #[lowram] static mut I: u8;
 
             fn main() {
-                let i: u8 = 5;
+                let i: u8 = I;  // run-time: a constant index folds
                 BUF.sprites[i].x = 7;
             }
         """
@@ -251,9 +252,10 @@ class TestNestedStructArrayCodegen:
             struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
             struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
             #[lowram] static mut BUF: OamBuffer;
+            #[lowram] static mut I: u8;
 
             fn main() {
-                let i: u8 = 5;
+                let i: u8 = I;  // run-time: a constant index folds
                 BUF.sprites[i].x = 0;
                 BUF.sprites[i].y = 9;
                 BUF.sprites[i].attr = 3;
@@ -276,18 +278,26 @@ class TestNestedStructArrayCodegen:
             struct OamEntry { x: u8, y: u8, tile: u8, attr: u8 }
             struct OamBuffer { sprites: [OamEntry; 128], ext: [u8; 32] }
             #[lowram] static mut BUF: OamBuffer;
+            #[lowram] static mut I: u8;
 
             fn main() {
-                let i: u8 = 5;
+                let i: u8 = I;  // run-time: a constant index folds
                 BUF.sprites[i].x = 0;
                 BUF.ext[i] = 1;
                 BUF.sprites[i].y = 2;
             }
         """
         asm = compile_string(source, "test.r65")
-        # sprites scale i*4 twice (recomputed after ext clobbers X) → 4 ASL.
-        # ext scales i*1 (no ASL). Reusing X here would corrupt addresses.
-        assert asm.count("ASL A") == 4, f"expected sprites scale recomputed, got:\n{asm}"
+        # ext scales i*1 (no ASL), sprites i*4. Either the sprites scale is
+        # recomputed after ext takes the register, or the two stay in
+        # different index registers.
+        import re
+        regs = {m.group(1): m.group(2) for m in
+                re.finditer(r"STA \$(0200|0201|0400),([XY])", asm)}
+        assert set(regs) == {"0200", "0201", "0400"}, asm
+        assert regs["0200"] == regs["0201"], asm
+        assert regs["0400"] != regs["0200"] or asm.count("ASL A") == 4, \
+            f"sprites and ext share one scaled index:\n{asm}"
 
 
 class TestAddressOfNestedArrayElement:

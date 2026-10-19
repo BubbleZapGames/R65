@@ -191,6 +191,21 @@ class ProgramCodeGenerator:
                 if func_eliminated2 > 0:
                     print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed", file=sys.stderr)
 
+            # Constant propagation - a local assigned one constant feeds its
+            # reads as an immediate (a macro's `let` of a constant argument,
+            # a constant inlined into a body).
+            from r65.compiler.optimize.const_prop import ConstantPropagator
+            consts_propagated = ConstantPropagator(verbose=False).optimize(mir_program)
+            if consts_propagated > 0:
+                print(f"Constant propagation: {consts_propagated} operand(s) folded", file=sys.stderr)
+
+            # Byte stores of a u16's low and high byte to adjacent addresses
+            # as one word store (an OAM entry's tile and attr).
+            from r65.compiler.optimize.store_merge import StoreMerger
+            stores_merged = StoreMerger(verbose=False).optimize(mir_program)
+            if stores_merged > 0:
+                print(f"Store merging: {stores_merged} byte pair(s) stored as words", file=sys.stderr)
+
             # Constant-index folding - an X-indexed access with a constant X
             # becomes the absolute access, the X load dropped. What an inlined
             # #[soa] method called on a constant element compiles to:
