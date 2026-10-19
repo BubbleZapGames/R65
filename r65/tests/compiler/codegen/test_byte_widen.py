@@ -48,7 +48,8 @@ def test_pointer_sum_loop_reads_words():
         #[entry]
         fn main() { OUT = t(); }
     ''', 't')
-    load = next(k for k, l in enumerate(code) if l.startswith('LDA (') and l.endswith(',Y'))
+    # `p` holds &BUF, so the load addresses BUF directly (_const_pointer).
+    load = code.index('LDA $0200,Y')
     assert code[load + 1] == 'AND #$FF'
     # The widened byte stays in A for the add (slot_allocator).
     assert code[load + 2] == 'CLC' and code[load + 3].startswith('ADC')

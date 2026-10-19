@@ -2381,17 +2381,72 @@ class InstructionSelector:
         self._emit_store('STA', dest_loc, comment=f"Store {instr.flag_name} flag value")
 
     def _build_vreg_const_map(self) -> dict:
-        """Build vreg.id → constant integer value for provably-constant pointer vregs.
+        """Build vreg.id → constant address for provably-constant pointer vregs.
 
-        Scans MIR blocks for Move(dest=vreg, source=Immediate(X)) and propagates
-        through one level of copy moves — enough to cover the inliner's pattern
-        of Move(param_vreg, caller_vreg) where caller_vreg was set from an Immediate.
+        A vreg qualifies when its one def is a Move of a constant - a number,
+        or `&STATIC` (+ offset) for a static with a 16-bit address of its own
+        (zeropage, lowram, #[hw]) - or a copy of one that does, which covers
+        the inliner's `Move(param, caller_vreg)`. A vreg written anywhere else
+        (`p = p + 1`) holds other values too, and a parameter's entry value
+        is a def no instruction shows.
         """
-        from r65.compiler.mir.nodes import Move, Immediate as MIRImmediate, VirtualRegister
+        from r65.compiler.hir.symbol_table import SymbolKind
+        from r65.compiler.mir.nodes import (
+            Immediate as MIRImmediate, Move, OperandRole, VirtualRegister, iter_operands,
+        )
 
         const_map: dict = {}
-        if not self.current_function:
+        func = self.current_function
+        if not func:
             return const_map
+
+        defs: dict = {}
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                for _, v in iter_operands(instr, role=OperandRole.WRITE):
+                    if isinstance(v, VirtualRegister):
+                        defs[v.id] = defs.get(v.id, 0) + 1
+        params = {v.id for v in func.param_to_vreg.values() if v is not None}
+        if getattr(func, 'self_y_vreg', None) is not None:
+            params.add(func.self_y_vreg.id)
+
+        def address(imm):
+            if imm.symbol is None:
+                return imm.value
+            symbol = imm.symbol
+            if getattr(symbol, 'kind', None) is not SymbolKind.STATIC_VAR:
+                return None
+            if getattr(symbol, 'rom_label', None):
+                return None  # placed by the linker
+            alloc = self.mem_alloc.get_allocation(symbol)
+            if alloc is None or alloc.address is None:
+                return None
+            addr = alloc.address + imm.symbol_offset
+            return addr if 0 <= addr <= 0xFFFF else None
+
+        copies = []
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                if not (isinstance(instr, Move) and isinstance(instr.dest, VirtualRegister)
+                        and defs.get(instr.dest.id) == 1 and instr.dest.id not in params):
+                    continue
+                if isinstance(instr.source, MIRImmediate):
+                    addr = address(instr.source)
+                    if addr is not None:
+                        const_map[instr.dest.id] = addr
+                elif isinstance(instr.source, VirtualRegister):
+                    copies.append((instr.dest.id, instr.source.id))
+
+        # Copies of a constant, to any depth.
+        changed = True
+        while changed:
+            changed = False
+            for dest, src in copies:
+                if dest not in const_map and src in const_map:
+                    const_map[dest] = const_map[src]
+                    changed = True
+
+        return const_map
 
         # Pass 1: direct Immediate → vreg assignments.
         # Only record plain integer Immediates (no 'symbol' attribute) — symbolic

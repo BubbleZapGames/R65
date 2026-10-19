@@ -268,6 +268,10 @@ How pointers map to 65816 instructions:
 
 All indirect addressing modes require the pointer to be in zero-page or on the stack. Pointers in RAM cannot be used for indirect addressing without first loading into zero-page.
 
+**A pointer with one known value** skips the indirection. A near pointer whose only assignment is a constant uses absolute addressing: `LDA $0200,Y` instead of `LDA ($38),Y`. The constant can be a number (`0x2139 as *u8`) or the address of a zeropage, lowram or `#[hw]` static (`&BUF as *u8`, usually an argument after inlining). A pointer that is assigned again (`p = p + 1`) doesn't qualify. A u16 goes through as one 16-bit access. Two cases keep the indirect form:
+- An address below `$100` would assemble as direct page, which is relative to D, while a near pointer is relative to DBR.
+- `&` of a `#[ram]` static has a 24-bit address.
+
 ### Multi-byte fields at a runtime index
 
 A `far *T` is three bytes and is moved a byte at a time, so reading one out of

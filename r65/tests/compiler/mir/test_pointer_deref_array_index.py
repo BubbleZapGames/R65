@@ -20,8 +20,9 @@ LoadIndirect / StoreIndirect with the offset folded into Y.
 
 These tests exercise the contract at the MIR/codegen seam without spinning
 up the emulator: each source program is one that pre-fix would raise
-MIRLoweringError. Post-fix, all six shapes compile to indirect-indexed
-addressing through the underlying pointer.
+MIRLoweringError. Post-fix, all six shapes compile to an access through
+the underlying pointer: indirect-indexed, or - once inlining makes it the
+constant address of a static - that static addressed directly.
 """
 
 import re
@@ -34,8 +35,12 @@ from r65.compiler.main import compile_string
 #   near self:  STA (d,S),Y    LDA (d,S),Y
 #   far self:   STA [d,S],Y    LDA [d,S],Y
 # The slot offset varies — only the bracket shape and trailing ,Y matter.
-_STORE_INDIRECT_INDEXED = re.compile(r'\bSTA\s+[\[\(]\$[0-9A-F]+,S[\]\)],Y\b')
-_LOAD_INDIRECT_INDEXED = re.compile(r'\bLDA\s+[\[\(]\$[0-9A-F]+,S[\]\)],Y\b')
+# Inlined, a near `self` is the constant `&b`, and the access addresses the
+# static directly with the same Y (`STA $0200,Y`, memory_select._const_pointer).
+_STORE_INDIRECT_INDEXED = re.compile(
+    r'\bSTA\s+(?:[\[\(]\$[0-9A-F]+,S[\]\)]|\$[0-9A-F]{4}),Y\b')
+_LOAD_INDIRECT_INDEXED = re.compile(
+    r'\bLDA\s+(?:[\[\(]\$[0-9A-F]+,S[\]\)]|\$[0-9A-F]{4}),Y\b')
 
 
 class TestPointerDerefArrayIndex:
@@ -188,12 +193,12 @@ class TestPointerDerefArrayIndex:
                 out = (*p)[3];
             }
         ''', cfg_options=['snes'])
-        assert _STORE_INDIRECT_INDEXED.search(asm), (
-            f"expected `STA (d,S),Y` indirect-indexed store, asm:\n{asm}"
-        )
-        assert _LOAD_INDIRECT_INDEXED.search(asm), (
-            f"expected `LDA (d,S),Y` indirect-indexed load, asm:\n{asm}"
-        )
+        # `p` is the constant `&arr` and the index a constant: both accesses
+        # address arr+3 directly, and A still holds the value it reads back.
+        base = int(re.search(r'\.DEFINE arr \$([0-9A-F]+)', asm).group(1), 16)
+        out = int(re.search(r'\.DEFINE out \$([0-9A-F]+)', asm).group(1), 16)
+        assert f"STA ${base + 3:04X}" in asm, asm
+        assert f"STA ${out:04X}" in asm, asm
 
 
 class TestStaticArrayBaseNotPerturbed:

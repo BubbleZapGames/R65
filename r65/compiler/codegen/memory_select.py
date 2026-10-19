@@ -6,6 +6,8 @@ Handles memory access instruction generation including direct and indirect
 addressing modes for the 65816 processor.
 """
 
+from typing import Optional
+
 from r65.compiler.mir.nodes import Load, Store, ModifyMemory, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
 from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
 from r65.compiler.errors import InstructionSelectionError
@@ -347,7 +349,7 @@ class MemoryOperationSelector(BaseSelector):
         # Constant pointer optimization: if the pointer vreg has a known compile-time
         # value (e.g. from an inlined literal parameter), emit direct absolute/long
         # addressing instead of indirect through a DP scratch location.
-        const_addr = self.parent._vreg_const_map.get(instr.pointer.id)
+        const_addr = self._const_pointer(instr)
         if const_addr is not None:
             self._emit_const_ptr_load(const_addr, instr)
             return
@@ -491,7 +493,7 @@ class MemoryOperationSelector(BaseSelector):
         """
         # Constant pointer optimization: emit direct absolute/long addressing
         # when the pointer value is statically known.
-        const_addr = self.parent._vreg_const_map.get(instr.pointer.id)
+        const_addr = self._const_pointer(instr)
         if const_addr is not None:
             self._emit_const_ptr_store(const_addr, instr)
             return
@@ -1461,126 +1463,56 @@ class MemoryOperationSelector(BaseSelector):
     # Constant Pointer Direct Addressing
     # ========================================================================
 
+    def _const_pointer(self, instr) -> Optional[int]:
+        """The address a near LoadIndirect/StoreIndirect's pointer is known
+        to hold, if it can be addressed directly. A near pointer reads the
+        DBR bank, as `abs` and `abs,X/Y` do; an address below $100 would be
+        emitted as direct page, which reads D's page instead."""
+        if instr.is_far:
+            return None
+        addr = self.parent._vreg_const_map.get(instr.pointer.id)
+        if addr is None or not 0x100 <= addr + instr.offset <= 0xFFFF:
+            return None
+        return addr
+
     def _emit_const_ptr_load(self, const_addr: int, instr: LoadIndirect):
         """Emit a load through a compile-time-constant pointer using direct addressing.
 
-        Replaces indirect addressing (LDA (dp)) with absolute or long direct addressing
-        (LDA $ADDR) when the pointer value is known at compile time.
+        Replaces indirect addressing (LDA (dp),Y) with absolute addressing
+        (LDA $ADDR,Y) when the pointer value is known at compile time. A u16
+        is one m16 load, which leaves the index register alone.
         """
-        from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
-
-        effective_addr = const_addr + instr.offset
         dest_loc = self.parent._get_operand_location(instr.dest)
         is_u16 = self.parent._is_16bit(instr.type_info)
-        idx = instr.index_register
-
-        self._ensure_m8_mode()
-
         if is_u16:
-            # Two 8-bit loads at consecutive addresses (m8 required for indirect consistency)
-            low_loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=effective_addr,
-                                       size=1, index_register=idx)
-            self._emit_load_store('LDA', low_loc)
-            self._emit_load_store('STA', dest_loc)
-            if idx == 'Y':
-                # Y already holds the element offset; INY reaches the high byte
-                self._emit_instr(Opcode.INY, None, "Increment for high byte")
-                self._emit_load_store('LDA', low_loc)  # Same base, Y is now +1
-            else:
-                high_loc = PhysicalLocation(kind=LocationKind.MEMORY,
-                                            memory_addr=effective_addr + 1, size=1)
-                self._emit_load_store('LDA', high_loc)
-            dest_high = self.parent._offset_location(dest_loc, 1)
-            self._emit_load_store('STA', dest_high)
+            self._ensure_m16_mode()
         else:
-            direct_loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=effective_addr,
-                                          size=1, index_register=idx)
-            self._emit_load_store('LDA', direct_loc)
-            if not dest_loc.is_hw('A'):
-                self._emit_load_store('STA', dest_loc)
+            self._ensure_m8_mode()
+        direct_loc = PhysicalLocation(kind=LocationKind.MEMORY,
+                                      memory_addr=const_addr + instr.offset,
+                                      size=2 if is_u16 else 1,
+                                      index_register=instr.index_register)
+        self._emit_load_store('LDA', direct_loc)
+        if not dest_loc.is_hw('A'):
+            self._emit_load_store('STA', dest_loc)
 
     def _emit_const_ptr_store(self, const_addr: int, instr: StoreIndirect):
         """Emit a store through a compile-time-constant pointer using direct addressing.
 
-        Replaces indirect addressing (STA (dp)) with absolute or long direct addressing
-        (STA $ADDR) when the pointer value is known at compile time.
+        Replaces indirect addressing (STA (dp),Y) with absolute addressing
+        (STA $ADDR,Y) when the pointer value is known at compile time. A u16
+        is one m16 store, which leaves the index register alone.
         """
-        from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
-
-        effective_addr = const_addr + instr.offset
         src_loc = self.parent._get_operand_location(instr.source)
         is_u16 = self.parent._is_16bit(instr.type_info)
-        idx = instr.index_register
-
-        self._ensure_m8_mode()
-
+        direct_loc = PhysicalLocation(kind=LocationKind.MEMORY,
+                                      memory_addr=const_addr + instr.offset,
+                                      size=2 if is_u16 else 1,
+                                      index_register=instr.index_register)
         if is_u16:
-            low_loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=effective_addr,
-                                       size=1, index_register=idx)
-            if isinstance(instr.source, MIRImmediate):
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(instr.source.value & 0xFF),
-                                 "Load low byte immediate")
-                self._emit_load_store('STA', low_loc)
-                hi_imm = (instr.source.value >> 8) & 0xFF
-                if idx == 'Y':
-                    self._emit_instr(Opcode.INY, None, "Increment for high byte")
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(hi_imm), "Load high byte immediate")
-                    self._emit_load_store('STA', low_loc)
-                else:
-                    self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(hi_imm), "Load high byte immediate")
-                    high_loc = PhysicalLocation(kind=LocationKind.MEMORY,
-                                                memory_addr=effective_addr + 1, size=1)
-                    self._emit_load_store('STA', high_loc)
-            elif src_loc.is_hw('A'):
-                # m8: A=low byte, B=high byte — use XBA pattern
-                self._emit_load_store('STA', low_loc)
-                if idx == 'Y':
-                    self._emit_instr(Opcode.INY, None, "Increment for high byte")
-                    self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
-                    self._emit_load_store('STA', low_loc)
-                    self._emit_instr(Opcode.XBA, None, "Restore A low byte")
-                else:
-                    high_loc = PhysicalLocation(kind=LocationKind.MEMORY,
-                                                memory_addr=effective_addr + 1, size=1)
-                    self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
-                    self._emit_load_store('STA', high_loc)
-                    self._emit_instr(Opcode.XBA, None, "Restore A low byte")
-            elif src_loc.is_hw() and src_loc.hw_register in ('X', 'Y'):
-                # X/Y are 16-bit: TXA/TYA into m16 A, then byte-store via XBA
-                transfer = Opcode.TXA if src_loc.hw_register == 'X' else Opcode.TYA
-                self._ensure_m16_mode()
-                self._emit_instr(transfer, None, f"Transfer {src_loc.hw_register} to A")
-                self._ensure_m8_mode()
-                self._emit_load_store('STA', low_loc)
-                if idx == 'Y':
-                    self._emit_instr(Opcode.INY, None, "Increment for high byte")
-                    self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
-                    self._emit_load_store('STA', low_loc)
-                    self._emit_instr(Opcode.XBA, None, "Restore A low byte")
-                else:
-                    high_loc = PhysicalLocation(kind=LocationKind.MEMORY,
-                                                memory_addr=effective_addr + 1, size=1)
-                    self._emit_instr(Opcode.XBA, None, "Swap to get high byte")
-                    self._emit_load_store('STA', high_loc)
-                    self._emit_instr(Opcode.XBA, None, "Restore A low byte")
-            else:
-                # Memory/stack source: two separate 8-bit loads and stores
-                self._emit_load_store('LDA', src_loc)
-                self._emit_load_store('STA', low_loc)
-                if idx == 'Y':
-                    self._emit_instr(Opcode.INY, None, "Increment for high byte")
-                    src_high = self.parent._offset_location(src_loc, 1)
-                    self._emit_load_store('LDA', src_high)
-                    self._emit_load_store('STA', low_loc)
-                else:
-                    src_high = self.parent._offset_location(src_loc, 1)
-                    high_loc = PhysicalLocation(kind=LocationKind.MEMORY,
-                                                memory_addr=effective_addr + 1, size=1)
-                    self._emit_load_store('LDA', src_high)
-                    self._emit_load_store('STA', high_loc)
+            self._ensure_m16_mode()
+            self._load_word_into_a(src_loc, instr.source)
         else:
-            # 8-bit store through constant pointer
-            direct_loc = PhysicalLocation(kind=LocationKind.MEMORY, memory_addr=effective_addr,
-                                          size=1, index_register=idx)
+            self._ensure_m8_mode()
             self._load_byte_into_a(src_loc, instr.source)
-            self._emit_load_store('STA', direct_loc)
+        self._emit_load_store('STA', direct_loc)
