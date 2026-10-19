@@ -33,7 +33,7 @@ asm, a pointer access's `LDY #offset`, a Y-bound value), and nothing may
 read the Y that was there before.
 
 It runs after loop register promotion, so it sees who holds Y. A loop's
-induction variable - what its header compares - keeps Y: it is stepped
+induction variable - what its test compares - keeps Y: it is stepped
 every iteration, and moving it to a stack slot would cost more than the
 stream saves on the iterations that run it. Any other value promoted to Y
 (a sprite slot stepped only when one is drawn) gives Y up to the stream.
@@ -42,7 +42,7 @@ stream saves on the iterations that run it. Any other value promoted to Y
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
 
-from r65.compiler.analysis.loop_analysis import find_loops
+from r65.compiler.analysis.loop_analysis import find_back_edges
 from r65.compiler.mir.liveness import (
     InstructionLivenessAnalyzer, liveness_defs, liveness_uses,
 )
@@ -233,13 +233,15 @@ class IndexStreamSplitter:
 
     @staticmethod
     def _induction_vregs(func) -> set:
-        """Vregs a loop header's compare reads: the loops' induction variables."""
+        """Vregs a loop's test reads: the loops' induction variables. The
+        test is in the header, or at the back edge once the loop is rotated."""
         ids = set()
-        for header, _ in find_loops(func):
-            for ins in func.blocks[header].instructions:
-                if type(ins) is Compare:
-                    ids |= {v.id for _, v in iter_operands(ins, role=OperandRole.READ)
-                            if type(v) is VirtualRegister}
+        for source, header in find_back_edges(func):
+            for block_id in (header, source):
+                for ins in func.blocks[block_id].instructions:
+                    if type(ins) is Compare:
+                        ids |= {v.id for _, v in iter_operands(ins, role=OperandRole.READ)
+                                if type(v) is VirtualRegister}
         return ids
 
     @staticmethod

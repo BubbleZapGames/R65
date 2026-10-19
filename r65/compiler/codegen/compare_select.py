@@ -316,9 +316,10 @@ class CompareSelector(BaseSelector):
 
         if needs_16bit:
             self.parent._ensure_m16_mode()
-        else:
-            # Otherwise m8: an 8-bit compare, or CPX/CPY (which follow the
-            # X flag and do not care)
+        elif not left_loc.is_hw('X') and not left_loc.is_hw('Y'):
+            # Otherwise m8 for an 8-bit compare. CPX/CPY follow the X flag
+            # and run in either width: a rotated loop's test stays in the
+            # width its body ends in.
             self.parent._ensure_m8_mode()
 
         # Emit appropriate comparison instruction based on left operand

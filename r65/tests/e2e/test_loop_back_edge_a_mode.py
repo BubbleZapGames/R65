@@ -104,13 +104,13 @@ class TestLoopBackEdgeAMode:
         asm = compile_string(source, cfg_options=['snes'])
         func = _function_asm(asm, 'clear_buf')
         assert func, "clear_buf not found in asm"
-        # The first labelled block inside clear_buf is the loop head.
+        # The loop head is the body's first block (L2): the loop is rotated.
         # Body switches to m16 (REP #$20) before pointer ADC; back-edge
         # must SEP before the head's body re-runs.
         assert 'REP #$20' in func, \
             "loop body should switch to m16 for pointer arithmetic"
-        assert _loop_head_emits_sep(func, 'clear_buf__L1'), \
-            f"loop head clear_buf__L1 missing SEP #$20 after back-edge:\n{func}"
+        assert _loop_head_emits_sep(func, 'clear_buf__L2'), \
+            f"loop head clear_buf__L2 missing SEP #$20 after back-edge:\n{func}"
 
     def test_u16_pointer_walk_emits_sep_at_loop_head(self):
         """Same shape, `*u16` pointer (sizeof 2) — still triggers ADC #$02."""
@@ -131,8 +131,8 @@ class TestLoopBackEdgeAMode:
         func = _function_asm(asm, 'fill')
         assert func, "fill not found in asm"
         assert 'REP #$20' in func, "loop body should switch to m16"
-        assert _loop_head_emits_sep(func, 'fill__L1'), \
-            f"loop head fill__L1 missing SEP #$20:\n{func}"
+        assert _loop_head_emits_sep(func, 'fill__L2'), \
+            f"loop head fill__L2 missing SEP #$20:\n{func}"
 
     def test_u16_accumulator_loop_compiles(self):
         """Compile-only smoke test: u16 + n in a counter loop.

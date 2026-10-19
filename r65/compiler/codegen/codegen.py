@@ -245,6 +245,16 @@ class ProgramCodeGenerator:
                 if unrolled_count > 0:
                     print(f"Loop unrolling: {unrolled_count} loop(s) unrolled", file=sys.stderr)
 
+            # Loop rotation - a loop whose first test always passes is entered
+            # at its body and tests at the bottom: one branch per iteration.
+            # After unrolling, which matches the top-tested shape.
+            from r65.compiler.optimize.loop_rotate import LoopRotator
+            loop_rotator = LoopRotator(verbose=False)
+            rotated_count = loop_rotator.optimize(mir_program)
+            if rotated_count > 0:
+                print(f"Loop rotation: {rotated_count} loop(s) rotated, "
+                      f"{loop_rotator.counted_down} counting down", file=sys.stderr)
+
             # Memory-operand folding - read a single-use static directly in
             # the ADC/SBC/AND/ORA/EOR/CMP that consumes it. Runs last so it
             # sees inlined and unrolled bodies, and before register

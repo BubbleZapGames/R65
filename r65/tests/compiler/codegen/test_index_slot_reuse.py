@@ -56,8 +56,11 @@ def _target():
 
 
 def _loop_body():
+    # The rotated loop runs from its body (L2) to its test, which falls into
+    # the exit (L3); the match arms are laid out after the exit's return.
     code = _target()
-    return code[code.index("target__L2:"):code.index("target__L3:")]
+    return (code[code.index("target__L2:"):code.index("target__L3:")]
+            + code[code.index("target__L6:"):])
 
 
 def test_one_load_of_each_index_shape():

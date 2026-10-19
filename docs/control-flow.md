@@ -349,6 +349,26 @@ for i in 0..10 {
 // loop_end:
 ```
 
+**Loop rotation**: when the counter is set to a constant that passes the
+first test (`0 < 10`), the loop is entered at its body and tests at the
+bottom - one branch per iteration instead of two (`optimize/loop_rotate.py`,
+on MIR, after unrolling). A counter read by nothing but its own test, and
+dead once the loop ends, also counts down to zero, dropping the compare's
+operand:
+
+```rust
+for i in 0..10 { process(); }
+
+// LDY #10
+// loop_body:
+// JSR process
+// DEY
+// BNE loop_body
+```
+
+A `continue` gets its own copy of the test. With a start not known to pass
+(`let mut i = n; while i < 10`), the loop stays top-tested as above.
+
 **Examples**:
 ```rust
 // Simple iteration
