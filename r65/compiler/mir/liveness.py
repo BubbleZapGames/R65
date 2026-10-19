@@ -365,6 +365,16 @@ class LivenessAnalyzer:
                 if var1_live_here and var2_live_here:
                     return True
 
+                # A Move whose value nothing reads still writes its storage:
+                # it interferes with a variable live across it, except the
+                # one it copies (both then hold the same value).
+                if is_move and (
+                        (var1 in defs and i >= var1_last_use and var2_live
+                         and i < var2_last_use and instr.source != var2) or
+                        (var2 in defs and i >= var2_last_use and var1_live
+                         and i < var1_last_use and instr.source != var1)):
+                    return True
+
         return False
 
 
