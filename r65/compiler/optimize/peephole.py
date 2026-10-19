@@ -22,7 +22,7 @@ from r65.compiler.codegen.opcodes import (
     CARRY_READ_OPCODES, CARRY_WRITE_OPCODES,
     PUSH_OPCODES, PULL_OPCODES,
 )
-from r65.compiler.codegen.constants import M_FLAG
+from r65.compiler.codegen.constants import M_FLAG, X_FLAG
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.asm_nodes import AsmNode, Instruction
@@ -2355,6 +2355,11 @@ class PeepholeOptimizer:
                             elif n.opcode in (Opcode.EOR_IMMEDIATE,
                                               Opcode.JMP_ABSOLUTE, Opcode.JMP_LONG):
                                 continue  # Part of signed compare / long branch pattern
+                            elif (n.opcode in (Opcode.SEP_IMMEDIATE, Opcode.REP_IMMEDIATE)
+                                    and isinstance(n.operand, Immediate)
+                                    and isinstance(n.operand.value, int)
+                                    and not n.operand.value & ~(M_FLAG | X_FLAG)):
+                                continue  # A width switch before the branch leaves N/Z/C/V
                             else:
                                 break  # Non-branch instruction, stop scanning
                     next_only_zn = all_zn
