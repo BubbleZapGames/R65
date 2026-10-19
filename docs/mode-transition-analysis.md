@@ -85,6 +85,36 @@ and switches back to the width it needs after the call (`SEP #$20` after a
 u16 return). Interrupt handlers and the reset entry have no known entry
 width; they set their own (see [interrupt-mode-transition.md](interrupt-mode-transition.md)).
 
+### Switching Inside a Function
+
+Codegen switches lazily: an instruction that needs the other width emits
+`REP #$20` or `SEP #$20` first and leaves the CPU there. Each block is
+entered in a width chosen from what its code wants
+(`analysis/width_demand.py`). `mir/mode_tracker.py` follows explicit
+`SetMode` only, so it would call every block of an m8 function m8 and
+restore m8 at each one, inside loops too.
+
+- **Demand.** `instruction_width` predicts what codegen does with each
+  MIR instruction: the width its first accumulator operation runs in
+  (none for index-register work, X/Y compares and moves, and branches)
+  and the width it leaves. That is usually the width of the
+  instruction's type. A call needs its first argument's width and leaves
+  the callee's exit width; inline asm runs in the function's width. The
+  prediction runs after register allocation, so it knows a u16 move into
+  X goes through A only from a stack slot.
+- **Assignment.** `WidthAssignment` picks each block's entry width (the
+  entry block keeps the function's) to run the fewest switches, each
+  weighted 10× per loop level. A tie keeps the function's width.
+
+Codegen labels each block with its width (`.ACCU`), switches at its top
+only if an already emitted predecessor ends in the other width, and
+switches before a block's closing branches to the width its successors
+are entered in, so a loop latch hands its back edge the width the loop
+runs in. A switch of M alone leaves N, Z, C and V, so it may sit between
+a compare and its branch. A wrong prediction costs a switch, never
+correctness: the emitter still switches before each instruction that
+needs a width.
+
 ---
 
 ## Data Bank Management
@@ -213,4 +243,4 @@ The CPU pushes STATUS when the interrupt fires and RTI restores it, so the prolo
 | DBR | `databank=none/inline/caller` | Unchanged |
 | X/Y params | Any type | Must be u16 |
 
-*Last Updated: 2026-01-19*
+*Last Updated: 2026-10-18*

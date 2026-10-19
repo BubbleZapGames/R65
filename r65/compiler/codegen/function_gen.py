@@ -23,11 +23,12 @@ from r65.compiler.codegen.opcodes import (
     Opcode, PUSH_OPCODES, PULL_OPCODES,
 )
 from r65.compiler.codegen.asm_nodes import (
-    Immediate, Address, StackOffset, Instruction, ModeChange)
+    Immediate, Address, StackOffset, Instruction, ModeChange, Comment)
 from r65.compiler.codegen.abi import ABIInfo, StackFrameLayout
 from r65.compiler.codegen.abi_model import emit_d_equals_s_keeping_c
 from r65.compiler.errors import CodegenError
 from r65.compiler.analysis.far_ptr_strategy import far_self_body_needs_dbr
+from r65.compiler.analysis.width_demand import WidthAssignment
 
 
 def _block_mode_switch(bits: int):
@@ -330,6 +331,11 @@ class FunctionCodeGenerator:
         # Their mode switch is inserted afterwards, only if a back edge
         # actually exits in another mode.
         pending_back_edge_switches = []
+        # The width each block is entered in (analysis/width_demand.py).
+        def on_stack(vreg) -> bool:
+            location = reg_alloc.allocations.get(vreg.id)
+            return location is not None and location.kind == LocationKind.STACK
+        entry_widths = WidthAssignment(mir_func, on_stack).entry
 
         for block_id in block_order:
             block = mir_func.blocks[block_id]
@@ -346,10 +352,7 @@ class FunctionCodeGenerator:
                 # branches — so a block that textually follows a 16-bit
                 # epilogue will be assembled with wrong immediate sizes
                 # unless we explicitly reset .ACCU here.
-                if block.entry_mode is not None:
-                    from r65.compiler.typeck.processor_mode import ModeState
-                    accu_bits = 16 if block.entry_mode.m_mode == ModeState.M16 else 8
-                    self.emitter.emit_accu_mode(accu_bits)
+                self.emitter.emit_accu_mode(entry_widths[block_id])
                 # X == Y holds at a join only if every predecessor has been
                 # emitted (a back-edge source has not) and left it holding.
                 preds = getattr(block, 'predecessors', None) or []
@@ -373,37 +376,25 @@ class FunctionCodeGenerator:
             # ops without switching back (by design, to avoid redundant
             # SEP/REP). A predecessor not emitted yet (a back edge) is decided
             # once it has been, from its actual exit mode (see below).
-            force_mode = False
-            if block.entry_mode is not None:
-                from r65.compiler.typeck.processor_mode import ModeState
-                expected_is_m16 = (block.entry_mode.m_mode == ModeState.M16)
-                expected_bits = 16 if expected_is_m16 else 8
-                back_edge_preds = [p for p in block.predecessors
-                                   if p not in codegen_exit_modes]
-                force_mode = any(codegen_exit_modes[p] != expected_bits
-                                 for p in block.predecessors
-                                 if p in codegen_exit_modes)
-                if (back_edge_preds and not force_mode
-                        and self.emitter.get_accu_mode() == expected_bits):
-                    pending_back_edge_switches.append(
-                        (len(self.emitter.nodes), expected_bits, back_edge_preds))
-            elif block.entry_mode is None and hasattr(block, 'predecessors'):
-                # Inlined blocks may lack entry_mode. Check if any
-                # predecessor exits in a mode that disagrees with the
-                # current tracked mode — if so, we must sync.
-                current_bits = self.emitter.get_accu_mode()
-                for pred_id in block.predecessors:
-                    if pred_id in codegen_exit_modes:
-                        if codegen_exit_modes[pred_id] != current_bits:
-                            force_mode = True
-                            break
+            expected_bits = entry_widths[block_id]
+            back_edge_preds = [p for p in block.predecessors
+                               if p not in codegen_exit_modes]
+            force_mode = any(codegen_exit_modes[p] != expected_bits
+                             for p in block.predecessors
+                             if p in codegen_exit_modes)
+            if (back_edge_preds and not force_mode
+                    and self.emitter.get_accu_mode() == expected_bits):
+                pending_back_edge_switches.append(
+                    (len(self.emitter.nodes), expected_bits, back_edge_preds))
 
             # Emit mode switch at block entry if needed
-            self._emit_block_entry_mode_switch(block, instr_selector,
-                                               force=force_mode,
-                                               codegen_exit_modes=codegen_exit_modes)
+            if force_mode or self.emitter.get_accu_mode() != expected_bits:
+                self._emit_instr(*_block_mode_switch(expected_bits))
+                self.emitter.nodes[-1].required = True
+                self.emitter.emit_accu_mode(expected_bits)
 
             entry_depth[block_id] = self.emitter.stack_depth
+            block_start = len(self.emitter.nodes)
 
             # Emit instructions in block
             for idx, instr in enumerate(block.instructions):
@@ -415,6 +406,9 @@ class FunctionCodeGenerator:
                 except CodegenError as e:
                     self._annotate_codegen_error(e, mir_func, instr)
                     raise
+
+            self._switch_for_successors(mir_func, block, block_start,
+                                        entry_widths, codegen_exit_modes)
 
             # Record this block's codegen exit mode
             codegen_exit_modes[block_id] = self.emitter.get_accu_mode()
@@ -570,67 +564,44 @@ class FunctionCodeGenerator:
                 ModeChange("ACCU", bits),
             ]
 
-    def _emit_block_entry_mode_switch(self, block, instr_selector, force=False,
-                                       codegen_exit_modes=None):
+    def _switch_for_successors(self, mir_func: MIRFunction, block, block_start: int,
+                               entry_widths, codegen_exit_modes) -> None:
+        """Switch to the width the block's successors are entered in, in
+        front of its closing branches, so the switch runs on the edges that
+        need it rather than at the top of a successor every edge enters.
+
+        The width is that of the successors already emitted (back edges:
+        their entry is fixed) when they agree, else that of all of them
+        when they agree. A successor not yet emitted that wants the other
+        width switches at its own top. SEP/REP of M leave N/Z/C, so the
+        switch can sit between a compare and its branch.
         """
-        Emit mode switch at block entry if the block's expected mode differs
-        from the current tracked mode.
-
-        This handles cases like loop back-edges where the predecessor block
-        may have switched modes (e.g., for u16 operations) but the loop header
-        expects a different mode.
-
-        When force=True, always emit the mode switch even if the emitter's
-        tracked mode appears correct. This is needed for loop headers and
-        blocks with predecessors that exit in different modes, because the
-        emitter tracks emission-order mode (not runtime execution order).
-
-        Args:
-            block: MIR basic block
-            instr_selector: InstructionSelector with mode tracking
-            force: If True, always emit mode switch regardless of tracked mode
-            codegen_exit_modes: Dict mapping block_id to exit accu mode (8 or 16)
-        """
-        from r65.compiler.typeck.processor_mode import ModeState
-
-        # Get block's expected entry mode
-        if not hasattr(block, 'entry_mode') or block.entry_mode is None:
-            # Inlined blocks may lack entry_mode. When forced, sync the
-            # tracked mode with the predecessor's actual exit mode.
-            if force and codegen_exit_modes and hasattr(block, 'predecessors'):
-                for pred_id in block.predecessors:
-                    if pred_id in codegen_exit_modes:
-                        pred_mode = codegen_exit_modes[pred_id]
-                        if pred_mode != self.emitter.get_accu_mode():
-                            if pred_mode == 16:
-                                self._emit_instr(Opcode.REP_IMMEDIATE, Immediate(M_FLAG),
-                                               "Sync to m16 from predecessor")
-                                self.emitter.emit_accu_mode(16)
-                            else:
-                                self._emit_instr(Opcode.SEP_IMMEDIATE, Immediate(M_FLAG),
-                                               "Sync to m8 from predecessor")
-                                self.emitter.emit_accu_mode(8)
-                            break
+        from r65.compiler.codegen.opcodes import BRANCH_OPCODES, JUMP_OPCODES
+        if not block.instructions or not isinstance(
+                block.instructions[-1], (Jump, CondBranch)):
             return
-
-        block_entry_mode = block.entry_mode
-        if hasattr(block_entry_mode, 'm_mode'):
-            expected_m_mode = block_entry_mode.m_mode
-        else:
+        succs = [s for s in block.successors if s in mir_func.blocks]
+        emitted = {entry_widths[s] for s in succs if s in codegen_exit_modes}
+        wanted = emitted or {entry_widths[s] for s in succs}
+        if len(wanted) != 1:
             return
-
-        # Get current tracked mode from emitter
-        current_mode_bits = self.emitter.get_accu_mode()
-        current_is_m16 = (current_mode_bits == 16)
-        expected_is_m16 = (expected_m_mode == ModeState.M16)
-
-        # Emit mode switch if needed (or forced by an emitted predecessor),
-        # marked required so the peephole keeps it
-        if force or current_is_m16 != expected_is_m16:
-            bits = 16 if expected_is_m16 else 8
-            self._emit_instr(*_block_mode_switch(bits))
-            self.emitter.nodes[-1].required = True
-            self.emitter.emit_accu_mode(bits)
+        bits = wanted.pop()
+        if self.emitter.get_accu_mode() == bits:
+            return
+        nodes = self.emitter.nodes
+        k = len(nodes)
+        while k > block_start:
+            node = nodes[k - 1]
+            if isinstance(node, Instruction) and (
+                    node.opcode in BRANCH_OPCODES or node.opcode in JUMP_OPCODES):
+                k -= 1
+            elif isinstance(node, (Comment, ModeChange)):
+                k -= 1
+            else:
+                break
+        nodes[k:k] = [Instruction(*_block_mode_switch(bits), required=True),
+                      ModeChange("ACCU", bits)]
+        self.emitter.set_accu_mode_tracking(bits)
 
     # ========================================================================
     # Register Allocation

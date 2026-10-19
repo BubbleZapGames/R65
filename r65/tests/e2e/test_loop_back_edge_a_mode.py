@@ -29,8 +29,8 @@ while the more common stand-alone patterns load the pointer via
 `LDA $sr,S; TAY` and incidentally switch A to m16 in the prologue —
 which causes the block-entry mode tracker to emit a SEP and mask the
 back-edge bug. These tests therefore check the emitted assembly
-directly: SEP #$20 must appear inside the function before the loop body
-runs a second time.
+directly: the body's 8-bit immediates must run after a SEP #$20 on every
+pass.
 """
 
 import pytest
@@ -53,22 +53,15 @@ def _function_asm(asm: str, name: str) -> str:
     return '\n'.join(body)
 
 
-def _loop_head_emits_sep(func_asm: str, head_label: str) -> bool:
-    """True if `head_label` is immediately followed by a `SEP #$20`."""
-    lines = func_asm.split('\n')
-    for i, line in enumerate(lines):
-        if line.strip() == f'{head_label}:':
-            for follow in lines[i + 1:i + 6]:
-                stripped = follow.strip()
-                if stripped.startswith('SEP #$20'):
-                    return True
-                # Stop scanning at a real instruction that isn't SEP
-                if stripped and not stripped.startswith('.') and not stripped.startswith(';'):
-                    if stripped.endswith(':'):
-                        return False
-                    return stripped.startswith('SEP #$20')
-            return False
-    return False
+def _loop_head_emits_sep(func_asm: str, head_label: str, m8_instr: str) -> bool:
+    """True if every pass of the loop at `head_label` runs `m8_instr` (an
+    8-bit immediate) after a `SEP #$20`: one lies between the label and it,
+    with no `REP #$20` in between."""
+    lines = [l.split(';')[0].strip() for l in func_asm.split('\n')]
+    start = lines.index(f'{head_label}:')
+    end = lines.index(m8_instr, start)
+    switches = [l for l in lines[start:end] if l.startswith(('SEP #$20', 'REP #$20'))]
+    return bool(switches) and switches[-1].startswith('SEP')
 
 
 class TestLoopBackEdgeAMode:
@@ -109,7 +102,7 @@ class TestLoopBackEdgeAMode:
         # must SEP before the head's body re-runs.
         assert 'REP #$20' in func, \
             "loop body should switch to m16 for pointer arithmetic"
-        assert _loop_head_emits_sep(func, 'clear_buf__L2'), \
+        assert _loop_head_emits_sep(func, 'clear_buf__L2', 'LDA #$F0'), \
             f"loop head clear_buf__L2 missing SEP #$20 after back-edge:\n{func}"
 
     def test_u16_pointer_walk_emits_sep_at_loop_head(self):
@@ -131,7 +124,7 @@ class TestLoopBackEdgeAMode:
         func = _function_asm(asm, 'fill')
         assert func, "fill not found in asm"
         assert 'REP #$20' in func, "loop body should switch to m16"
-        assert _loop_head_emits_sep(func, 'fill__L2'), \
+        assert _loop_head_emits_sep(func, 'fill__L2', 'LDA #$34'), \
             f"loop head fill__L2 missing SEP #$20:\n{func}"
 
     def test_u16_accumulator_loop_compiles(self):
