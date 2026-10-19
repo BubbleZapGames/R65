@@ -104,3 +104,26 @@ class TestNotFolded:
             #[lowram] static mut COPY: u8;
             fn t() { let v: u8 = N - 1; N = v; COPY = v; }'''), "t")
         assert not any(c.startswith("DEC $") for c in code), code
+
+
+class TestShiftFolded:
+    """`m << 1` and an unsigned `m >> 1` fold into ASL/LSR on memory."""
+
+    def test_shifts_on_statics_and_planes(self):
+        code = _fn(_compile('''
+            #[zeropage(0x40)] static mut BY: u8;
+            #[lowram] static mut W: u16;
+            #[lowram] static mut ARR: [u8; 8];
+            #[zeropage] static mut I: u16;
+            fn t() { BY = BY << 1; W = W >> 1; ARR[I] = ARR[I] >> 1; }'''), "t")
+        assert "ASL $40" in code, code
+        assert any(c.startswith("LSR $") and not c.endswith(",X") for c in code), code
+        assert any(c.startswith("LSR $") and c.endswith(",X") for c in code), code
+        assert not any(c.startswith("STA") for c in code), code
+
+    def test_signed_shift_right_keeps_its_sign(self):
+        code = _fn(_compile('''
+            #[zeropage(0x40)] static mut V: i8;
+            fn t() { V = V >> 1; }'''), "t")
+        assert not any(c.startswith("LSR $") for c in code), code
+        assert "ROR A" in code, code

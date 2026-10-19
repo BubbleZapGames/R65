@@ -65,6 +65,39 @@ class TestIncDecMemory:
         ''', ExpectedState(memory={0x7E0060: [1, 0, 0, 0]}), max_instructions=100000)
         assert result.success, f"Failures: {result.failures}"
 
+    def test_shifts_by_one_on_memory(self, e2e):
+        result = e2e.run('''
+            #[zeropage(0x40)] static mut BY: u8;
+            #[zeropage(0x42)] static mut W: u16;
+            #[zeropage(0x44)] static mut SG: i8;
+            #[lowram] static mut ARR: [u8; 4];
+            #[zeropage(0x46)] static mut OUT: [u8; 2];
+
+            #[inline(never)]
+            fn step(i @ X: u16) {
+                BY = BY << 1;
+                W = W >> 1;
+                SG = SG >> 1;
+                ARR[i] = ARR[i] >> 1;
+            }
+
+            #[entry]
+            fn main() {
+                BY = 0xC1;  W = 0x0301;  SG = -6;
+                ARR[2] = 0x81;
+                step(2);
+                OUT[0] = ARR[2];
+                OUT[1] = ARR[3];
+            }
+        ''', ExpectedState(memory={
+            0x7E0040: [0x82],          # 0xC1 << 1, bit 7 out
+            0x7E0042: [0x80, 0x01],    # 0x0301 >> 1: bit 8 moves into the low byte
+            0x7E0044: [0xFD],          # -6 >> 1 = -3
+            0x7E0046: [0x40, 0x00],
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
 def test_direct_page_locals_shift_in_place():
     """Under FixedStack the locals are in direct page: the peephole folds
     `LDA v / LSR A / STA v` to `LSR v` once A is dead (`_fold_memory_rmw`)."""

@@ -29,7 +29,7 @@ from typing import Dict, Optional, Tuple
 from r65.compiler.codegen.type_utils import scalar_width
 from r65.compiler.mir.nodes import (
     AggregateCopy, BankByte, BinaryOp, BitTest, BlockCopy, CallBase, Compare,
-    CondBranch, HardwareRegister, Immediate, IncDecMemory, InlineAsm, Jump,
+    CondBranch, HardwareRegister, Immediate, ModifyMemory, InlineAsm, Jump,
     Load, LoadIndirect, LookupTable, MemoryLocation, MIRFunction, Move, Pull,
     Push, Return, ReturnFromInterrupt, Rotate, SetMode, StatusFlagSet,
     StatusFlagTest, Store, StoreIndirect, ToBool, TypeConvert, UnaryOp,
@@ -157,7 +157,7 @@ def instruction_width(instr, func: MIRFunction, index_ids: Optional[set] = None,
         bits = _bits(instr.target_type)
         return bits, bits
 
-    if cls in (Load, LoadIndirect, StoreIndirect, IncDecMemory, UnaryOp,
+    if cls in (Load, LoadIndirect, StoreIndirect, ModifyMemory, UnaryOp,
                BankByte, Rotate, ToBool, BitTest):
         bits = _bits(getattr(instr, 'type_info', None))
         return bits, bits

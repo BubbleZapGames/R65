@@ -193,27 +193,28 @@ class Store(MIRInstruction):
 
 
 @dataclass
-class IncDecMemory(MIRInstruction):
+class ModifyMemory(MIRInstruction):
     """
-    Read-modify-write of a static or plane element by ±1, in place.
+    Read-modify-write of a static or plane element, in place.
 
-    *location += delta
+    *location = *location ± 1   (op INC / DEC)
+    *location = *location << 1  (op ASL)
+    *location = *location >> 1  (op LSR, unsigned only)
 
-    Emitted as INC/DEC on memory, which leaves A untouched and sets N/Z from
-    the result. Produced by `optimize/memory_incdec.py` from
-    `Load m; m ± 1; Store m`; only for locations INC/DEC can address (direct
-    page or absolute, optionally `,X`). When `sets_branch_flags` is True the
-    block's `== 0` / `!= 0` test of the new value was folded away and the
-    CondBranch that follows reads the Z flag this instruction leaves.
+    Emitted as that instruction on memory, which leaves A untouched and sets
+    N/Z from the result. Produced by `optimize/memory_incdec.py` from
+    `Load m; m op 1; Store m`; only for locations the instruction can address
+    (direct page or absolute, optionally `,X`). When `sets_branch_flags` is
+    True the block's `== 0` / `!= 0` test of the new value was folded away
+    and the CondBranch that follows reads the Z flag this instruction leaves.
     """
     location: MemoryLocation
-    delta: int  # +1 or -1
+    op: str  # 'INC', 'DEC', 'ASL' or 'LSR'
     type_info: Any  # TypeInfo for size (1 or 2 bytes)
     sets_branch_flags: bool = False
 
     def __repr__(self):
-        op = "+=" if self.delta > 0 else "-="
-        return f"{self.location} {op} 1 : {self.type_info}"
+        return f"{self.op} {self.location} : {self.type_info}"
 
 
 def _indirect_target(instr) -> str:
@@ -989,7 +990,7 @@ def _write_rr(f): return OperandSpec(f, _W, _SCALAR, True)
 OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     Load:           (_write_rr('dest'), _read_vr('source')),
     Store:          (_read_ri('source'),),
-    IncDecMemory:   (),  # location is a MemoryLocation; liveness_uses adds its index register, as for Load/Store
+    ModifyMemory:   (),  # location is a MemoryLocation; liveness_uses adds its index register, as for Load/Store
     LoadIndirect:   (_write_vr('dest'), _read_vr('pointer')),
     StoreIndirect:  (_read_ri('source'), _read_vr('pointer')),
     Move:           (_write_rr('dest'), _read_ri('source')),

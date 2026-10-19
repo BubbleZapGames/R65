@@ -6,7 +6,7 @@ Handles memory access instruction generation including direct and indirect
 addressing modes for the 65816 processor.
 """
 
-from r65.compiler.mir.nodes import Load, Store, IncDecMemory, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
+from r65.compiler.mir.nodes import Load, Store, ModifyMemory, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
 from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
@@ -122,17 +122,17 @@ class MemoryOperationSelector(BaseSelector):
             self._emit_load_store('LDA', src_loc)
             self._emit_load_store('STA', dest_loc)
 
-    def select_inc_dec_memory(self, instr: IncDecMemory):
+    def select_modify_memory(self, instr: ModifyMemory):
         """
-        Generate code for IncDecMemory: `*location += delta` as INC/DEC.
+        Generate code for ModifyMemory: INC, DEC, ASL or LSR on memory.
 
         One read-modify-write at the location's width; A is not touched. The
         resolver picks the form (dp / abs / dp,X / abs,X) exactly as for a
         load, including the D=S switch from dp to absolute. The MIR fold only
-        produces locations INC/DEC can address.
+        produces locations these instructions can address.
 
         With `sets_branch_flags`, the block's `== 0` / `!= 0` test was folded
-        away: the CondBranch that follows reads the Z flag INC/DEC set.
+        away: the CondBranch that follows reads the Z flag the instruction set.
         """
         loc = self.parent._get_operand_location(instr.location)
         is_u16 = self.parent._is_16bit(instr.type_info)
@@ -140,16 +140,17 @@ class MemoryOperationSelector(BaseSelector):
             self._ensure_m16_mode()
         else:
             self._ensure_m8_mode()
-        mnemonic = 'INC' if instr.delta > 0 else 'DEC'
+        mnemonic = instr.op
         try:
             opcode, operand = self.parent._get_opcode_for_location(mnemonic, loc)
         except InstructionSelectionError as exc:
-            # The MIR fold only builds IncDecMemory for dp/abs, X-indexed or
+            # The MIR fold only builds ModifyMemory for dp/abs, X-indexed or
             # not. Going through A instead would be correct here but invisible
-            # to the interrupt-handler register analysis, which counts INC/DEC
-            # on memory as leaving A alone — so refuse rather than fall back.
+            # to the interrupt-handler register analysis, which counts a
+            # read-modify-write on memory as leaving A alone — so refuse
+            # rather than fall back.
             raise InstructionSelectionError(
-                f"IncDecMemory on a location {mnemonic} cannot address: {exc}",
+                f"ModifyMemory on a location {mnemonic} cannot address: {exc}",
                 source_loc=self._current_source_loc if hasattr(self, '_current_source_loc') else None)
         self._emit_instr(opcode, operand)
 

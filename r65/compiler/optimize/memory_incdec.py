@@ -1,24 +1,28 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-Memory INC/DEC Folding Pass.
+Memory Read-Modify-Write Folding Pass.
 
-Rewrites a static or plane element stepped by one in place::
+Rewrites a static or plane element stepped by one, or shifted by one bit,
+in place::
 
     %a = Load [m]
-    %b = %a - #1                     ->     IncDecMemory [m] -= 1
+    %b = %a - #1                     ->     ModifyMemory DEC [m]
     Store %b -> [m]
 
 which instruction selection emits as a single read-modify-write::
 
     DEC heat,X                      ; was: LDA heat,X / SEC / SBC #1 / STA heat,X
 
-The 65816 has INC/DEC on memory for direct page and absolute, each also
-`,X`, at either accumulator width. They leave A alone, so the value never
-occupies it, and they set N/Z from the result — so when the next thing the
-block does is test the new value against zero::
+`m << 1` is ASL and an unsigned `m >> 1` LSR in the same way; a signed
+`>>` keeps its sign bit, which LSR does not.
+
+The 65816 has INC, DEC, ASL and LSR on memory for direct page and
+absolute, each also `,X`, at either accumulator width. They leave A alone,
+so the value never occupies it, and they set N/Z from the result — so when
+the next thing the block does is test the new value against zero::
 
     %c = Load [m]
-    Compare %c == #0                ->     (folded into the IncDecMemory)
+    Compare %c == #0                ->     (folded into the ModifyMemory)
     CondBranch …                           CondBranch …
 
 the reload and compare go too, and the branch reads the Z flag DEC left:
@@ -26,24 +30,31 @@ the reload and compare go too, and the branch reads the Z flag DEC left:
 `<`/`>` against zero for every type.
 
 The three instructions must be adjacent, which is how the MIR builder emits
-`m = m ± 1`, `m += 1` and `m++`; nothing between them can then change the
-index register or the memory. Locations INC/DEC cannot address are left
-alone: `#[ram]` statics live in bank $7E behind long addressing (there is no
-INC long), ROM is read-only, a `#[hw]` register must see exactly the accesses
-written, and `abs,Y` has no INC form.
+`m = m ± 1`, `m += 1`, `m++` and `m = m << 1`; nothing between them can
+then change the index register or the memory. Locations these instructions
+cannot address are left alone: `#[ram]` statics live in bank $7E behind
+long addressing (there is no read-modify-write long), ROM is read-only, a
+`#[hw]` register must see exactly the accesses written, and `abs,Y` has no
+such form.
 
-Done in MIR so indexed and 16-bit operands are seen.
+Done in MIR so indexed and 16-bit operands are seen. Locals are placed
+after MIR, so the peephole (`_fold_memory_rmw`) folds those it finds in
+direct page.
 """
 
 from typing import Dict, List
 
+from r65.compiler.codegen.type_utils import is_signed_scalar
 from r65.compiler.mir.nodes import (
-    BinaryOp, Compare, CondBranch, Immediate, IncDecMemory, Load,
+    BinaryOp, Compare, CondBranch, Immediate, ModifyMemory, Load,
     MIRProgram, Store, VirtualRegister, count_vreg_reads,
 )
 
 # Storage INC/DEC can address with a 16-bit operand: direct page / absolute.
 _INC_DEC_STORAGE = frozenset({'zeropage', 'lowram'})
+
+# The read-modify-write for each `m = m op 1`.
+_MNEMONICS = {'+': 'INC', '-': 'DEC', '<<': 'ASL', '>>': 'LSR'}
 
 
 def _size(type_info):
@@ -52,7 +63,7 @@ def _size(type_info):
 
 
 class MemoryIncDecFolder:
-    """Fold `Load m; m ± 1; Store m` into one INC/DEC on memory."""
+    """Fold `Load m; m op 1; Store m` into one INC, DEC, ASL or LSR on memory."""
 
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -95,7 +106,7 @@ class MemoryIncDecFolder:
                 and loc.index_register in (None, 'X'))
 
     def _match_step(self, instrs: List, i: int, reads: Dict[int, int]):
-        """An IncDecMemory for `instrs[i:i+3]` if it is `Load; ±1; Store`."""
+        """An ModifyMemory for `instrs[i:i+3]` if it is `Load; ±1; Store`."""
         if i + 2 >= len(instrs):
             return None
         load, op, store = instrs[i], instrs[i + 1], instrs[i + 2]
@@ -115,19 +126,22 @@ class MemoryIncDecFolder:
                 and isinstance(store.source, VirtualRegister)
                 and store.source.id == b.id):
             return None
-        if op.op not in ('+', '-') or not isinstance(op.right, Immediate) \
-                or op.right.value != 1:
+        mnemonic = _MNEMONICS.get(op.op)
+        if mnemonic is None or not isinstance(op.right, Immediate) \
+                or op.right.symbol is not None or op.right.value != 1:
+            return None
+        # LSR shifts a zero in; a signed `>>` keeps the sign bit.
+        if mnemonic == 'LSR' and is_signed_scalar(op.type_info):
             return None
         size = _size(load.type_info)
         if size not in (1, 2) or _size(op.type_info) != size \
                 or _size(store.type_info) != size:
             return None
-        return IncDecMemory(location=load.source,
-                            delta=1 if op.op == '+' else -1,
+        return ModifyMemory(location=load.source, op=mnemonic,
                             type_info=load.type_info,
                             source_loc=getattr(load, 'source_loc', None))
 
-    def _match_zero_test(self, instrs: List, i: int, step: IncDecMemory,
+    def _match_zero_test(self, instrs: List, i: int, step: ModifyMemory,
                          reads: Dict[int, int]) -> bool:
         """`Load m; Compare == / != #0; CondBranch` ending the block, right
         after *step* — the test INC/DEC's Z flag already answers."""

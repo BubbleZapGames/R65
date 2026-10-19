@@ -33,7 +33,7 @@ from r65.compiler.mir.nodes import (
     MIRFunction, HardwareRegister, VirtualRegister, Immediate,
     CLOBBERS_ALL, fixed_clobbers, Pull, Push,
     StatusFlagRead, Store, StoreIndirect, LoadIndirect, Compare, BitTest,
-    CondBranch, Move, BinaryOp, UnaryOp, IncDecMemory, SetMode,
+    CondBranch, Move, BinaryOp, UnaryOp, ModifyMemory, SetMode,
     OperandRole, iter_operands,
 )
 from r65.compiler.codegen.type_utils import get_type_size, get_vreg_size
@@ -88,7 +88,7 @@ def _implicit_clobbers(instr, reg: str) -> bool:
         return False
 
     # A.
-    if isinstance(instr, (Push, SetMode, IncDecMemory)):
+    if isinstance(instr, (Push, SetMode, ModifyMemory)):
         return False
     if isinstance(instr, StatusFlagRead):
         return True

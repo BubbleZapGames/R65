@@ -1140,6 +1140,14 @@ A--;   // Generates: DEC A   (2 cycles)
 
 Without optimization, `X++` would generate the verbose sequence `TXA; CLC; ADC #1; TAX` (8+ cycles). The compiler automatically detects the pattern `reg = reg ± 1` and emits the efficient instruction.
 
+**Memory:**
+
+A variable in direct page or absolute memory is changed in place when the step is by one: `m++`, `m--`, `m = m << 1`, or an unsigned `m = m >> 1` compiles to one `INC`, `DEC`, `ASL` or `LSR` on the variable, without passing it through A. A signed `>>` must keep its sign bit, which `LSR` clears, so it isn't folded this way.
+
+- **Statics:** `#[zeropage]` and `#[lowram]` statics and `#[soa]` planes are folded on MIR (`optimize/memory_incdec.py`). A `== 0` / `!= 0` test that follows uses the flags the instruction leaves.
+- **Locals:** a local is placed only after MIR. The peephole (`_fold_memory_rmw`) folds `LDA v / op A / STA v` once nothing reads A afterwards. Under FixedStack, where locals live in direct page, `popcount`'s inner loop ends `LSR v; BNE`.
+- **Not folded:** a `#[ram]` static (long addressing has no read-modify-write form), a stack-slot local (`d,S` has none either) and a `#[hw]` register.
+
 **Examples:**
 ```rust
 // Variables

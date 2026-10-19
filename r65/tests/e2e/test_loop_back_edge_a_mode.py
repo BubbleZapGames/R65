@@ -159,7 +159,7 @@ class TestLoopBackEdgeAMode:
 def test_memory_increment_on_a_continue_loop_restores_m8(e2e):
     """`W = W + 1` on a u16 folds to `REP #$20 / INC $mem` (494bf9f), and a
     `continue` gives the header a second back edge. The back-edge check did
-    not count IncDecMemory as a width change, so the header ran in 16-bit A
+    not count ModifyMemory as a width change, so the header ran in 16-bit A
     and `KIND[i] == 0` read KIND[i] and KIND[i+1] together: zeros followed by
     a non-zero were counted. Now the check is deny-by-default."""
     from r65.tests.e2e import ExpectedState

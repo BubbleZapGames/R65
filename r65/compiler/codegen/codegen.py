@@ -274,14 +274,16 @@ class ProgramCodeGenerator:
             if operands_folded > 0:
                 print(f"Memory-operand folding: {operands_folded} load(s) folded", file=sys.stderr)
 
-            # INC/DEC on memory - `m = m ± 1` on a direct-page / absolute
-            # static or plane as one read-modify-write, and a following
-            # `m == 0` test as the Z flag it leaves.
+            # Read-modify-write on memory - `m = m ± 1`, `m << 1` and an
+            # unsigned `m >> 1` on a direct-page / absolute static or plane
+            # as one INC/DEC/ASL/LSR, and a following `m == 0` test as the Z
+            # flag it leaves.
             from r65.compiler.optimize.memory_incdec import MemoryIncDecFolder
             incdec_folder = MemoryIncDecFolder(verbose=False)
             incdec_folded = incdec_folder.optimize(mir_program)
             if incdec_folded > 0:
-                print(f"Memory INC/DEC folding: {incdec_folded} step(s) folded", file=sys.stderr)
+                print(f"Memory read-modify-write folding: {incdec_folded} step(s) folded",
+                      file=sys.stderr)
 
             # Web splitting - a local reassigned with a value its old one
             # never meets (`i` reused by a second loop) gets a vreg per

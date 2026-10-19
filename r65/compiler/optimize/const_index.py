@@ -34,13 +34,13 @@ from typing import Dict, List, Optional, Set
 
 from r65.compiler.mir.nodes import (
     BinaryOp, BitTest, Compare, CondBranch, HardwareRegister, Immediate,
-    IncDecMemory, Jump, Load, MemoryLocation, MIRFunction, MIRProgram, Move,
+    ModifyMemory, Jump, Load, MemoryLocation, MIRFunction, MIRProgram, Move,
     Return, Rotate, Store, ToBool, TypeConvert, UnaryOp, VirtualRegister, iter_memory_operands, map_memory_operands,
 )
 
 # Instructions whose only contact with X is through operands the pass sees:
 # a memory operand's index, or X named as a register operand.
-_TRANSPARENT = (Load, Store, IncDecMemory, Move, BinaryOp, UnaryOp, Compare,
+_TRANSPARENT = (Load, Store, ModifyMemory, Move, BinaryOp, UnaryOp, Compare,
                 TypeConvert, ToBool, BitTest, Rotate, Jump, CondBranch)
 
 _CONST_OPS = {
