@@ -32,6 +32,10 @@ make syntax     # Compile to assembly only (no ROM)
 make clean      # Remove build artifacts
 ```
 
+The project compiles with the `{{ABI}}` ABI, chosen at `r65x init`. Change the
+`ABI` variable in the Makefile (or `make ABI=Default`) to switch; a FixedStack
+build needs `src/lib/scratch_regs.r65` included from `main.r65`.
+
 ### Manual Compilation
 
 ```bash

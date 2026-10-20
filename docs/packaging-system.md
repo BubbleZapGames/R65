@@ -340,5 +340,5 @@ include graph rather than just `$(MAIN_SRC)`.
 - `pytest r65/tests/e2e/` stays green throughout: the 13 files interpolating an
   absolute `STDLIB_DIR` keep working because relative and `-I` resolution are
   unchanged.
-- End to end: `r65x init --platform snes /tmp/pkgtest && cd /tmp/pkgtest && make`
+- End to end: `r65x init /tmp/pkgtest && cd /tmp/pkgtest && make`
   succeeds with no `src/lib/`, and `r65pkg tree` / `r65pkg check` report clean.

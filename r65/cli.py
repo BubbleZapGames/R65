@@ -6,7 +6,8 @@ R65 Project Tool
 A CLI tool for creating R65 projects and generating assets.
 
 Usage:
-    r65x init --platform=snes my_game    # Create new SNES project
+    r65x init my_game                    # Create new SNES project
+    r65x init --abi FixedStack my_game   # ...with the FixedStack ABI
     r65x fontgen                         # Generate console font from TrueType
 """
 
@@ -26,6 +27,27 @@ class ProjectInitError(R65XError):
     pass
 
 
+ABI_CHOICES = ['Default', 'FixedStack']
+
+
+def prompt_abi() -> str:
+    """Ask for the project's ABI model; empty input picks Default."""
+    while True:
+        try:
+            answer = input("Select ABI model [Default, FixedStack] (default: Default): ").strip()
+        except EOFError:
+            print("\nNo input; using the Default ABI")
+            return 'Default'
+        if not answer:
+            return 'Default'
+        if answer.isdigit() and 1 <= int(answer) <= len(ABI_CHOICES):
+            return ABI_CHOICES[int(answer) - 1]
+        for choice in ABI_CHOICES:
+            if answer.lower() == choice.lower():
+                return choice
+        print(f"Unknown ABI '{answer}'. Choose one of: {', '.join(ABI_CHOICES)}")
+
+
 class TemplateManager:
     """Manages project templates."""
 
@@ -39,7 +61,8 @@ class TemplateManager:
             return []
         return [d.name for d in self.templates_dir.iterdir() if d.is_dir()]
     
-    def copy_template(self, platform: str, target_dir: Path, project_name: str):
+    def copy_template(self, platform: str, target_dir: Path, project_name: str,
+                      abi: str = 'Default'):
         """Copy template files to target directory."""
         template_dir = self.templates_dir / platform
         if not template_dir.exists():
@@ -59,12 +82,12 @@ class TemplateManager:
         # Create lib directory and copy stdlib files
         lib_dir = src_dir / "lib"
         lib_dir.mkdir(exist_ok=True)
-        self._copy_stdlib(lib_dir)
+        self._copy_stdlib(lib_dir, abi)
 
         # Copy template files to src directory
-        self._copy_directory(template_dir, src_dir, project_name)
+        self._copy_directory(template_dir, src_dir, project_name, abi)
     
-    def _copy_directory(self, src: Path, dst: Path, project_name: str):
+    def _copy_directory(self, src: Path, dst: Path, project_name: str, abi: str):
         """Copy directory with template substitution."""
         for item in src.iterdir():
             # Skip hidden files (vim swap files, .DS_Store, .git, etc.) —
@@ -73,7 +96,7 @@ class TemplateManager:
             if item.name.startswith('.') and item.name != '.gitattributes':
                 continue
             if item.is_file():
-                content = self._render(item, project_name)
+                content = self._render(item, project_name, abi)
 
                 # Determine destination based on file type
                 if item.suffix == '.md':
@@ -93,31 +116,41 @@ class TemplateManager:
                 dst_item.write_text(content, encoding='utf-8')
             elif item.is_dir():
                 # Subdirectories (tests/, ...) keep their layout in the project root
-                self._copy_tree(item, dst.parent / item.name, project_name)
+                self._copy_tree(item, dst.parent / item.name, project_name, abi)
 
-    def _copy_tree(self, src: Path, dst: Path, project_name: str):
+    def _copy_tree(self, src: Path, dst: Path, project_name: str, abi: str):
         """Copy a directory as-is, with template substitution."""
         dst.mkdir(exist_ok=True)
         for item in src.iterdir():
             if item.name.startswith('.'):
                 continue
             if item.is_file():
-                (dst / item.name).write_text(self._render(item, project_name), encoding='utf-8')
+                (dst / item.name).write_text(self._render(item, project_name, abi), encoding='utf-8')
             elif item.is_dir():
-                self._copy_tree(item, dst / item.name, project_name)
+                self._copy_tree(item, dst / item.name, project_name, abi)
 
-    def _render(self, item: Path, project_name: str) -> str:
+    def _render(self, item: Path, project_name: str, abi: str) -> str:
         """Read a template file and substitute template variables."""
         content = item.read_text(encoding='utf-8')
         content = content.replace("{{PROJECT_NAME}}", project_name)
-        return content.replace("{{PROJECT_NAME_UPPER}}", project_name.upper())
+        content = content.replace("{{PROJECT_NAME_UPPER}}", project_name.upper())
+        content = content.replace("{{ABI}}", abi)
+        # FixedStack passes every parameter in a register or a scratch slot,
+        # so the project needs the stdlib's scratch block.
+        abi_includes = ''
+        if abi == 'FixedStack':
+            abi_includes = ('// FixedStack ABI: direct-page scratch slots for parameters\n'
+                            'include!("lib/scratch_regs.r65")\n')
+        return content.replace("{{ABI_INCLUDES}}\n", abi_includes)
 
-    def _copy_stdlib(self, lib_dir: Path):
+    def _copy_stdlib(self, lib_dir: Path, abi: str):
         """Copy standard library files to lib directory."""
         if not self.stdlib_dir.exists():
             return
 
         stdlib_files = ['sneslib.r65', 'math.r65', '65816.r65']
+        if abi == 'FixedStack':
+            stdlib_files.append('scratch_regs.r65')
         for filename in stdlib_files:
             src_file = self.stdlib_dir / filename
             if src_file.exists():
@@ -134,11 +167,13 @@ def init_command(args):
         if target_dir.exists() and any(target_dir.iterdir()):
             raise ProjectInitError(f"Directory '{target_dir}' already exists and is not empty")
         
+        abi = args.abi or prompt_abi()
+
         # Initialize template manager and copy template
         template_mgr = TemplateManager()
-        template_mgr.copy_template(args.platform, target_dir, target_dir.name)
+        template_mgr.copy_template(args.platform, target_dir, target_dir.name, abi)
         
-        print(f"✓ Initialized {args.platform} project in '{target_dir}'")
+        print(f"✓ Initialized {args.platform} project in '{target_dir}' (ABI: {abi})")
         print(f"  Next steps:")
         print(f"    cd {target_dir}")
         print(f"    make             # Build the ROM")
@@ -162,7 +197,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  r65x init --platform=snes my_game     Create new SNES project
+  r65x init my_game                     Create new SNES project (prompts for the ABI)
+  r65x init --abi FixedStack my_game    Create one with the FixedStack ABI
   r65x fontgen                          Generate console font (DejaVu Sans Mono Bold)
   r65x fontgen --font path/to/font.ttf  Generate from custom font
   r65x packer pack data.bin -o data.lz5 -x lz5
@@ -176,9 +212,12 @@ examples:
     # init command
     init_parser = subparsers.add_parser('init', help='Initialize new project')
     init_parser.add_argument('--platform',
-                           required=True,
+                           default='snes',
                            choices=['snes'],
-                           help='Target platform')
+                           help='Target platform (default: snes)')
+    init_parser.add_argument('--abi',
+                           choices=ABI_CHOICES,
+                           help='ABI model the project compiles with (prompted for if omitted)')
     init_parser.add_argument('directory',
                            help='Project directory name')
 

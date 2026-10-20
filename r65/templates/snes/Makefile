@@ -12,6 +12,9 @@ R65C = python -m r65.compiler.main
 WLA = wla-65816
 WLA_LINK = wlalink
 
+# ABI model chosen at `r65x init` (Default or FixedStack)
+ABI = {{ABI}}
+
 # Flags
 WLA_FLAGS = -I src -o
 R65C_FLAGS = -v --cfg snes --dbg -I src
@@ -22,7 +25,7 @@ all: $(ROM_FILE)
 # Compile R65 source to WLA-DX assembly
 $(BUILD_DIR)/main.asm: $(MAIN_SRC)
 	@mkdir -p $(BUILD_DIR)
-	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS)
+	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS) --abi $(ABI)
 
 # Assemble WLA-DX object file
 $(BUILD_DIR)/main.o: $(BUILD_DIR)/main.asm
@@ -101,5 +104,6 @@ debug-vars:
 	@echo "PROJECT: $(PROJECT)"
 	@echo "MAIN_SRC: $(MAIN_SRC)"
 	@echo "ROM_FILE: $(ROM_FILE)"
+	@echo "ABI: $(ABI)"
 
 .PHONY: all clean install-deps run tests debug syntax r65x-build help debug-vars

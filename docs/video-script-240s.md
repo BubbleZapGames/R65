@@ -20,7 +20,7 @@ Eleven sections, ~795 words of voiceover at ~3.3 words/sec — lands at 4:00.
 - Efficient assembly matching hand-written techniques
 - Modern tooling for SNES development flows
 
-Then the entry point types out, then a terminal: `r65x init --platform snes my_game` → `make` → a `.smc` icon.
+Then the entry point types out, then a terminal: `r65x init my_game` → `make` → a `.smc` icon.
 ```rust
 #[entry]
 fn main() -> ! {

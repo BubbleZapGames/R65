@@ -47,7 +47,7 @@ Or download pre-built binaries from https://github.com/vhelin/wla-dx/releases an
 ### Create a Project and Build
 
 ```bash
-r65x init --platform snes my_game
+r65x init my_game             # Prompts for the ABI; or pass --abi Default|FixedStack
 cd my_game
 make                          # Compile, assemble and link build/MY_GAME.smc
 make run                      # Open it in an emulator (Mesen, higan or bsnes)
@@ -883,7 +883,7 @@ r65c source.r65 --abi FixedStack  # ABI model: Default, FixedStack or Pascal
 r65c source.r65 --lint          # Run lints (--lint-only, --allow CODE, --deny CODE)
 r65c source.r65 --dump-mir      # Dump tokens/ast/hir/mir; --stop-after PHASE
 
-r65x init --platform snes game  # Create new project
+r65x init game                          # Create new project
 r65x fontgen --font f.ttf > font.r65    # Font tiles from a TrueType font (R65 array literal)
 r65x bmp2chr sprite.bmp -o sprite.chr   # Indexed bitmap to CHR data
 r65x packer pack data.bin -o data.lz -x lz4   # Compress (aplib, lz*, rle*, hal)

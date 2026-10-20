@@ -580,7 +580,7 @@ Code Generation → WLA-DX Assembly (.asm)
 r65c game.r65 -o game.asm    # Compile to WLA-DX assembly
 r65c game.r65                 # Compile to stdout
 r65c game.r65 -o game.asm -v  # Verbose output
-r65x init --platform snes my_project  # Create test project
+r65x init my_project          # Create test project
 ```
 
 For writing R65 programs (as opposed to working on the compiler), the agent-facing primer is [docs/AGENTS_R65.md](docs/AGENTS_R65.md). Its `rust` blocks are compiled by `r65/tests/compiler/test_agents_primer.py`.

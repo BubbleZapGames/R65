@@ -204,7 +204,8 @@ or a stack frame you did not expect, restructure.
 
 ## 5. The standard library
 
-`r65x init` copies `65816.r65`, `sneslib.r65` and `math.r65` into `src/lib/`. For
+`r65x init` copies `65816.r65`, `sneslib.r65` and `math.r65` into `src/lib/`
+(plus `scratch_regs.r65` for a FixedStack project). For
 the others, copy them from the R65 repo's `stdlib/` or pass `-I path/to/stdlib`.
 
 | File | What's in it |
@@ -227,7 +228,11 @@ audio and compressed data.
 
 ## 6. Build and test
 
-A project from `r65x init --platform snes my_game` has a Makefile:
+A project from `r65x init my_game` has a Makefile. `init` asks
+for the ABI model (`--abi Default|FixedStack` skips the prompt); the Makefile
+records it as `ABI =` and passes `--abi $(ABI)` to r65c. A FixedStack project
+also gets `src/lib/scratch_regs.r65`, the direct-page scratch slots its
+parameters live in, included from `main.r65`.
 
 ```bash
 make            # src/main.r65 -> build/main.asm -> ROM (r65c -v --cfg snes --dbg -I src)
