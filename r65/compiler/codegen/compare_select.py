@@ -6,7 +6,7 @@ Handles comparison and bit manipulation instruction generation
 for the 65816 processor.
 """
 
-from r65.compiler.mir.nodes import Compare, BitTest, Rotate, Immediate as MIRImmediate
+from r65.compiler.mir.nodes import Compare, CompareIndirect, BitTest, Rotate, Immediate as MIRImmediate
 from r65.compiler.codegen.register_alloc import LocationKind
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode
@@ -328,6 +328,40 @@ class CompareSelector(BaseSelector):
         # Leave the width as is: branches do not read M, and a loop back-edge
         # must arrive in the header's mode. Code paths that need m8 (like
         # function returns) switch explicitly.
+
+    def select_compare_indirect(self, instr: CompareIndirect):
+        """
+        Generate code for CompareIndirect: `left` in A, then one CMP through
+        the pointer (`CMP [dp],Y`, `CMP (dp),Y` or `CMP (d,S),Y`).
+
+        Always a byte, and unsigned or ==/!= (optimize/indirect_compare.py),
+        so a plain CMP sets every flag the branch reads.
+        """
+        self.parent.last_comparison_type = instr.type_info
+        self.parent._comparison_reversed = False
+        self.parent._compare_form = None
+        self.parent._compare_rhs_is_zero = False
+
+        # Resolved before A is loaded: a pointer in a register is spilled.
+        opcode, operand = self.parent.memory_selector.indirect_operand('CMP', instr)
+
+        left_loc = self.parent._get_operand_location(instr.left)
+        self.parent._ensure_m8_mode()
+        if left_loc.is_hw('B'):
+            # XBA brings B's value into A; the state is left swapped, as
+            # select_compare leaves it.
+            self.parent._access_b_value_in_a()
+        elif left_loc.is_hw('X'):
+            self._emit_instr(Opcode.TXA, comment="Transfer X to A for comparison")
+        elif left_loc.is_hw('Y'):
+            self._emit_instr(Opcode.TYA, comment="Transfer Y to A for comparison")
+        elif left_loc.is_hw() and not left_loc.is_hw('A'):
+            raise InstructionSelectionError(
+                f"Unsupported hardware register for comparison: {left_loc.hw_register}",
+                source_loc=self.parent._current_source_loc)
+        elif not left_loc.is_hw():
+            self._emit_load_store('LDA', left_loc)
+        self._emit_instr(opcode, operand, "CMP through pointer")
 
     def _dead_after(self, operand) -> bool:
         """Whether *operand* is a vreg no instruction reads after the one

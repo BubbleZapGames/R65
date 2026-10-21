@@ -15,7 +15,7 @@ from typing import Dict, Set, List, Tuple, Optional
 from r65.compiler.mir.nodes import (
     CallBase, ArgumentMechanism,
     MIRProgram, MIRFunction, VirtualRegister, HardwareRegister, Immediate,
-    Move, BinaryOp, UnaryOp, Compare, StoreIndirect, LoadIndirect, TypeConvert, ToBool, Rotate,
+    Move, BinaryOp, UnaryOp, Compare, CompareIndirect, StoreIndirect, LoadIndirect, TypeConvert, ToBool, Rotate,
     iter_operands, map_operands, index_clobbers,
 )
 from r65.compiler.hir.types import PointerTypeInfo
@@ -680,6 +680,13 @@ def _uses_compatible_with_hw(vreg_id: int, uses: list) -> bool:
                 if isinstance(use.right, VirtualRegister) and use.right.register_hint:
                     # Other operand is also hw-promoted → can't resolve as memory
                     return False
+        elif isinstance(use, CompareIndirect):
+            # CMP [ptr],Y compares A; there is no CPX/CPY through a pointer.
+            # The pointer stays in memory too: from X/Y it would be spilled
+            # to a zero-page scratch, which a D=S frame cannot address.
+            if any(isinstance(v, VirtualRegister) and v.id == vreg_id
+                   for v in (use.left, use.pointer)):
+                return False
         elif isinstance(use, LoadIndirect):
             # LoadIndirect dest gets the result in A, not compatible with X/Y dest
             if isinstance(use.dest, VirtualRegister) and use.dest.id == vreg_id:

@@ -48,7 +48,7 @@ from r65.compiler.mir.liveness import (
 )
 from r65.compiler.mir.nodes import (
     CLOBBERS_ALL, BinaryOp, Compare, HardwareRegister, Immediate, Load,
-    LoadIndirect, MemoryLocation, MIRProgram, Move, OperandRole, Store,
+    CompareIndirect, LoadIndirect, MemoryLocation, MIRProgram, Move, OperandRole, Store,
     StoreIndirect, TypeConvert, UnaryOp, VirtualRegister, count_vreg_reads,
     index_clobbers, iter_memory_operands, iter_operands, map_memory_operands,
 )
@@ -290,7 +290,8 @@ class IndexStreamSplitter:
 
     @staticmethod
     def _touches_y(instr) -> bool:
-        if type(instr) in CLOBBERS_ALL or type(instr) in (LoadIndirect, StoreIndirect):
+        if type(instr) in CLOBBERS_ALL or type(instr) in (LoadIndirect, StoreIndirect,
+                                                          CompareIndirect):
             return True
         if 'Y' in index_clobbers(instr):
             return True

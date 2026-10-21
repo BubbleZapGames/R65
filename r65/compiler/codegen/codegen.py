@@ -274,6 +274,15 @@ class ProgramCodeGenerator:
             if operands_folded > 0:
                 print(f"Memory-operand folding: {operands_folded} load(s) folded", file=sys.stderr)
 
+            # Indirect compare folding - a byte read through a pointer
+            # parameter only to be compared is read by the CMP itself
+            # (`CMP [dp],Y`), so the other operand can stay in A. Same
+            # placement reasoning as memory-operand folding.
+            from r65.compiler.optimize.indirect_compare import IndirectCompareFolder
+            indirect_folded = IndirectCompareFolder(verbose=False).optimize(mir_program)
+            if indirect_folded > 0:
+                print(f"Indirect compare folding: {indirect_folded} load(s) folded", file=sys.stderr)
+
             # Read-modify-write on memory - `m = m ± 1`, `m << 1` and an
             # unsigned `m >> 1` on a direct-page / absolute static or plane
             # as one INC/DEC/ASL/LSR, and a following `m == 0` test as the Z

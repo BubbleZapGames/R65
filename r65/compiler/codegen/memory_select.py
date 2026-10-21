@@ -476,6 +476,56 @@ class MemoryOperationSelector(BaseSelector):
         if will_clobber_y and self._has_y_self():
             self._restore_y_self(y_self_save_addr)
 
+    def indirect_operand(self, mnemonic: str, instr) -> tuple:
+        """`(opcode, operand)` of the single *mnemonic* instruction that reads
+        the byte at `instr.pointer[Y]` - a CompareIndirect's `CMP [dp],Y`.
+
+        The addressing is select_load_indirect's 8-bit indexed paths, minus
+        the ones that take more than one instruction: a far pointer on the
+        stack in a function with no far-pointer strategy needs a PHB/PLB
+        bracket, whose PLB would destroy the flags. Nor may the pointer be in
+        zero page under D=S, where a DP operand addresses the stack. The
+        folding pass only folds through stack parameters, which reach
+        neither: one promoted to scratch makes the function SET_DBR. A
+        pointer in a register is spilled first, so call this before loading
+        A.
+        """
+        ptr_loc = self.parent._get_operand_location(instr.pointer)
+        d_equals_s = self._get_far_ptr_strategy() == 'd_equals_s'
+        if d_equals_s and ptr_loc.kind != LocationKind.STACK:
+            raise InstructionSelectionError(
+                f"{mnemonic} through a pointer outside the frame needs zero page, "
+                f"which D=S does not address", source_loc=self.parent._current_source_loc)
+        if ptr_loc.is_hw():
+            ptr_loc = self._spill_pointer_to_scratch(ptr_loc)
+        self._validate_pointer_location(ptr_loc)
+
+        if ptr_loc.kind == LocationKind.STACK:
+            if not instr.is_far:
+                return (getattr(Opcode, f"{mnemonic}_STACK_INDIRECT_Y"),
+                        self.parent.stack_operand(ptr_loc.stack_offset))
+            strategy = self._get_far_ptr_strategy()
+            if strategy == 'd_equals_s':
+                return (getattr(Opcode, f"{mnemonic}_DP_INDIRECT_LONG_Y"),
+                        Address(ptr_loc.stack_offset))
+            if strategy == 'set_dbr':
+                return (getattr(Opcode, f"{mnemonic}_STACK_INDIRECT_Y"),
+                        self.parent.stack_operand(ptr_loc.stack_offset))
+            raise InstructionSelectionError(
+                f"{mnemonic} through a far pointer on the stack needs a "
+                f"far-pointer strategy", source_loc=self.parent._current_source_loc)
+
+        if ptr_loc.kind == LocationKind.SCRATCH:
+            addr = ptr_loc.scratch_addr
+        elif ptr_loc.kind == LocationKind.MEMORY:
+            addr = ptr_loc.memory_addr
+        else:
+            raise InstructionSelectionError(
+                f"Invalid pointer location for indirect addressing: {ptr_loc}",
+                source_loc=self.parent._current_source_loc)
+        mode = "DP_INDIRECT_LONG_Y" if instr.is_far else "DP_INDIRECT_Y"
+        return getattr(Opcode, f"{mnemonic}_{mode}"), Address(addr)
+
     def select_store_indirect(self, instr: StoreIndirect):
         """
         Generate code for StoreIndirect instruction.

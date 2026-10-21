@@ -18,7 +18,7 @@ SET_DBR wins when: N_zp > N_rom + N_hw + N_ram + N_calls + 6
 from r65.compiler.mir.nodes import (
     CallBase, InlineAsm, iter_memory_operands,
     FarPtrStrategy, MIRFunction,
-    Load, Store, LoadIndirect, StoreIndirect,
+    Load, Store, LoadIndirect, StoreIndirect, CompareIndirect,
     MemoryLocation, VirtualRegister,
 )
 from r65.compiler.hir.types import PointerTypeInfo
@@ -90,7 +90,7 @@ def is_set_dbr_safe(func: MIRFunction) -> bool:
 
     for block in func.blocks.values():
         for instr in block.instructions:
-            if not isinstance(instr, (LoadIndirect, StoreIndirect)):
+            if not isinstance(instr, (LoadIndirect, StoreIndirect, CompareIndirect)):
                 continue
             ptr = instr.pointer
             if not isinstance(ptr, VirtualRegister):

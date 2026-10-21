@@ -32,7 +32,7 @@ from r65.compiler.errors import MIRLoweringError
 from r65.compiler.mir.nodes import (
     MIRFunction, HardwareRegister, VirtualRegister, Immediate,
     CLOBBERS_ALL, fixed_clobbers, Pull, Push,
-    StatusFlagRead, Store, StoreIndirect, LoadIndirect, Compare, BitTest,
+    StatusFlagRead, Store, StoreIndirect, LoadIndirect, Compare, CompareIndirect, BitTest,
     CondBranch, Move, BinaryOp, UnaryOp, ModifyMemory, SetMode,
     OperandRole, iter_operands,
 )
@@ -112,6 +112,8 @@ def _implicit_clobbers(instr, reg: str) -> bool:
         return True
     if isinstance(instr, Compare):
         return not (_hw(instr.left) and instr.left.name in ('A', 'X', 'Y'))
+    if isinstance(instr, CompareIndirect):
+        return not _hw(instr.left, 'A')
     if isinstance(instr, (BitTest, CondBranch)):
         v = instr.value if isinstance(instr, BitTest) else instr.condition
         return v is not None and not _hw(v, 'A')

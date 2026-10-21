@@ -20,7 +20,7 @@ from r65.compiler.mir.call_effects import call_effects
 from r65.compiler.mir.nodes import (
     CallBase,
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
-    Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate,
+    Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, CompareIndirect, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm, fixed_clobbers,
     TraitDispatch, BankByte, Immediate, map_operands,
 )
@@ -35,7 +35,8 @@ if _TYPE_CHECKING:
     from r65.compiler.codegen.abi import StackFrameLayout
 
 # Frozenset for ALU-type instructions that route through A register
-_ALU_TYPES = frozenset({BinaryOp, UnaryOp, TypeConvert, Compare, BitTest, Rotate, ToBool, BankByte})
+_ALU_TYPES = frozenset({BinaryOp, UnaryOp, TypeConvert, Compare, CompareIndirect,
+                        BitTest, Rotate, ToBool, BankByte})
 
 
 @dataclass
@@ -1011,6 +1012,9 @@ class StackSlotAllocator:
             return not (type(use.right) is VirtualRegister
                         and use.right.id == vreg_id
                         and self._in_index_register(use.left))
+        if use_type is CompareIndirect:
+            # CMP [ptr],Y reads its left from A; the pointer stays in memory.
+            return type(use.left) is VirtualRegister and use.left.id == vreg_id
         if (use_type is Store and
             type(use.source) is VirtualRegister and
             use.source.id == vreg_id):
@@ -1366,7 +1370,7 @@ class StackSlotAllocator:
                 return False
             # CMP preserves A on 65816 — it only sets flags. If the left operand
             # is our vreg (already in A), no load is needed and A survives.
-            if instr_type is Compare:
+            if instr_type is Compare or instr_type is CompareIndirect:
                 if type(instr.left) is VirtualRegister and instr.left.id == vreg_id:
                     return False
             if self._index_op_spares_a(instr):
@@ -1450,7 +1454,8 @@ class StackSlotAllocator:
             return True
 
         # Any u16 arithmetic/logic clobbers B via m16 mode
-        if instr_type is BinaryOp or instr_type is UnaryOp or instr_type is Compare:
+        if (instr_type is BinaryOp or instr_type is UnaryOp or instr_type is Compare
+                or instr_type is CompareIndirect):
             return self._instr_involves_u16(instr)
 
         # u16 Store/Load use m16 LDA/STA

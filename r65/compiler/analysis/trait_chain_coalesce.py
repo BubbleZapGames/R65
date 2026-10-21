@@ -33,7 +33,7 @@ from typing import Callable
 
 from r65.compiler.mir.nodes import (
     ChainRole, MIRFunction, HardwareRegister, OperandRole, iter_operands,
-    Load, LoadIndirect, StoreIndirect,
+    Load, LoadIndirect, StoreIndirect, CompareIndirect,
     Call, CallBase, TraitDispatch, VirtualRegister,
     Move, TypeConvert, BinaryOp, UnaryOp, InlineAsm, iter_memory_operands,
 )
@@ -661,7 +661,7 @@ def _instr_is_dbr_independent(instr, call_graph, func_map, cyclic_funcs, func=No
     if any(_uses_dbr(m, d_equals_s) for m in iter_memory_operands(instr)):
         return False
 
-    if isinstance(instr, (LoadIndirect, StoreIndirect)):
+    if isinstance(instr, (LoadIndirect, StoreIndirect, CompareIndirect)):
         if not instr.is_far:
             # Near pointer deref — DBR-dependent.
             return False

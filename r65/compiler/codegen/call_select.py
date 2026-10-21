@@ -2145,7 +2145,7 @@ class CallInstructionSelector(BaseSelector):
         Returns:
             True if a far pointer dereference is reachable after this call
         """
-        from r65.compiler.mir.nodes import LoadIndirect, StoreIndirect
+        from r65.compiler.mir.nodes import CompareIndirect, LoadIndirect, StoreIndirect
 
         func = self.parent.current_function
         if not func:
@@ -2153,7 +2153,7 @@ class CallInstructionSelector(BaseSelector):
 
         def has_far_deref(instructions) -> bool:
             return any(
-                isinstance(i, (LoadIndirect, StoreIndirect)) and i.is_far
+                isinstance(i, (LoadIndirect, StoreIndirect, CompareIndirect)) and i.is_far
                 for i in instructions
             )
 

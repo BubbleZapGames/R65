@@ -218,7 +218,8 @@ class ModifyMemory(MIRInstruction):
 
 
 def _indirect_target(instr) -> str:
-    """`(ptr+offset),Y` / `[ptr+offset],Y` for a LoadIndirect or StoreIndirect."""
+    """`(ptr+offset),Y` / `[ptr+offset],Y` for a LoadIndirect, StoreIndirect
+    or CompareIndirect."""
     open_, close = ("[", "]") if instr.is_far else ("(", ")")
     offset = f"+{instr.offset}" if instr.offset else ""
     index = f",{instr.index_register}" if instr.index_register else ""
@@ -512,6 +513,33 @@ class Compare(MIRInstruction):
 
     def __repr__(self):
         return f"Compare {self.left} {self.comparison} {self.right} : {self.type_info}"
+
+
+@dataclass
+class CompareIndirect(MIRInstruction):
+    """
+    Comparison against a byte read through a pointer: `CMP [ptr],Y` /
+    `CMP (ptr),Y` / `CMP (d,S),Y`, flags for a conditional branch as Compare
+    sets them.
+
+    compare left, ptr[Y]
+
+    What a `LoadIndirect` read only by Compares becomes (optimize/
+    indirect_compare.py): the byte is read by the CMP itself, so the load no
+    longer puts it in A between `left`'s definition and its use. Y holds the
+    index, set by a Move the MIR shows, as for an indexed LoadIndirect.
+    """
+    left: Union[VirtualRegister, HardwareRegister, Immediate]
+    pointer: VirtualRegister  # Points to memory location holding the address
+    is_far: bool  # True for far pointer (long indirect), False for near
+    comparison: str  # '==', '!=', '<', '<=', '>', '>='
+    type_info: Any  # TypeInfo for comparison size
+    index_register: Optional[str] = 'Y'
+    offset: int = 0
+
+    def __repr__(self):
+        return (f"CompareIndirect {self.left} {self.comparison} "
+                f"{_indirect_target(self)} : {self.type_info}")
 
 
 @dataclass
@@ -1001,6 +1029,7 @@ OPERAND_SPECS: Dict[type, Tuple[OperandSpec, ...]] = {
     BinaryOp:       (_write_rr('dest'), _read_ri('left'), _read_ri('right')),
     UnaryOp:        (_write_rr('dest'), _read_ri('operand')),
     Compare:        (_read_ri('left'), _read_ri('right')),
+    CompareIndirect: (_read_rr('left'), _read_vr('pointer')),
     BitTest:        (_read_rr('value'),),  # BIT #imm sets only Z, never N or V
     CondBranch:     (_read_rr('condition'),),
     JumpTable:      (_read_rr('scrutinee'),),
@@ -1188,7 +1217,8 @@ def index_clobbers(instr) -> FrozenSet[str]:
     access wants in Y *is* a value the allocator places there.
     """
     regs = fixed_clobbers(instr) & _XY
-    if isinstance(instr, (LoadIndirect, StoreIndirect)) and instr.index_register is None:
+    if (isinstance(instr, (LoadIndirect, StoreIndirect, CompareIndirect))
+            and instr.index_register is None):
         regs = regs | _Y
     return regs
 

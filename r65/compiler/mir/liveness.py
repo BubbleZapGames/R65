@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import (
     CallBase,
     MIRInstruction, VirtualRegister, HardwareRegister,
     BasicBlock, MIRFunction,
-    Load, Move, BinaryOp, Call, Return, TraitDispatch,
+    Load, Move, BinaryOp, Call, Return, TraitDispatch, CompareIndirect,
     iter_operands, OperandRole, iter_block_targets, iter_memory_operands,
 )
 from r65.compiler.mir.call_effects import CallEffects, call_effects
@@ -33,6 +33,10 @@ def liveness_uses(instr) -> List:
     uses = [v for _, v in iter_operands(instr, role=OperandRole.READ)]
     uses.extend(HardwareRegister(loc.index_register)
                 for loc in iter_memory_operands(instr) if loc.index_register)
+    # A folded compare can sit blocks away from the Move that set its index,
+    # so Y must stay live across the gap.
+    if isinstance(instr, CompareIndirect) and instr.index_register:
+        uses.append(HardwareRegister(instr.index_register))
     return uses
 
 
