@@ -15,7 +15,7 @@ import pytest
 from r65.tests.e2e import ExpectedState
 
 _STDLIB = _Path(__file__).parent.parent.parent.parent / "stdlib"
-# string.r65 provides format!; it needs mod8 from math.r65, which needs sneslib.
+# string.r65 provides format!; Q10.r65 needs sneslib and math.
 PRELUDE = (f'include!("{_STDLIB / "sneslib.r65"}")\n'
            f'include!("{_STDLIB / "math.r65"}")\n'
            f'include!("{_STDLIB / "string.r65"}")\n'

@@ -9,9 +9,6 @@
 // Usage:
 //   include!("lib/string.r65")
 
-include!("sneslib.r65")
-include!("math.r65")
-
 // ============================================================================
 // Memory Primitives
 // ============================================================================
@@ -31,34 +28,30 @@ far fn strlen(s: far *u8) -> u16 {
 // Copy n bytes from src to dst.
 // Does not handle overlapping regions.
 far fn memcpy(dst: far *u8, src: far *u8, n: u16) {
-    let count: u16 = n;
-    if count == 0 { return; }
+    if n == 0 { return; }
     let mut i: u16 = 0;
     loop {
         dst[i] = src[i];
         i++;
-        if i >= count { break; }
+        if i >= n { break; }
     }
 }
 
 // Fill n bytes of dst with value.
 far fn memset(dst: far *u8, value: u8, n: u16) {
-    let count: u16 = n;
-    if count == 0 { return; }
-    let mut v: u8 = value;
+    if n == 0 { return; }
     let mut i: u16 = 0;
     loop {
-        dst[i] = v;
+        dst[i] = value;
         i++;
-        if i >= count { break; }
+        if i >= n { break; }
     }
 }
 
 // Compare n bytes of a and b.
 // Returns 0 if equal, -1 if a < b, 1 if a > b.
 far fn memcmp(a: far *u8, b: far *u8, n: u16) -> i8 {
-    let count: u16 = n;
-    if count == 0 { return 0; }
+    if n == 0 { return 0; }
     let mut i: u16 = 0;
     loop {
         let ca: u8 = a[i];
@@ -66,7 +59,7 @@ far fn memcmp(a: far *u8, b: far *u8, n: u16) -> i8 {
         if ca < cb { return -1; }
         if ca > cb { return 1; }
         i++;
-        if i >= count { break; }
+        if i >= n { break; }
     }
     return 0;
 }
@@ -80,7 +73,7 @@ far fn memcmp(a: far *u8, b: far *u8, n: u16) -> i8 {
 far fn strcpy(dst: far *u8, src: far *u8) -> u16 {
     let mut i: u16 = 0;
     loop {
-        let mut ch: u8 = src[i];
+        let ch: u8 = src[i];
         dst[i] = ch;
         if ch == 0 { break; }
         i++;
@@ -91,15 +84,14 @@ far fn strcpy(dst: far *u8, src: far *u8) -> u16 {
 // Copy at most max-1 bytes from src to dst.
 // Always null-terminates dst. Returns bytes written (excluding null).
 far fn strncpy(dst: far *u8, src: far *u8, max: u16) -> u16 {
-    let limit: u16 = max;
-    if limit == 0 {
+    if max == 0 {
         return 0;
     }
     let mut i: u16 = 0;
-    let end: u16 = limit - 1;
+    let end: u16 = max - 1;
     loop {
         if i >= end { break; }
-        let mut ch: u8 = src[i];
+        let ch: u8 = src[i];
         if ch == 0 { break; }
         dst[i] = ch;
         i++;
@@ -111,22 +103,10 @@ far fn strncpy(dst: far *u8, src: far *u8, max: u16) -> u16 {
 // Append src after dst's null terminator.
 // Returns new total length of dst (excluding null).
 far fn strcat(dst: far *u8, src: far *u8) -> u16 {
-    // Find end of dst
-    let mut di: u16 = 0;
-    loop {
-        if dst[di] == 0 { break; }
-        di++;
-    }
-    // Copy src starting at dst's null
-    let mut si: u16 = 0;
-    loop {
-        let mut ch: u8 = src[si];
-        dst[di] = ch;
-        if ch == 0 { break; }
-        di++;
-        si++;
-    }
-    return di;
+    // Two single-index loops: one loop walking both strings needs a second
+    // index register, and the compiler keeps that one on the stack.
+    let len: u16 = strlen(dst);
+    return len + strcpy(dst + len, src);
 }
 
 // Lexicographic comparison of two null-terminated strings.
@@ -144,17 +124,16 @@ far fn strcmp(a: far *u8, b: far *u8) -> i8 {
 }
 
 // Find first occurrence of ch in null-terminated string s.
-// Returns index (0-254) or 0xFF if not found.
-far fn strchr(s: far *u8, ch: u8) -> u8 {
-    let target: u8 = ch;
+// Returns index, or 0xFFFF if not found. ch = 0 finds the terminator.
+far fn strchr(s: far *u8, ch: u8) -> u16 {
     let mut i: u16 = 0;
     loop {
         let c: u8 = s[i];
-        if c == target {
-            return i as u8;
+        if c == ch {
+            return i;
         }
         if c == 0 {
-            return 0xFF;
+            return 0xFFFF;
         }
         i++;
     }
@@ -164,45 +143,29 @@ far fn strchr(s: far *u8, ch: u8) -> u8 {
 // Character Classification and Conversion
 // ============================================================================
 
+// The classifiers are one wrapping subtract and one compare: anything below
+// the range wraps to a large u8, so `ch - LO < N` is the range check. The
+// short body is also small enough for the compiler to inline.
+
 // Returns true if ch is '0'-'9' (0x30-0x39)
 far fn is_digit(ch @ A: u8) -> bool {
-    if ch >= 0x30 {
-        if ch <= 0x39 {
-            return true;
-        }
-    }
-    return false;
+    return ch - 0x30 < 10;
 }
 
 // Returns true if ch is 'A'-'Z' (0x41-0x5A)
 far fn is_upper(ch @ A: u8) -> bool {
-    if ch >= 0x41 {
-        if ch <= 0x5A {
-            return true;
-        }
-    }
-    return false;
+    return ch - 0x41 < 26;
 }
 
 // Returns true if ch is 'a'-'z' (0x61-0x7A)
 far fn is_lower(ch @ A: u8) -> bool {
-    if ch >= 0x61 {
-        if ch <= 0x7A {
-            return true;
-        }
-    }
-    return false;
+    return ch - 0x61 < 26;
 }
 
 // Returns true if ch is a letter (A-Z or a-z)
 far fn is_alpha(ch @ A: u8) -> bool {
-    if ch >= 0x41 {
-        if ch <= 0x5A { return true; }
-    }
-    if ch >= 0x61 {
-        if ch <= 0x7A { return true; }
-    }
-    return false;
+    // Setting bit 5 folds 'A'-'Z' onto 'a'-'z'; nothing else lands there.
+    return (ch | 0x20) - 0x61 < 26;
 }
 
 // Convert lowercase letter to uppercase. Non-letters unchanged.
@@ -231,113 +194,109 @@ far fn to_lower(ch @ A: u8) -> u8 {
 // All functions write into a caller-provided buffer, null-terminate,
 // and return the number of characters written (excluding null).
 //
-// Decimal conversion uses repeated subtraction of powers of 10.
-// No external dependencies (math.r65 not required).
+// Decimal digits come from binary-weighted subtraction: each digit is built
+// from compare-subtract steps of 8, 4, 2 and 1 times its power of ten, so the
+// time per digit is constant (no loop) and the SNES divider is never touched -
+// these are safe to call while an interrupt handler uses $4204-$4216.
 // ============================================================================
 
 // Write decimal representation of u8 value to buf.
 // Null-terminates. Returns number of characters written (1-3).
 far fn u8_to_dec(buf: far *u8, value @ A: u8) -> u8 {
     let mut v: u8 = value;
-    let mut pos: u8 = 0;
+    let mut pos: u16 = 0;
+    let mut d: u8 = 0;
 
-    if v == 0 {
-        buf[0] = 0x30;
-        buf[1] = 0;
-        return 1;
-    }
+    // A place runs once a digit has been written or its power fits; until
+    // then it would be a leading zero, so small values skip it entirely.
 
-    // 100s place
-    let hundreds: u8 = div8(v, 100);
-    if hundreds > 0 {
-        buf[pos as u16] = hundreds + 0x30;
+    // 100s place (1-2)
+    if v >= 100 {
+        d = 1;
+        v -= 100;
+        if v >= 100 { v -= 100; d = 2; }
+        buf[pos] = d + 0x30;
         pos++;
-        v = mod8(v, 100);
     }
 
     // 10s place
-    let tens: u8 = div8(v, 10);
-    if pos > 0 || tens > 0 {
-        buf[pos as u16] = tens + 0x30;
+    if pos != 0 || v >= 10 {
+        d = 0;
+        if v >= 80 { v -= 80; d = 8; }
+        if v >= 40 { v -= 40; d += 4; }
+        if v >= 20 { v -= 20; d += 2; }
+        if v >= 10 { v -= 10; d += 1; }
+        buf[pos] = d + 0x30;
         pos++;
-        v = mod8(v, 10);
     }
 
-    // 1s place (always written)
-    buf[pos as u16] = v + 0x30;
+    // 1s place (always written, so 0 prints as "0")
+    buf[pos] = v + 0x30;
     pos++;
 
-    buf[pos as u16] = 0;
-    return pos;
+    buf[pos] = 0;
+    return pos as u8;
 }
 
 // Write decimal representation of u16 value to buf.
 // Null-terminates. Returns number of characters written (1-5).
 far fn u16_to_dec(buf: far *u8, value @ A: u16) -> u8 {
     let mut v: u16 = value;
-    let mut pos: u8 = 0;
-    let mut digit: u8 = 0;
+    let mut pos: u16 = 0;
+    let mut d: u16 = 0;
 
-    if v == 0 {
-        buf[0] = 0x30;
-        buf[1] = 0;
-        return 1;
-    }
+    // A place runs once a digit has been written or its power fits; until
+    // then it would be a leading zero, so small values skip it entirely.
 
-    // 10000s place (max digit: 6 for 65535)
-    digit = 0;
-    loop {
-        if v < 10000 { break; }
-        v = v - 10000;
-        digit++;
-    }
-    if digit > 0 {
-        buf[pos as u16] = digit + 0x30;
+    // 10000s place (1-6)
+    if v >= 10000 {
+        if v >= 40000 { v -= 40000; d = 4; }
+        if v >= 20000 { v -= 20000; d += 2; }
+        if v >= 10000 { v -= 10000; d += 1; }
+        buf[pos] = (d as u8) + 0x30;
         pos++;
     }
 
     // 1000s place
-    digit = 0;
-    loop {
-        if v < 1000 { break; }
-        v = v - 1000;
-        digit++;
-    }
-    if pos > 0 || digit > 0 {
-        buf[pos as u16] = digit + 0x30;
+    if pos != 0 || v >= 1000 {
+        d = 0;
+        if v >= 8000 { v -= 8000; d = 8; }
+        if v >= 4000 { v -= 4000; d += 4; }
+        if v >= 2000 { v -= 2000; d += 2; }
+        if v >= 1000 { v -= 1000; d += 1; }
+        buf[pos] = (d as u8) + 0x30;
         pos++;
     }
 
     // 100s place
-    digit = 0;
-    loop {
-        if v < 100 { break; }
-        v = v - 100;
-        digit++;
-    }
-    if pos > 0 || digit > 0 {
-        buf[pos as u16] = digit + 0x30;
+    if pos != 0 || v >= 100 {
+        d = 0;
+        if v >= 800 { v -= 800; d = 8; }
+        if v >= 400 { v -= 400; d += 4; }
+        if v >= 200 { v -= 200; d += 2; }
+        if v >= 100 { v -= 100; d += 1; }
+        buf[pos] = (d as u8) + 0x30;
         pos++;
     }
 
-    // 10s place
-    digit = 0;
-    loop {
-        if v < 10 { break; }
-        v = v - 10;
-        digit++;
-    }
-    if pos > 0 || digit > 0 {
-        buf[pos as u16] = digit + 0x30;
+    // v < 100 now: the last two digits are u8 work
+    let mut w: u8 = v as u8;
+    if pos != 0 || w >= 10 {
+        let mut e: u8 = 0;
+        if w >= 80 { w -= 80; e = 8; }
+        if w >= 40 { w -= 40; e += 4; }
+        if w >= 20 { w -= 20; e += 2; }
+        if w >= 10 { w -= 10; e += 1; }
+        buf[pos] = e + 0x30;
         pos++;
     }
 
-    // 1s place (always written)
-    buf[pos as u16] = (v as u8) + 0x30;
+    // 1s place (always written, so 0 prints as "0")
+    buf[pos] = w + 0x30;
     pos++;
 
-    buf[pos as u16] = 0;
-    return pos;
+    buf[pos] = 0;
+    return pos as u8;
 }
 
 // Write right-aligned, padded decimal u8 to buf.
@@ -345,38 +304,20 @@ far fn u16_to_dec(buf: far *u8, value @ A: u16) -> u8 {
 // Always writes exactly 'width' characters plus null terminator.
 // Returns width (or count if number exceeds width).
 far fn u8_to_dec_pad(buf: far *u8, value @ A: u8, width: u8, fill: u8) -> u8 {
-    let w: u8 = width;
-    let f: u8 = fill;
+    let mut count: u8 = 1;
+    if value >= 100 { count = 3; } else if value >= 10 { count = 2; }
 
-    // Format the number left-aligned
-    let count: u8 = u8_to_dec(buf, value);
-
-    // If already at or over width, done
-    if count >= w {
-        return count;
+    // At or over width: no padding, the digits are the whole field
+    if count >= width {
+        return u8_to_dec(buf, value);
     }
 
-    // Shift digits right by (w - count) positions
-    let shift: u8 = w - count;
-    let mut i: u8 = count;
-    loop {
-        if i == 0 { break; }
-        i--;
-        buf[(i + shift) as u16] = buf[i as u16];
-    }
-
-    // Fill left with fill character
-    i = 0;
-    loop {
-        if i >= shift { break; }
-        buf[i as u16] = f;
-        i++;
-    }
-
-    // Null terminate
-    buf[w as u16] = 0;
-
-    return w;
+    // Fill the left, then format into the rest (u8_to_dec writes the NUL)
+    let shift: u16 = (width - count) as u16;
+    let mut i: u16 = 0;
+    while i < shift { buf[i] = fill; i++; }
+    u8_to_dec(buf + shift, value);
+    return width;
 }
 
 // Write right-aligned, padded decimal u16 to buf.
@@ -384,65 +325,44 @@ far fn u8_to_dec_pad(buf: far *u8, value @ A: u8, width: u8, fill: u8) -> u8 {
 // Always writes exactly 'width' characters plus null terminator.
 // Returns width (or count if number exceeds width).
 far fn u16_to_dec_pad(buf: far *u8, value @ A: u16, width: u8, fill: u8) -> u8 {
-    let w: u8 = width;
-    let f: u8 = fill;
-    let val: u16 = value;
+    let mut count: u8 = 1;
+    if value >= 10000 { count = 5; }
+    else if value >= 1000 { count = 4; }
+    else if value >= 100 { count = 3; }
+    else if value >= 10 { count = 2; }
 
-    // Format the number left-aligned
-    let count: u8 = u16_to_dec(buf, val);
-
-    // If already at or over width, done
-    if count >= w {
-        return count;
+    // At or over width: no padding, the digits are the whole field
+    if count >= width {
+        return u16_to_dec(buf, value);
     }
 
-    // Shift digits right by (w - count) positions
-    let shift: u8 = w - count;
-    let mut i: u8 = count;
-    loop {
-        if i == 0 { break; }
-        i--;
-        buf[(i + shift) as u16] = buf[i as u16];
-    }
-
-    // Fill left with fill character
-    i = 0;
-    loop {
-        if i >= shift { break; }
-        buf[i as u16] = f;
-        i++;
-    }
-
-    // Null terminate
-    buf[w as u16] = 0;
-
-    return w;
+    // Fill the left, then format into the rest (u16_to_dec writes the NUL)
+    let shift: u16 = (width - count) as u16;
+    let mut i: u16 = 0;
+    while i < shift { buf[i] = fill; i++; }
+    u16_to_dec(buf + shift, value);
+    return width;
 }
 
-// Write nibble (0-15) as ASCII hex char to destination.
-macro_rules! _hex_char($dst:expr, $n:expr) {
-    if ($n) < 10 { $dst = ($n) + 0x30; } else { $dst = ($n) + 0x37; }
-}
+static HEX_DIGITS: [u8; 16] = "0123456789ABCDEF";
 
 // Write 2-char hex representation of u8 value to buf.
 // Always writes exactly 2 characters plus null. Example: 0xAB -> "AB"
 far fn u8_to_hex(buf: far *u8, value @ A: u8) {
-    let mut v: u8 = value;
-    _hex_char!(buf[0], v >> 4);
-    _hex_char!(buf[1], v & 0x0F);
+    buf[0] = HEX_DIGITS[(value >> 4) as u16];
+    buf[1] = HEX_DIGITS[(value & 0x0F) as u16];
     buf[2] = 0;
 }
 
 // Write 4-char hex representation of u16 value to buf.
 // Always writes exactly 4 characters plus null. Example: 0x1234 -> "1234"
 far fn u16_to_hex(buf: far *u8, value @ A: u16) {
-    let mut v: u16 = value;
-    let hi: u8 = (v >> 8) as u8;
-    let lo: u8 = v as u8;
-    _hex_char!(buf[0], hi >> 4);
-    _hex_char!(buf[1], hi & 0x0F);
-    _hex_char!(buf[2], lo >> 4);
-    _hex_char!(buf[3], lo & 0x0F);
+    // Nibbles extracted in 16 bits are already valid indices; u8 nibbles
+    // would each need a zero-extend before indexing.
+    buf[0] = HEX_DIGITS[value >> 12];
+    buf[1] = HEX_DIGITS[(value >> 8) & 0x0F];
+    buf[2] = HEX_DIGITS[(value >> 4) & 0x0F];
+    buf[3] = HEX_DIGITS[value & 0x0F];
     buf[4] = 0;
 }
 
@@ -482,7 +402,7 @@ macro_rules! format($target_buffer:ident, $format_string:literal, $($args:expr),
 // See r65/compiler/main.py _inject_builtin_traits().
 //
 //   trait ToString {
-//       fn to_string(*self, buf: *u8) -> u16;
+//       fn to_string(far *self, buf: far *u8) -> u16;
 //   }
 //
 // Types implementing ToString write their string representation into a

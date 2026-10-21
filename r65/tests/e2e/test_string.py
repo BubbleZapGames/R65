@@ -6,6 +6,8 @@ Tests memory primitives, string operations, character classification,
 and number formatting functions.
 """
 
+import subprocess
+import sys
 from pathlib import Path
 from r65.tests.e2e import ExpectedState
 
@@ -629,7 +631,7 @@ class TestStrchr:
             static mut STR: [u8; 8] = "Hello\\0";
 
             #[zeropage(0x10)]
-            static mut RESULT: u8;
+            static mut RESULT: u16;
 
             #[entry]
             fn main() {{
@@ -637,12 +639,12 @@ class TestStrchr:
                 RESULT = strchr(&STR as far *u8, 0x6C);
             }}
         ''', ExpectedState(memory={
-            result_addr(): 0x02
+            result_addr(): [0x02, 0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
 
     def test_strchr_not_found(self, e2e):
-        """strchr returns 0xFF when char not in string."""
+        """strchr returns 0xFFFF when char not in string."""
         result = e2e.run(f'''
             include!("{STRING_PATH}")
 
@@ -650,7 +652,7 @@ class TestStrchr:
             static mut STR: [u8; 8] = "Hello\\0";
 
             #[zeropage(0x10)]
-            static mut RESULT: u8;
+            static mut RESULT: u16;
 
             #[entry]
             fn main() {{
@@ -658,7 +660,7 @@ class TestStrchr:
                 RESULT = strchr(&STR as far *u8, 0x5A);
             }}
         ''', ExpectedState(memory={
-            result_addr(): 0xFF
+            result_addr(): [0xFF, 0xFF]
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -671,7 +673,7 @@ class TestStrchr:
             static mut STR: [u8; 8] = "Hello\\0";
 
             #[zeropage(0x10)]
-            static mut RESULT: u8;
+            static mut RESULT: u16;
 
             #[entry]
             fn main() {{
@@ -679,8 +681,31 @@ class TestStrchr:
                 RESULT = strchr(&STR as far *u8, 0x48);
             }}
         ''', ExpectedState(memory={
-            result_addr(): 0x00
+            result_addr(): [0x00, 0x00]
         }))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_strchr_index_past_255(self, e2e):
+        """strchr returns the full u16 index for a match beyond byte 255."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram]
+            static mut STR: [u8; 301];
+
+            #[zeropage(0x10)]
+            static mut RESULT: u16;
+
+            #[entry]
+            fn main() {{
+                memset(&STR as far *u8, 0x41, 300);
+                STR[260] = 0x42;
+                STR[300] = 0;
+                RESULT = strchr(&STR as far *u8, 0x42);
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): [260 & 0xFF, 260 >> 8]
+        }), max_instructions=20000)
         assert result.success, f"Failures: {result.failures}"
 
 
@@ -888,6 +913,32 @@ class TestU8ToDec:
         assert result.success, f"Failures: {result.failures}"
 
 
+    def test_u8_to_dec_boundaries(self, e2e):
+        """Every compare-subtract boundary of the binary-weighted digits."""
+        values = [0, 9, 10, 99, 100, 199, 200, 255]
+        calls = "\n".join(
+            f"RESULT[{i}] = u8_to_dec(&OUT[{4 * i}] as far *u8, {v});"
+            for i, v in enumerate(values))
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut OUT: [u8; {4 * len(values)}] = [0xFF; {4 * len(values)}];
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; {len(values)}];
+
+            #[entry]
+            fn main() {{
+                {calls}
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): [len(str(v)) for v in values],
+            **{0x7E2000 + 4 * i: ascii_bytes_null(str(v)) for i, v in enumerate(values)},
+        }), max_instructions=20000)
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestU16ToDec:
     """Test u16_to_dec function."""
 
@@ -992,6 +1043,33 @@ class TestU16ToDec:
         assert result.success, f"Failures: {result.failures}"
 
 
+    def test_u16_to_dec_boundaries(self, e2e):
+        """Every compare-subtract boundary of the binary-weighted digits."""
+        values = [9, 10, 99, 100, 999, 1000, 9999, 10000, 19999, 20000,
+                  39999, 40000, 59999, 60000, 65535]
+        calls = "\n".join(
+            f"RESULT[{i}] = u16_to_dec(&OUT[{8 * i}] as far *u8, {v});"
+            for i, v in enumerate(values))
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut OUT: [u8; {8 * len(values)}] = [0xFF; {8 * len(values)}];
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; {len(values)}];
+
+            #[entry]
+            fn main() {{
+                {calls}
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): [len(str(v)) for v in values],
+            **{0x7E2000 + 8 * i: ascii_bytes_null(str(v)) for i, v in enumerate(values)},
+        }), max_instructions=30000)
+        assert result.success, f"Failures: {result.failures}"
+
+
 class TestU16ToDecPad:
     """Test u16_to_dec_pad function."""
 
@@ -1043,6 +1121,36 @@ class TestU16ToDecPad:
             }}
         ''', ExpectedState(memory={
             result_addr(): ascii_bytes("123") + [3]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
+
+
+class TestU8ToDecPad:
+    """Test u8_to_dec_pad function."""
+
+    def test_u8_pad_zero_fill_and_overflow(self, e2e):
+        """Zero fill to width; a number wider than the field is written whole."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut PAD: [u8; 4] = [0xFF; 4];
+            #[ram(0x7E2004)]
+            static mut OVER: [u8; 4] = [0xFF; 4];
+
+            #[zeropage(0x10)]
+            static mut RESULT: [u8; 2];
+
+            #[entry]
+            fn main() {{
+                RESULT[0] = u8_to_dec_pad(&PAD as far *u8, 7, 3, 0x30);
+                RESULT[1] = u8_to_dec_pad(&OVER as far *u8, 255, 2, 0x20);
+            }}
+        ''', ExpectedState(memory={
+            result_addr(): [3, 3],
+            0x7E2000: ascii_bytes_null("007"),
+            0x7E2004: ascii_bytes_null("255"),
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -1221,3 +1329,29 @@ class TestInlineStringFarArg:
             result_addr(): [0x05, 0x00]
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestWithoutSnesCfg:
+    """string.r65 must not depend on SNES-only stdlib code."""
+
+    def test_number_formatting_compiles_without_snes_cfg(self, tmp_path):
+        """u8_to_dec once called the cfg(snes)-only mod8."""
+        src = tmp_path / "t.r65"
+        src.write_text(f'''
+            include!("{STRING_PATH}")
+
+            #[ram]
+            static mut BUF: [u8; 8];
+            #[ram]
+            static mut N: u8;
+
+            #[entry]
+            fn main() {{
+                N = u8_to_dec(&BUF as far *u8, N);
+                N = u8_to_dec_pad(&BUF as far *u8, N, 3, 0x20);
+            }}
+        ''')
+        result = subprocess.run(
+            [sys.executable, "-m", "r65.compiler.main", str(src), "-o", str(tmp_path / "t.asm")],
+            capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
