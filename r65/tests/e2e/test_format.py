@@ -691,6 +691,45 @@ class TestFormatLiteralInlining:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_format_every_specifier_after_a_variable_width_one(self, e2e):
+        """Past a variable-width value the position is a runtime offset: signed
+        values, a long literal, {c}, {bool} and a closing hex all land there,
+        and the hex's own NUL ends the string."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[entry]
+            fn main() {{
+                let a: i8 = -5;
+                let b: i16 = -300;
+                format!(BUF, "{{u8}}|{{i8}}|{{i16}}|0123456789{{c}}{{bool}}{{u8:x}}",
+                        7, a, b, 0x5A, true, 0xAB);
+            }}
+        ''', ExpectedState(memory={
+            0x7E2000: ascii_bytes_null("7|-5|-300|0123456789Z1AB") + [0xFF]
+        }), max_instructions=20000)
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_format_byte_ending_after_a_variable_width_one(self, e2e):
+        """{c} writes no NUL, so the string still gets its own."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[entry]
+            fn main() {{
+                format!(BUF, "{{u8}}{{c}}", 42, 0x5A);
+            }}
+        ''', ExpectedState(memory={
+            0x7E2000: ascii_bytes_null("42Z") + [0xFF]
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
 
 # ============================================================================
 # Multiple format! Calls in Same Scope

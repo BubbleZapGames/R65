@@ -31,14 +31,15 @@ def get_macro_invocation(stmt):
         raise AssertionError(f"Expected macro invocation, got {type(stmt)}")
 
 
-def _declares_fmtptr(stmts):
-    """True if any statement is a `let __fmtptr...` far-pointer binding.
+def _declares_fmt_offset(stmts):
+    """True if any statement is a `let __fmto...` runtime-offset binding.
 
-    format! emits the running far pointer lazily, only once a variable-width
-    specifier forces Phase B. Pure Phase-A formats declare no pointer.
+    format! declares the offset lazily, only once a variable-width specifier
+    makes the write position depend on a value and something after it still
+    needs that position. Constant-position formats declare none.
     """
     return any(
-        isinstance(s, ast.LetStmt) and s.name and s.name.startswith('__fmtptr')
+        isinstance(s, ast.LetStmt) and s.name and s.name.startswith('__fmto')
         for s in stmts
     )
 
@@ -1566,9 +1567,9 @@ class TestFormatMacro:
         assert len(funcs) == 1
         stmts = funcs[0].body.statements
         # Phase A: "Hello" (5 <= inline max) -> 5 direct stores + null terminate,
-        # no far pointer, no ROM static.
+        # no runtime offset, no ROM static.
         assert len(stmts) == 6
-        assert not _declares_fmtptr(stmts)
+        assert not _declares_fmt_offset(stmts)
         assert not [i for i in expanded.items
                     if isinstance(i, ast.StaticDecl) and i.name.startswith('__fmtstr_')]
 
@@ -1589,10 +1590,10 @@ class TestFormatMacro:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # "N:" -> 2 direct stores (Phase A); "{u8}" forces Phase B: let __fmtptr,
-        # let __fmtn0 = u8_to_dec, ptr advance, null terminate = 6
-        assert len(stmts) == 6
-        assert _declares_fmtptr(stmts)
+        # "N:" -> 2 direct stores, then let __fmtn0 = u8_to_dec(&BUF[2]) = 3.
+        # u8_to_dec writes the terminator, so nothing needs the position after it.
+        assert len(stmts) == 3
+        assert not _declares_fmt_offset(stmts)
         assert any(
             isinstance(s, ast.LetStmt)
             and isinstance(s.initializer, ast.FunctionCall)
@@ -1693,8 +1694,8 @@ class TestFormatMacro:
         stmts = funcs[0].body.statements
         # No pointer needed: just the null terminator written direct (BUF[0] = 0)
         assert len(stmts) == 1
-        # No far pointer declared for a pure Phase-A format
-        assert not _declares_fmtptr(stmts)
+        # No runtime offset declared for a constant-position format
+        assert not _declares_fmt_offset(stmts)
 
     def test_format_compile_with_all_specifiers(self):
         """format! with all specifier types compiles without error."""
@@ -1998,7 +1999,7 @@ class TestFormatLiteralInlining:
         assert decode_literal("A\\nB") == [0x41, 0x0A, 0x42]
 
     def test_small_literal_inlines(self):
-        """Short literals emit direct indexed immediate stores, no far pointer."""
+        """Short literals emit direct indexed immediate stores, no runtime offset."""
         source = '''
         #[ram]
         static mut BUF: [u8; 32] = [0; 32];
@@ -2012,9 +2013,9 @@ class TestFormatLiteralInlining:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Phase A: BUF[0]='H'; BUF[1]='i'; BUF[2]=0; -> 3 stmts, no pointer
+        # Phase A: BUF[0]='H'; BUF[1]='i'; BUF[2]=0; -> 3 stmts, no offset
         assert len(stmts) == 3
-        assert not _declares_fmtptr(stmts)
+        assert not _declares_fmt_offset(stmts)
         # Every statement is a direct store into BUF[const] (no deref/advance)
         assert all(
             isinstance(s, ast.ExprStmt)
@@ -2041,9 +2042,9 @@ class TestFormatLiteralInlining:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Phase A long literal: copy loop + null terminate, still no far pointer
+        # Phase A long literal: copy loop + null terminate, still no offset
         assert len(stmts) == 2
-        assert not _declares_fmtptr(stmts)
+        assert not _declares_fmt_offset(stmts)
 
         # Should have injected a static declaration for the literal
         statics = [i for i in expanded.items if isinstance(i, ast.StaticDecl) and i.name.startswith('__fmtstr_')]
@@ -2069,9 +2070,9 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Phase A fixed-width: if/else writing BUF[0], null terminate = 2; no pointer
+        # Phase A fixed-width: if/else writing BUF[0], null terminate = 2; no offset
         assert len(stmts) == 2
-        assert not _declares_fmtptr(stmts)
+        assert not _declares_fmt_offset(stmts)
         assert any('If' in type(s).__name__ for s in stmts)
 
     def test_format_with_i8(self):
@@ -2091,9 +2092,10 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, let __fmts0, if sign check, let __fmtn0 = u8_to_dec,
-        #              ptr advance, null terminate = 6
-        assert len(stmts) == 6
+        # let __fmto (the '-' moves the position conditionally), let __fmts0,
+        # if sign check, let __fmtn0 = u8_to_dec, which writes the NUL = 4
+        assert len(stmts) == 4
+        assert _declares_fmt_offset(stmts)
 
     def test_format_with_i16(self):
         """format! with {i16} generates inline sign check + u16_to_dec call."""
@@ -2112,9 +2114,9 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Should have: let __fmtptr, let __fmts0, if sign check, let __fmtn0 = u16_to_dec,
-        #              ptr advance, null terminate = 6
-        assert len(stmts) == 6
+        # let __fmto, let __fmts0, if sign check, let __fmtn0 = u16_to_dec = 4
+        assert len(stmts) == 4
+        assert _declares_fmt_offset(stmts)
 
     def test_format_with_u8_padded(self):
         """format! with {u8:3d} generates u8_to_dec_pad call."""
@@ -2133,10 +2135,10 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Phase A fixed-width: u8_to_dec_pad(&BUF[0], ...) + null terminate = 2;
-        # no far pointer (the formatter gets an immediate &BUF[off]).
-        assert len(stmts) == 2
-        assert not _declares_fmtptr(stmts)
+        # Fixed width: u8_to_dec_pad(&BUF[0], ...), which writes the NUL itself;
+        # no offset (the formatter gets an immediate &BUF[off]).
+        assert len(stmts) == 1
+        assert not _declares_fmt_offset(stmts)
         assert any(
             isinstance(s, ast.ExprStmt)
             and isinstance(s.expr, ast.FunctionCall)
@@ -2161,10 +2163,9 @@ class TestFormatNewSpecifiers:
 
         funcs = [i for i in expanded.items if isinstance(i, ast.FunctionDecl) and i.name == 'test']
         stmts = funcs[0].body.statements
-        # Phase A fixed-width: u16_to_dec_pad(&BUF[0], ...) + null terminate = 2;
-        # no far pointer.
-        assert len(stmts) == 2
-        assert not _declares_fmtptr(stmts)
+        # Fixed width: u16_to_dec_pad(&BUF[0], ...), which writes the NUL; no offset.
+        assert len(stmts) == 1
+        assert not _declares_fmt_offset(stmts)
         assert any(
             isinstance(s, ast.ExprStmt)
             and isinstance(s.expr, ast.FunctionCall)

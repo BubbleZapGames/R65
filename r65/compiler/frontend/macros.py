@@ -1107,45 +1107,69 @@ class MacroExpander:
 
         # Generate R65 source code with unique variable names per invocation.
         #
-        # Two-phase state machine over `off`, the write offset from the buffer
-        # base. While `off` is a known constant (Phase A) we write literal bytes
-        # as direct indexed immediate stores (buf[off] = imm -> LDA #imm; STA
-        # $7E....) and pass &buf[off] to formatters — no running pointer, no
-        # 24-bit pointer arithmetic. The far pointer `p` is declared lazily only
-        # when a variable-length specifier (plain decimal, signed, string) makes
-        # the offset unknown (Phase B), after which every write goes through
-        # the cursor `p`, which then advances.
+        # The write position is `o + k`: `k` a constant the expansion tracks,
+        # `o` a u16 offset declared only when a variable-length specifier
+        # (plain decimal, signed, string, narrow padded) makes the position
+        # depend on a value (Phase B). Every write is an indexed store into
+        # the buffer - `buf[k] = imm` is `STA $7E2000+k`, `buf[o + k] = imm`
+        # `STA $7E2000+k,X` - and literals only grow `k`, so a run of them
+        # costs no arithmetic; `o` absorbs `k` at the next value-dependent
+        # step. A running far pointer instead would be written through with a
+        # DBR bracket per byte in a function with no far-pointer parameter.
         fmt_id = self._format_invocation_counter
         self._format_invocation_counter += 1
-        p = f'__fmtptr{fmt_id}'  # unique pointer name (declared lazily, Phase B)
+        o = f'__fmto{fmt_id}'  # runtime offset (declared lazily, Phase B)
         lines: List[str] = []
         arg_idx = 0
         var_idx = 0
-        off = 0  # Phase A: known offset from buffer base; None once in Phase B
+        k = 0                   # constant part of the write position
+        in_phase_b = False      # whether `o` is declared
+        # Whether the last write was a formatter that NUL-terminated at the
+        # current position, which then needs no terminator of its own.
+        terminated = False
+        # Index in `lines` of the latest position update, dropped if nothing
+        # after it needs the position.
+        last_bump = None
+
+        def pos() -> str:
+            if not in_phase_b:
+                return str(k)
+            return o if k == 0 else f'{o} + {k}'
 
         def at_ptr() -> str:
             # Far-pointer expression for the current write position (formatter arg).
-            # In Phase A this is an immediate &buf[off]; in Phase B the live cursor.
-            return p if off is None else f'&{buf}[{off}] as far *u8'
+            return f'&{buf}[{pos()}] as far *u8'
 
         def at_lvalue() -> str:
             # Lvalue for a direct single-byte write at the current position.
-            return f'*{p}' if off is None else f'{buf}[{off}]'
+            return f'{buf}[{pos()}]'
 
-        def advance(k) -> None:
-            nonlocal off
-            if off is None:
-                lines.append(f'{p} = {p} + {k};')
+        def advance(n: int) -> None:
+            nonlocal k
+            k += n
+
+        def bump(count: str) -> None:
+            # Move the position past `count` bytes written by a formatter.
+            nonlocal k, in_phase_b, last_bump
+            step = f'{count} as u16' if k == 0 else f'{k} + {count} as u16'
+            last_bump = len(lines)
+            if in_phase_b:
+                lines.append(f'{o} = {o} + {step};')
             else:
-                off += k
+                lines.append(f'let mut {o}: u16 = {step};')
+                in_phase_b = True
+            k = 0
 
-        def enter_phase_b() -> None:
-            # Materialise the running far pointer at the current known offset and
-            # switch to pointer mode. No-op if already in Phase B.
-            nonlocal off
-            if off is not None:
-                lines.append(f'let mut {p}: far *u8 = &{buf}[{off}] as far *u8;')
-                off = None
+        def materialize() -> None:
+            # Make `o` the whole position (k = 0), for code that moves it
+            # conditionally.
+            nonlocal k, in_phase_b
+            if not in_phase_b:
+                lines.append(f'let mut {o}: u16 = {k};')
+                in_phase_b = True
+            elif k:
+                lines.append(f'{o} = {o} + {k};')
+            k = 0
 
         def inject_literal_static(text: str, byte_len: int) -> str:
             # Inject a ROM array holding the literal bytes; return its name.
@@ -1177,7 +1201,7 @@ class MacroExpander:
                 if byte_len == 0:
                     continue
                 if byte_len <= self.FORMAT_LITERAL_INLINE_MAX:
-                    # Inline immediate stores (direct in Phase A, *p in Phase B)
+                    # Inline immediate stores
                     for b in literal_bytes:
                         lines.append(f'{at_lvalue()} = {hex(b)};')
                         advance(1)
@@ -1185,17 +1209,12 @@ class MacroExpander:
                     # Long literal: ROM array + indexed copy loop to bound ROM
                     static_name = inject_literal_static(text, byte_len)
                     idx_var = f'__fmti{fmt_id}_{var_idx}'
-                    if off is None:
-                        lines.append(
-                            f'for {idx_var} in 0..{byte_len} {{ {p}[{idx_var}] = {static_name}[{idx_var}]; }}'
-                        )
-                        lines.append(f'{p} = {p} + {byte_len};')
-                    else:
-                        lines.append(
-                            f'for {idx_var} in 0..{byte_len} {{ {buf}[{off} + {idx_var}] = {static_name}[{idx_var}]; }}'
-                        )
-                        off += byte_len
+                    lines.append(
+                        f'for {idx_var} in 0..{byte_len} {{ {buf}[{pos()} + {idx_var}] = {static_name}[{idx_var}]; }}'
+                    )
+                    advance(byte_len)
                     var_idx += 1
+                terminated = False
             elif seg_type == 'specifier':
                 spec = seg_data
                 arg = format_args[arg_idx].strip()
@@ -1203,9 +1222,13 @@ class MacroExpander:
                 f = spec.get('format')
 
                 n = f'__fmtn{fmt_id}_{var_idx}'
-                s = f'__fmts{fmt_id}_{var_idx}'
+                sv = f'__fmts{fmt_id}_{var_idx}'
+                # The decimal, padded and hex formatters end with a NUL;
+                # {c} and {bool} store a byte, and {s} may be a ToString impl,
+                # which writes none.
+                terminated = True
 
-                # --- Fixed-width specifiers: offset stays statically known ---
+                # --- Fixed-width specifiers: position stays where it was ---
                 if t in ('u8', 'u16') and f == 'd' and spec.get('width'):
                     w = spec['width']
                     fill = '0x30' if spec.get('zero_pad') else '0x20'
@@ -1217,9 +1240,8 @@ class MacroExpander:
                     else:
                         # Width is a minimum: a wider value is written whole and
                         # the pad function returns its length, so advance by that.
-                        enter_phase_b()
-                        lines.append(f'let {n}: u8 = {pad_fn}({p}, {arg}, {w}, {fill});')
-                        lines.append(f'{p} = {p} + {n} as u16;')
+                        lines.append(f'let {n}: u8 = {pad_fn}({at_ptr()}, {arg}, {w}, {fill});')
+                        bump(n)
                         var_idx += 1
                 elif t == 'u8' and f == 'x':
                     lines.append(f'u8_to_hex({at_ptr()}, {arg});')
@@ -1230,61 +1252,55 @@ class MacroExpander:
                 elif t == 'c':
                     lines.append(f'{at_lvalue()} = {arg};')
                     advance(1)
+                    terminated = False
                 elif t == 'bool':
                     dst = at_lvalue()
                     lines.append(
                         f'if {arg} {{ {dst} = 0x31; }} else {{ {dst} = 0x30; }}'
                     )
                     advance(1)
-                # --- Variable-width specifiers: force Phase B, then advance p ---
+                    terminated = False
+                # --- Variable-width specifiers: the position moves by the count ---
                 elif t == 'u8' and f == 'd':
-                    enter_phase_b()
-                    lines.append(f'let {n}: u8 = u8_to_dec({p}, {arg});')
-                    lines.append(f'{p} = {p} + {n} as u16;')
+                    lines.append(f'let {n}: u8 = u8_to_dec({at_ptr()}, {arg});')
+                    bump(n)
                     var_idx += 1
                 elif t == 'u16' and f == 'd':
-                    enter_phase_b()
-                    lines.append(f'let {n}: u8 = u16_to_dec({p}, {arg});')
-                    lines.append(f'{p} = {p} + {n} as u16;')
+                    lines.append(f'let {n}: u8 = u16_to_dec({at_ptr()}, {arg});')
+                    bump(n)
                     var_idx += 1
                 elif t == 's':
                     # __fmt_str() is dispatched by the type checker to strcpy (u8
                     # strings) or to_string (ToString impls) on the arg's type.
-                    enter_phase_b()
-                    lines.append(f'let {n}: u16 = __fmt_str({p}, {arg});')
-                    lines.append(f'{p} = {p} + {n} as u16;')
+                    lines.append(f'let {n}: u16 = __fmt_str({at_ptr()}, {arg});')
+                    bump(n)
                     var_idx += 1
-                elif t == 'i8' and f == 'd':
-                    # Inline sign check: if negative, write '-' and negate
-                    enter_phase_b()
-                    lines.append(f'let mut {s}: u8 = {arg} as u8;')
+                    terminated = False
+                elif t in ('i8', 'i16') and f == 'd':
+                    # Inline sign check: if negative, write '-' and negate.
+                    # The '-' moves the position conditionally, so `o` takes it all.
+                    ut, sign, dec_fn = (('u8', '0x80', 'u8_to_dec') if t == 'i8'
+                                        else ('u16', '0x8000', 'u16_to_dec'))
+                    materialize()
+                    lines.append(f'let mut {sv}: {ut} = {arg} as {ut};')
                     lines.append(
-                        f'if {s} & 0x80 != 0 {{'
-                        f' *{p} = 0x2D; {p} = {p} + 1;'
-                        f' {s} = 0 - {s};'
+                        f'if {sv} & {sign} != 0 {{'
+                        f' {buf}[{o}] = 0x2D; {o} = {o} + 1;'
+                        f' {sv} = 0 - {sv};'
                         f' }}'
                     )
-                    lines.append(f'let {n}: u8 = u8_to_dec({p}, {s});')
-                    lines.append(f'{p} = {p} + {n} as u16;')
-                    var_idx += 1
-                elif t == 'i16' and f == 'd':
-                    # Inline sign check: if negative, write '-' and negate
-                    enter_phase_b()
-                    lines.append(f'let mut {s}: u16 = {arg} as u16;')
-                    lines.append(
-                        f'if {s} & 0x8000 != 0 {{'
-                        f' *{p} = 0x2D; {p} = {p} + 1;'
-                        f' {s} = 0 - {s};'
-                        f' }}'
-                    )
-                    lines.append(f'let {n}: u8 = u16_to_dec({p}, {s});')
-                    lines.append(f'{p} = {p} + {n} as u16;')
+                    lines.append(f'let {n}: u8 = {dec_fn}({at_ptr()}, {sv});')
+                    bump(n)
                     var_idx += 1
 
                 arg_idx += 1
 
-        # Null terminate (direct store in Phase A, *p in Phase B)
-        lines.append(f'{at_lvalue()} = 0;')
+        # Null terminate, unless the last formatter already did - then the
+        # position past it is never read either.
+        if not terminated:
+            lines.append(f'{at_lvalue()} = 0;')
+        elif last_bump == len(lines) - 1:
+            lines.pop()
 
         # Wrap in function, parse, extract statements
         source_code = ' '.join(lines)
