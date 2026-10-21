@@ -31,10 +31,12 @@ class MacroExpander:
     MAX_EXPANSION_DEPTH = 64
 
     # format!: literals up to this many bytes are emitted as inline immediate
-    # stores (buf[off] = imm) while the write offset is statically known.
-    # Longer literals fall back to a ROM array + indexed copy loop to bound ROM
-    # growth. See _expand_format_macro.
-    FORMAT_LITERAL_INLINE_MAX = 8
+    # stores (buf[off] = imm), which ConstantStoreMerger pairs into word
+    # stores: about 4.5 cycles and 3.5 bytes of ROM per character, against
+    # 17 cycles and 1 byte (plus ~20 for the loop) for a ROM array and
+    # indexed copy loop. Longer literals take the loop to bound ROM growth.
+    # See _expand_format_macro.
+    FORMAT_LITERAL_INLINE_MAX = 16
 
     # Most decimal digits a value can need ("255", "65535"). A {u8:Nd} or
     # {u16:Nd} field at least this wide never overflows its width.

@@ -50,7 +50,7 @@ SET_DBR = """
 far fn find(a: far *u8) -> u8 {
     let mut i: u16 = 0;
     let k: u8 = K;
-    Z[0] = 1; Z[1] = 2; Z[2] = 3; Z[3] = 4; Z[4] = 5; Z[5] = 6; Z[6] = 7; Z[7] = 8;
+    Z[0] = k; Z[1] = k; Z[2] = k; Z[3] = k; Z[4] = k; Z[5] = k; Z[6] = k; Z[7] = k;
     loop {
         if k == a[i] { return i as u8; }
         if k < a[i] { return 0xFE; }

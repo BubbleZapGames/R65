@@ -15,8 +15,8 @@ The case it is for is an OAM entry: `tile` and `attr` are adjacent u8
 fields that `OamBuffer.set!` fills from one `chr` (bound once in the macro).
 Two m8 byte stores with an `XBA` between become one m16 store.
 
-Only a pair taken from one vreg merges - two constant bytes are already two
-cheap immediates. The location must be the same but for the byte (same
+A single pair of constant bytes is left to the run merge below
+(`ConstantStoreMerger`). The location must be the same but for the byte (same
 storage, symbol and index register), not `#[hw]`, nothing from the first
 conversion to the second store may write `v`, and nothing between the two
 stores may touch memory or write an index register (the index set up for
@@ -148,3 +148,68 @@ class StoreMerger:
                               and isinstance(instr.dest, VirtualRegister)):
                 return False
         return True
+
+
+class ConstantStoreMerger:
+    """Merge a run of constant byte stores to consecutive bytes into word stores.
+
+    Four bytes of text at `BUF+k` (format!'s literals, a struct or array set
+    up field by field) are four `LDA #imm / STA` in m8, 28 cycles; as two
+    `LDA #imm16 / STA` they are 18, plus the REP and the SEP back. One pair
+    alone would be a cycle slower than its two byte stores, so only runs of
+    at least MIN_RUN bytes merge; an odd last byte stays a byte store. A
+    REP/SEP between two runs is codegen's to coalesce.
+
+    The stores must be adjacent, to plain memory (not `#[hw]`, where each
+    byte write is an access of its own), at the same base and index register
+    one byte apart - so nothing between them can change the index. After
+    index-offset folding, which turns `buf[o + k]` into `BUF+k,X` stores
+    sharing one X.
+    """
+
+    MIN_RUN = 4
+
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+        self.merged = 0
+
+    def optimize(self, mir_program: MIRProgram) -> int:
+        """Rewrite every run in the program. Returns the word stores made."""
+        self.merged = 0
+        for func in mir_program.functions:
+            for block in func.blocks.values():
+                block.instructions = self._rewrite(block.instructions)
+        return self.merged
+
+    @staticmethod
+    def _const_byte(instr) -> bool:
+        return (isinstance(instr, Store) and type(instr.source) is Immediate
+                and instr.source.symbol is None and isinstance(instr.source.value, int)
+                and _int_name(instr.type_info) in ('u8', 'i8')
+                and isinstance(instr.dest, MemoryLocation)
+                and instr.dest.storage_type != 'hw')
+
+    def _rewrite(self, instrs):
+        from r65.compiler.hir.types import BasicTypeInfo
+        out = []
+        i = 0
+        while i < len(instrs):
+            j = i
+            if self._const_byte(instrs[i]):
+                while (j + 1 < len(instrs) and self._const_byte(instrs[j + 1])
+                       and _next_byte(instrs[j].dest, instrs[j + 1].dest)):
+                    j += 1
+            if j - i + 1 < self.MIN_RUN:
+                out.append(instrs[i])
+                i += 1
+                continue
+            for k in range(i, j, 2):
+                lo, hi = instrs[k], instrs[k + 1]
+                word = (lo.source.value & 0xFF) | (hi.source.value & 0xFF) << 8
+                out.append(Store(source=Immediate(word), dest=lo.dest,
+                                 type_info=BasicTypeInfo('u16'), source_loc=lo.source_loc))
+                self.merged += 1
+            if (j - i + 1) % 2:
+                out.append(instrs[j])
+            i = j + 1
+        return out

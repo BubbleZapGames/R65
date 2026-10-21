@@ -244,6 +244,14 @@ class ProgramCodeGenerator:
             if offsets_folded > 0:
                 print(f"Index offsets: {offsets_folded} constant(s) folded into addresses", file=sys.stderr)
 
+            # Constant store runs - four or more constant bytes stored to
+            # consecutive addresses as word stores. After index offsets, so
+            # `buf[o + k] = imm` runs share their base and X.
+            from r65.compiler.optimize.store_merge import ConstantStoreMerger
+            words_merged = ConstantStoreMerger(verbose=False).optimize(mir_program)
+            if words_merged > 0:
+                print(f"Constant store runs: {words_merged} word store(s) made", file=sys.stderr)
+
             # Loop unrolling - fully unroll small static loops at -O2
             if opt_level >= 2:
                 from r65.compiler.optimize.loop_unroll import LoopUnroller

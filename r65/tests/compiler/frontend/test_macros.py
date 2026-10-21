@@ -2034,7 +2034,7 @@ class TestFormatLiteralInlining:
         static mut BUF: [u8; 32] = [0; 32];
 
         fn test() {
-            __format!(BUF, "Hello, World!");
+            __format!(BUF, "Hello, World! 1234567");
         }
         '''
         program = parse(source, "<test>")
