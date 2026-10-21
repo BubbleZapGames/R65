@@ -1015,6 +1015,15 @@ class CallInstructionSelector(BaseSelector):
                 source_size = get_type_size(arg.value.type_info)
 
             self._ensure_m8_mode("8-bit A for far ptr push")
+            if isinstance(arg.value, MIRImmediate) and source_size == 3:
+                # A constant address: its bank byte, then PEA pushes the
+                # word high byte first, so it lands low byte on top.
+                from r65.compiler.codegen.asm_nodes import Immediate
+                bank_ref, word_ref = self._far_constant_refs(arg.value)
+                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(bank_ref), "Bank byte")
+                self._emit_push('A', "Push bank byte")
+                self._emit_instr(Opcode.PEA, Immediate(word_ref), "Push address")
+                return
             bytes_pushed_so_far = 0
             for byte_idx in range(2, -1, -1):  # bank, high, low
                 byte_name = {2: "bank", 1: "high", 0: "low"}[byte_idx]
@@ -1028,6 +1037,15 @@ class CallInstructionSelector(BaseSelector):
                     self.parent._emit_load('LDA', loc, f"Load {byte_name} byte")
                 self._emit_push('A', f"Push {byte_name} byte")
                 bytes_pushed_so_far += 1
+
+    def _far_constant_refs(self, value: 'MIRImmediate'):
+        """`(bank_ref, word_ref)` operands for a constant far address: a
+        number, or a static's address plus an offset."""
+        if value.symbol is None:
+            return f"${(value.value >> 16) & 0xFF:02X}", f"${value.value & 0xFFFF:04X}"
+        _, bank_ref, word_ref = self.parent.move_selector.variable_address_refs(
+            value.symbol, value.symbol_offset)
+        return bank_ref, word_ref
 
     def _emit_caller_arg_cleanup(self, stack_bytes_pushed: int, live_regs: Set[str]):
         """Pop the PHA-pushed arguments after the call returns.

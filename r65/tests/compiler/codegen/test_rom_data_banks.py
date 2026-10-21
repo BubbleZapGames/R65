@@ -42,13 +42,28 @@ FIELD_READER = '''
 def test_far_address_with_offset_splits_the_sum():
     """`>label + 1` is `(>label) + 1` to WLA-DX: the byte prefixes need the
     sum parenthesised, and the bank byte is the label's own."""
-    asm = compile_string(FIELD_READER + '''
+    asm = compile_string('''
+        struct P { x: u8, y: u8 }
+        #[zeropage(0x10)] static mut R: u8;
+        #[zeropage(0x20)] static mut FP: far *u8;
+        #[entry] fn main() { FP = &ROMP.y; R = *FP; }
         #[bank(1)]
         static ROMP: P = P { x: 1, y: 2 };
     ''', cfg_options=["snes"])
     assert "LDA #<(__ROMP_data + 1)" in asm
     assert "LDA #>(__ROMP_data + 1)" in asm
     assert "#:__ROMP_data + 1" not in asm
+
+
+def test_far_address_argument_is_pushed_whole():
+    """A constant far address passed on the stack is its bank byte and a PEA
+    of the label plus offset, not three frame bytes pushed one at a time."""
+    asm = compile_string(FIELD_READER + '''
+        #[bank(1)]
+        static ROMP: P = P { x: 1, y: 2 };
+    ''', cfg_options=["snes"])
+    assert "LDA #:__ROMP_data" in asm
+    assert "PEA __ROMP_data+1" in asm
 
 
 def test_hirom_rom_static_address_is_far():

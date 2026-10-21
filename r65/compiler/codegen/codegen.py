@@ -419,6 +419,15 @@ class ProgramCodeGenerator:
             if streams_split > 0:
                 print(f"Index streams: {streams_split} moved to Y", file=sys.stderr)
 
+            # Constant far-pointer arguments - `&BUF[4] as far *u8` passed on
+            # the stack is pushed as LDA #bank / PHA / PEA addr, not built in
+            # a frame slot first. After parameter analysis, which may turn a
+            # stack argument into a scratch one.
+            from r65.compiler.optimize.far_const_args import FarConstantArgFolder
+            far_args = FarConstantArgFolder(verbose=False).optimize(mir_program)
+            if far_args > 0:
+                print(f"Constant far arguments: {far_args} pushed as immediates", file=sys.stderr)
+
         # Whether the program needs a shared interrupt-vector placeholder.
         # The vector table is 16-bit and an interrupt clears PB, so
         # `__empty_handler` (the target of every unused vector) must be
