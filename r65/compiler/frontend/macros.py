@@ -36,6 +36,10 @@ class MacroExpander:
     # growth. See _expand_format_macro.
     FORMAT_LITERAL_INLINE_MAX = 8
 
+    # Most decimal digits a value can need ("255", "65535"). A {u8:Nd} or
+    # {u16:Nd} field at least this wide never overflows its width.
+    FORMAT_DEC_DIGITS = {'u8': 3, 'u16': 5}
+
     # Hints for common Rust macros that don't exist in R65
     _RUST_MACRO_HINTS = {
         'println':       "use format!() to write to a buffer, then output via hardware",
@@ -1202,16 +1206,21 @@ class MacroExpander:
                 s = f'__fmts{fmt_id}_{var_idx}'
 
                 # --- Fixed-width specifiers: offset stays statically known ---
-                if t == 'u8' and f == 'd' and spec.get('width'):
+                if t in ('u8', 'u16') and f == 'd' and spec.get('width'):
                     w = spec['width']
                     fill = '0x30' if spec.get('zero_pad') else '0x20'
-                    lines.append(f'u8_to_dec_pad({at_ptr()}, {arg}, {w}, {fill});')
-                    advance(w)
-                elif t == 'u16' and f == 'd' and spec.get('width'):
-                    w = spec['width']
-                    fill = '0x30' if spec.get('zero_pad') else '0x20'
-                    lines.append(f'u16_to_dec_pad({at_ptr()}, {arg}, {w}, {fill});')
-                    advance(w)
+                    pad_fn = f'{t}_to_dec_pad'
+                    if w >= self.FORMAT_DEC_DIGITS[t]:
+                        # Every value fits the field: exactly w bytes.
+                        lines.append(f'{pad_fn}({at_ptr()}, {arg}, {w}, {fill});')
+                        advance(w)
+                    else:
+                        # Width is a minimum: a wider value is written whole and
+                        # the pad function returns its length, so advance by that.
+                        enter_phase_b()
+                        lines.append(f'let {n}: u8 = {pad_fn}({p}, {arg}, {w}, {fill});')
+                        lines.append(f'{p} = {p} + {n} as u16;')
+                        var_idx += 1
                 elif t == 'u8' and f == 'x':
                     lines.append(f'u8_to_hex({at_ptr()}, {arg});')
                     advance(2)
@@ -1511,12 +1520,12 @@ class MacroExpander:
                 spec = seg_data
                 if spec['type'] == 'u8' and spec.get('format') == 'd':
                     if spec.get('width'):
-                        max_chars += spec['width']
+                        max_chars += max(spec['width'], 3)
                     else:
                         max_chars += 3    # "255"
                 elif spec['type'] == 'u16' and spec.get('format') == 'd':
                     if spec.get('width'):
-                        max_chars += spec['width']
+                        max_chars += max(spec['width'], 5)
                     else:
                         max_chars += 5    # "65535"
                 elif spec['type'] == 'u8' and spec.get('format') == 'x':

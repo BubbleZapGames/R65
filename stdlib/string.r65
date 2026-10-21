@@ -389,6 +389,11 @@ far fn u16_to_hex(buf: far *u8, value @ A: u16) {
 //   {s}       - string copy        (strcpy)
 //   {c}       - single byte
 //   {{  }}    - literal braces
+//
+// N is a minimum, as in Rust: a value wider than N is written whole. A field
+// at least as wide as the type's largest value (3 for u8, 5 for u16) keeps
+// the write offset known at compile time; a narrower one advances by the
+// length actually written.
 // ============================================================================
 
 macro_rules! format($target_buffer:ident, $format_string:literal, $($args:expr),*) {

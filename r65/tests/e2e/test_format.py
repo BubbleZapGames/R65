@@ -481,6 +481,23 @@ class TestFormatPadded:
         }))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_format_padded_overflow(self, e2e):
+        """Width is a minimum: a wider value is written whole, nothing after it lost."""
+        result = e2e.run(f'''
+            include!("{STRING_PATH}")
+
+            #[ram(0x7E2000)]
+            static mut BUF: [u8; 32] = [0xFF; 32];
+
+            #[entry]
+            fn main() {{
+                format!(BUF, "{{u8:2d}}|{{u16:3d}}|{{u8:2d}}", 255, 12345, 7);
+            }}
+        ''', ExpectedState(memory={
+            0x7E2000: ascii_bytes_null("255|12345| 7")
+        }))
+        assert result.success, f"Failures: {result.failures}"
+
 
 # ============================================================================
 # Bool Format Tests
