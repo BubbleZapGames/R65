@@ -191,6 +191,22 @@ class ProgramCodeGenerator:
                 if func_eliminated2 > 0:
                     print(f"Post-inlining dead function elimination: {func_eliminated2} function(s) removed", file=sys.stderr)
 
+            # Jump threading - a predecessor that sets a bool to a constant
+            # jumps straight to where the branch on it goes (an inlined
+            # `return a == b` tested by `if`).
+            from r65.compiler.optimize.jump_thread import JumpThreader
+            from r65.compiler.mir.mode_tracker import reanalyze_function
+            threader = JumpThreader(verbose=False)
+            threaded = threader.optimize(mir_program)
+            if threaded > 0:
+                print(f"Jump threading: {threaded} edge(s) threaded", file=sys.stderr)
+                for func in threader.changed_funcs:
+                    if not reanalyze_function(func):
+                        from r65.compiler.errors import MIRLoweringError
+                        raise MIRLoweringError(
+                            f"Mode tracking failed for function '{func.name}' "
+                            "after jump threading.")
+
             # Constant propagation - a local assigned one constant feeds its
             # reads as an immediate (a macro's `let` of a constant argument,
             # a constant inlined into a body).

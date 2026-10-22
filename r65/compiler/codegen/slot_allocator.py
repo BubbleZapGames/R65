@@ -22,7 +22,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, CompareIndirect, BitTest, Rotate,
     ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm, fixed_clobbers,
-    TraitDispatch, BankByte, Immediate, map_operands,
+    TraitDispatch, BankByte, Immediate, CondBranch, map_operands,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
@@ -1036,6 +1036,11 @@ class StackSlotAllocator:
             type(use.right) is VirtualRegister and
             use.right.id == vreg_id and
             not self._in_accumulator(use.left)):
+            return True
+        # A branch on a value in A tests it there (N/Z, or CMP #0).
+        if (use_type is CondBranch and
+            type(use.condition) is VirtualRegister and
+            use.condition.id == vreg_id):
             return True
         # A unary op (EOR / EOR+INC) works on its operand in A.
         if (use_type is UnaryOp and
