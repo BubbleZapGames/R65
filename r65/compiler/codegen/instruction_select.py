@@ -2239,7 +2239,7 @@ class InstructionSelector:
             # Emit each assembly instruction as a raw line
             # The instruction string may contain operands, e.g., "LDA #$42"
             # Use raw emission since this is user-provided assembly
-            self.emitter.emit_raw(asm_instr)
+            self.emitter.emit_raw(asm_instr, self._current_source_loc)
             # Track REP/SEP mode changes to keep mode tracker in sync
             stripped = asm_instr.strip().upper()
             if stripped.startswith(('REP', 'SEP')) and '#' in stripped:

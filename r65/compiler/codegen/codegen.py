@@ -1091,7 +1091,7 @@ class ProgramCodeGenerator:
         self._collect_scopes(mir_program, nodes, base_address)
 
         # Collect line mappings
-        self._collect_line_info(nodes, base_address)
+        self._collect_line_info(mir_program, nodes, base_address)
 
         # Write debug file
         dbg_path = output_file.replace('.asm', '.dbg')
@@ -1137,6 +1137,14 @@ class ProgramCodeGenerator:
                 seg_type="ro"
             )
 
+    def _segment_id(self, bank_num: int) -> int | None:
+        """The .dbg segment of WLA bank `bank_num`, if it has one."""
+        cpu_bank = self._cpu_bank(bank_num)
+        for seg in self.debug_info.segments:
+            if seg.bank == cpu_bank:
+                return seg.id
+        return None
+
     def _cpu_bank(self, bank_num: int) -> int:
         """The 65816 bank the CPU executes WLA bank `bank_num` from.
 
@@ -1171,20 +1179,16 @@ class ProgramCodeGenerator:
             # Get address from label
             addr = label_addresses.get(func.name, base_address)
 
-            # Determine segment (bank): the one _organize_functions_by_bank put it in
-            bank_num = 0
-            if func.bank_attr is not None:
-                bank_num = func.bank_attr.bank_number
-                if bank_num is None:
-                    bank_num = auto_bank
-
-            # Find segment ID for this bank (segments carry the CPU bank)
-            seg_id = None
-            cpu_bank = self._cpu_bank(bank_num)
-            for seg in self.debug_info.segments:
-                if seg.bank == cpu_bank:
-                    seg_id = seg.id
-                    break
+            # Determine segment (bank): where the label was laid out, else
+            # the one _organize_functions_by_bank put it in
+            bank_num = calc.label_banks.get(func.name)
+            if bank_num is None:
+                bank_num = 0
+                if func.bank_attr is not None:
+                    bank_num = func.bank_attr.bank_number
+                    if bank_num is None:
+                        bank_num = auto_bank
+            seg_id = self._segment_id(bank_num)
 
             # Register source file
             file_id = None
@@ -1248,22 +1252,27 @@ class ProgramCodeGenerator:
 
         # Calculate label addresses to get function sizes
         calc = AddressCalculator(base_address)
-        _, label_addresses = calc.calculate_with_labels(nodes)
+        node_addresses, label_addresses = calc.calculate_with_labels(nodes)
+        func_ends = self._function_ends(mir_program, nodes, node_addresses)
 
-        # Sort functions by address to calculate sizes
+        # Sort functions by bank and address to calculate sizes
         func_addrs = []
         for func in mir_program.functions:
             addr = label_addresses.get(func.name, base_address)
-            func_addrs.append((func, addr))
-        func_addrs.sort(key=lambda x: x[1])
+            bank = calc.label_banks.get(func.name, 0)
+            func_addrs.append((func, bank, addr))
+        func_addrs.sort(key=lambda x: (x[1], x[2]))
 
         # Add scope for each function
-        for i, (func, addr) in enumerate(func_addrs):
-            # Size is the distance to the next function; the last one gets 0x100
-            if i + 1 < len(func_addrs):
-                size = func_addrs[i + 1][1] - addr
+        for i, (func, bank, addr) in enumerate(func_addrs):
+            # Size runs to the function's last instruction: data tables and
+            # vector trampolines laid out after it are not part of it
+            if func.name in func_ends and func_ends[func.name] > addr:
+                size = func_ends[func.name] - addr
+            elif i + 1 < len(func_addrs) and func_addrs[i + 1][1] == bank:
+                size = func_addrs[i + 1][2] - addr
             else:
-                size = 0x100  # Default size for last function
+                size = 0x100
 
             # Find symbol ID for this function
             sym_id = None
@@ -1281,58 +1290,107 @@ class ProgramCodeGenerator:
                 sym_id=sym_id
             )
 
-    def _collect_line_info(self, nodes: list, base_address: int):
+    def _function_ends(self, mir_program: MIRProgram, nodes: list, node_addresses: dict) -> Dict[str, int]:
+        """The address after each function's last instruction.
+
+        A function runs from its label to the next function's label; within
+        that, its code is the compiler's Instructions and the asm! it holds
+        (RawAsm with a source line) - not the untyped RawAsm data and stubs
+        emitted between functions.
+        """
+        from r65.compiler.codegen.asm_nodes import Instruction, RawAsm, Label
+
+        names = {func.name for func in mir_program.functions}
+        ends: Dict[str, int] = {}
+        current = None
+        for i, node in enumerate(nodes):
+            if isinstance(node, Label) and node.name in names:
+                current = node.name
+                continue
+            if isinstance(node, Label) and node.name.startswith(('__fast_', '__hirom_')):
+                current = None      # vector trampolines follow the functions
+                continue
+            if current is None or i not in node_addresses:
+                continue
+            if isinstance(node, Instruction) or (isinstance(node, RawAsm) and node.source_loc is not None):
+                addr, size = node_addresses[i]
+                ends[current] = addr + size
+        return ends
+
+    def _collect_line_info(self, mir_program: MIRProgram, nodes: list, base_address: int):
         """
         Collect source line to address mappings for debug output.
 
         Walks through assembly nodes and creates line entries for
-        instructions that have source location information.
+        instructions that have source location information. A function's
+        prologue - what precedes the first instruction of its body, such as
+        an interrupt handler's register saves - goes to its declaration.
 
         Args:
+            mir_program: MIR program
             nodes: Assembly nodes
             base_address: Base address
         """
-        from r65.compiler.codegen.asm_nodes import Instruction
+        from r65.compiler.codegen.asm_nodes import Instruction, RawAsm, Label
+
+        fn_locs = {func.name: func.source_loc for func in mir_program.functions if func.source_loc}
+        prologue_loc = None
 
         # Calculate addresses for all nodes
         calc = AddressCalculator(base_address)
         node_addresses = calc.calculate(nodes)
 
-        # Track current segment (assume bank 0 for now)
-        current_seg_id = 0 if self.debug_info.segments else None
-
         # Group instructions by source line
-        line_spans: Dict[tuple, List[tuple]] = {}  # (file_id, line) -> [(start, size), ...]
+        line_spans: Dict[tuple, List[tuple]] = {}  # (file_id, line) -> [(seg_id, start, size), ...]
 
         for i, node in enumerate(nodes):
-            if not isinstance(node, Instruction):
+            if isinstance(node, Label) and node.name in fn_locs:
+                prologue_loc = fn_locs[node.name]
                 continue
 
-            if node.source_loc is None:
+            # asm! is RawAsm: a game idling on asm!("WAI") is paused there
+            if not isinstance(node, (Instruction, RawAsm)):
+                continue
+
+            source_loc = node.source_loc
+            if source_loc is not None:
+                prologue_loc = None
+            elif isinstance(node, Instruction):
+                source_loc = prologue_loc
+            else:
+                # A vector trampoline's `JML handler` (FastROM, HiROM)
+                target = node.text.split()
+                if len(target) == 2 and target[0].upper() in ('JML', 'JMP') and target[1] in fn_locs:
+                    source_loc = fn_locs[target[1]]
+            if source_loc is None:
                 continue
 
             if i not in node_addresses:
                 continue
 
             addr, size = node_addresses[i]
+            if size == 0:
+                continue
+            seg_id = self._segment_id(calc.node_banks.get(i, 0))
+            if seg_id is None:
+                continue
 
             # Get or create file entry
-            file_path = node.source_loc.file_path
+            file_path = source_loc.file_path
             dbg_file = self.debug_info.get_or_create_file(file_path)
 
             # Group by (file_id, line)
-            key = (dbg_file.id, node.source_loc.line)
+            key = (dbg_file.id, source_loc.line)
             if key not in line_spans:
                 line_spans[key] = []
-            line_spans[key].append((addr - base_address, size))
+            line_spans[key].append((seg_id, addr - base_address, size))
 
         # Create spans and line entries
         for (file_id, line), spans in sorted(line_spans.items()):
             span_ids = []
-            for start, size in spans:
-                if current_seg_id is not None:
-                    span = self.debug_info.find_or_add_span(current_seg_id, start, size)
-                    span_ids.append(span.id)
+            for seg_id, start, size in spans:
+                span = self.debug_info.find_or_add_span(seg_id, start, size)
+                span_ids.append(span.id)
 
             if span_ids:
                 self.debug_info.add_line(

@@ -233,6 +233,8 @@ class RawAsm(AsmNode):
     Used when structured representation isn't appropriate.
     """
     text: str
+    # asm!'s source line, for debug info
+    source_loc: SourceLocation | None = None
 
     def __repr__(self) -> str:
         return f"RawAsm({self.text})"

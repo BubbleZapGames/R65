@@ -502,9 +502,9 @@ class AssemblyEmitter:
         self._update_xy_copy_tracking(opcode, operand)
         self._update_slot_tracking(opcode, operand)
 
-    def emit_raw(self, text: str):
+    def emit_raw(self, text: str, source_loc: 'SourceLocation | None' = None):
         """Emit raw assembly text."""
-        self.nodes.append(RawAsm(text))
+        self.nodes.append(RawAsm(text, source_loc))
         self.nz_valid_for = None  # Unknown effect on flags
         self.x_equals_y = False   # ...and on registers
         self.forget_slots()
