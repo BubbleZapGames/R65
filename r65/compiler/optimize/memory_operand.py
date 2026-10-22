@@ -2,9 +2,10 @@
 """
 Memory-Operand Folding Pass.
 
-Rewrites a load whose only reader is the right-hand side of a binary
-operation or a comparison into that instruction's operand, so the value is
-read by the ALU instruction itself instead of through a temporary::
+Rewrites a load whose only reader is an operand of a binary operation or
+the right-hand side of a comparison into that instruction's operand, so the
+value is read by the ALU instruction itself instead of through a
+temporary::
 
     %0 = Load [G_X]
     %1 = Load [G_VX]
@@ -24,23 +25,35 @@ keep ``%0`` in A, and both values spill to stack slots. Deleting the load
 restores ``%0``'s A residency and, in a function with nothing else to
 spill, the frame too.
 
+A load on the left goes to the right of a commutative operation whose
+right operand is computed (``%2 = %1 & %0`` → ``%2 = %1 & [M]``), and stays
+on the left of a subtract, which codegen then computes as
+``EOR #$FF / SEC / ADC [M]`` with the right operand in A. Either way the
+computed value no longer waits in a stack slot while A holds the load::
+
+    %0 = Load [EXT,X]
+    %1 = ~%m
+    %2 = %0 & %1          ->     LDA m / EOR #$FF / AND EXT,X
+
 Moving a read later is only legal if nothing between the load and its use
-can change what it reads. The pass allows only loads and register-to-
-register moves in between — no stores, calls, inline asm or index-register
-writes — which covers how the MIR builder emits ``a op b`` (the two operand
-loads back to back) without any aliasing analysis. See `_may_pass`.
+can change what it reads. The pass allows only loads, register-to-register
+moves and ALU operations into vregs in between — no stores, calls, inline
+asm or index-register writes — which covers how the MIR builder emits
+``a op b`` (the left operand loaded, then the right one computed) without
+any aliasing analysis. See `_may_pass`.
 """
 
 from typing import Dict, List, Optional
 
 from r65.compiler.mir.nodes import (
     BinaryOp, Compare, HardwareRegister, Load, MemoryLocation, MIRFunction,
-    MIRProgram, Move, VirtualRegister, count_vreg_reads,
+    MIRProgram, Move, UnaryOp, VirtualRegister, count_vreg_reads,
 )
 
 # Operations whose right operand may be a memory location. Shifts, multiply
 # and divide take constant amounts only.
 _FOLDABLE_OPS = frozenset({'+', '-', '&', '|', '^'})
+_COMMUTATIVE_OPS = frozenset({'+', '&', '|', '^'})
 
 # Statics the compiler places itself. A hardware register is volatile and
 # must be read exactly where written; anything else is not a plain static.
@@ -98,17 +111,22 @@ class MemoryOperandFolder:
                 pending[instr.dest.id] = positions + [len(out) - 1]
                 continue
 
-            # Anything that is not a load or a plain move ends every pending
-            # candidate: it might write memory or an index register.
+            # Anything that is not a load, a plain move or an ALU op into a
+            # vreg ends every pending candidate: it might write memory or an
+            # index register.
             if not self._may_pass(instr):
                 pending.clear()
             elif pending:
-                # A load or move that defines an index-hinted vreg ends the
+                # An instruction that defines an index-hinted vreg ends the
                 # indexed candidates (see _may_pass); the plain ones survive.
+                # One that redefines a pending vreg ends that candidate: the
+                # later reader sees the new value, not the load.
                 dest = getattr(instr, 'dest', None)
-                if isinstance(dest, VirtualRegister) and dest.register_hint:
-                    pending = {vid: positions for vid, positions in pending.items()
-                               if out[positions[0]].source.index_register is None}
+                if isinstance(dest, VirtualRegister):
+                    pending.pop(dest.id, None)
+                    if dest.register_hint:
+                        pending = {vid: positions for vid, positions in pending.items()
+                                   if out[positions[0]].source.index_register is None}
 
             out.append(instr)
             if self._is_candidate(instr, uses):
@@ -152,7 +170,8 @@ class MemoryOperandFolder:
         of before it.
 
         A load reads memory and writes a vreg; a move between vregs or from
-        an immediate writes a vreg. Neither writes memory. A vreg write can
+        an immediate, or an ALU operation (computed in A), writes a vreg.
+        None of them writes memory. A vreg write can
         still land in X or Y — a loop counter promoted there — which would
         change what an indexed location addresses; `_rewrite_block` drops the
         indexed candidates when the dest carries a register hint, and a
@@ -163,25 +182,48 @@ class MemoryOperandFolder:
         if isinstance(instr, Move):
             return (isinstance(instr.dest, VirtualRegister)
                     and not isinstance(instr.source, (HardwareRegister, MemoryLocation)))
+        if isinstance(instr, (BinaryOp, UnaryOp)):
+            return isinstance(instr.dest, VirtualRegister)
         return False
 
     def _try_fold(self, instr, out: List, pending: Dict[int, int]):
         """`(rewritten instr, positions to delete)` if *instr*'s right operand
-        is a pending load, else None."""
+        is a pending load, or its left one is and the right is computed (see
+        the module docstring), else None."""
         if isinstance(instr, BinaryOp):
             if instr.op not in _FOLDABLE_OPS:
                 return None
         elif not isinstance(instr, Compare):
             return None
 
+        left_fold = False
         right = instr.right
         if not isinstance(right, VirtualRegister) or right.id not in pending:
-            return None
+            left = instr.left
+            if not (isinstance(instr, BinaryOp)
+                    and isinstance(left, VirtualRegister) and left.id in pending
+                    and isinstance(right, VirtualRegister) and left.id != right.id):
+                return None
+            left_fold = True
         # An operation into or out of X/Y runs in 16-bit mode whatever its
         # type, so an 8-bit memory operand would be read as two bytes.
-        for reg in (instr.left, getattr(instr, 'dest', None)):
+        for reg in (instr.left, instr.right, getattr(instr, 'dest', None)):
             if isinstance(reg, HardwareRegister) and reg.name in ('X', 'Y'):
                 return None
+
+        if left_fold:
+            positions = pending.pop(instr.left.id)
+            load = out[positions[0]]
+            if _type_size(load.type_info) != _type_size(instr.type_info):
+                pending[instr.left.id] = positions
+                return None
+            if self.verbose:
+                print(f"  memory-operand: {load.dest} <- {load.source} folded into {instr}")
+            if instr.op in _COMMUTATIVE_OPS:
+                instr.left, instr.right = instr.right, load.source
+            else:
+                instr.left = load.source
+            return instr, positions
         # `a op a` reads the vreg twice; the use count already excludes it,
         # but the left operand must not be the load either way.
         if isinstance(instr.left, VirtualRegister) and instr.left.id == right.id:

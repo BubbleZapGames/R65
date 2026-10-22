@@ -117,7 +117,28 @@ def test_store_between_load_and_use_is_left_alone():
     assert not re.search(r"^\s*ADC \$21\b", asm, re.M)
 
 
-def test_left_operand_is_not_folded():
-    """Only the right side can be a memory operand; `a - b` keeps `LDA a`."""
+def test_two_loads_fold_the_right_one():
+    """With both operands loads, `a - b` keeps `LDA a` and reads b directly."""
     asm = _fn_asm(TWO_GLOBALS.format(body="R = G_X - G_VX;"))
     assert re.search(r"LDA \$20\s*\n\s*SEC\s*\n\s*SBC \$21", asm)
+
+
+def test_left_load_moves_past_the_computed_right_operand():
+    """`a & ~b` and `a - (b + c)`: the load of a waits for the right side,
+    then is read by the AND / reverse-subtract ADC itself."""
+    asm = _fn_asm(TWO_GLOBALS.format(body="R = G_X & ~G_VX;"))
+    assert re.search(r"LDA \$21\s*\n\s*EOR #\$FF.*\n\s*AND \$20\s*\n\s*STA \$22", asm)
+    asm = _fn_asm(TWO_GLOBALS.format(body="R = R - (G_X + G_VX);"))
+    assert re.search(r"EOR #\$FF.*\n\s*SEC\s*\n\s*ADC \$22\s*\n\s*STA \$22", asm)
+    assert "Allocate frame" not in asm
+
+
+def test_indexed_left_load_keeps_its_index():
+    """`EXT[i] & ~m`: the read moves past the complement, still through X."""
+    asm = _fn_asm("""
+        #[zeropage(0x20)] static mut M: u8;
+        #[lowram(0x0300)] static mut EXT: [u8; 32];
+        #[used] fn clear(i @ X: u16) { EXT[i] = EXT[i] & ~M; }
+        #[entry] fn main() { clear(3); }
+    """, "clear")
+    assert re.search(r"LDA \$20\s*\n\s*EOR #\$FF.*\n\s*AND \$0300,X\s*\n\s*STA \$0300,X", asm)
