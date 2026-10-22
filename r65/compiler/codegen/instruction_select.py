@@ -818,6 +818,7 @@ class InstructionSelector:
         # If right operand is in A and left is NOT in A, loading left would clobber right.
         right_in_a = False
         sub_pushed_right_operand = False
+        reverse_sub = False
         if not isinstance(right_operand, (MIRImmediate, MemoryLocation)):
             _right_loc = self._get_operand_location(right_operand)
             right_in_a = _right_loc.is_hw('A')
@@ -828,6 +829,14 @@ class InstructionSelector:
                 # Swap: A has right value, use left as memory operand for ADC/AND/ORA/EOR
                 right_operand = instr.left
                 left_loc = _right_loc  # HARDWARE A — load-left block will skip (already in A)
+            elif op == '-' and not left_loc.is_hw():
+                # left - right = left + ~right + 1: complement A, then
+                # SEC / ADC left. The sum is SBC's, so N, Z, C and V are too.
+                mask = 0xFFFF if self.emitter.get_accu_mode() == 16 else 0xFF
+                self._emit_immediate(Opcode.EOR_IMMEDIATE, mask, "Reverse subtract: ~right")
+                reverse_sub = True
+                right_operand = instr.left
+                left_loc = _right_loc
             elif op == '-':
                 # Save right (A) to scratch, replace right_operand with scratch location.
                 # The resolver picks DP-relative for normal frames and absolute
@@ -884,7 +893,10 @@ class InstructionSelector:
         if op == '+':
             self._emit_add(right_operand, is_u16)
         elif op == '-':
-            if sub_pushed_right_operand:
+            if reverse_sub:
+                self._emit_implied(Opcode.SEC)
+                self._emit_binary_operation_with_operand("ADC", right_operand, is_u16)
+            elif sub_pushed_right_operand:
                 # Right was PHA'd to the stack; emit SEC + SBC stack-relative inline.
                 stack_loc = self.stack_top(1, sub_pushed_size)
                 self._emit_implied(Opcode.SEC)
@@ -962,17 +974,7 @@ class InstructionSelector:
             self._emit_load('LDA', operand_loc)
 
         # Perform operation
-        if op == '!':
-            # Logical NOT: 1 if zero, else 0
-            was_zero, done = self._get_unique_label(), self._get_unique_label()
-            self._emit_immediate(Opcode.CMP_IMMEDIATE, 0, "Check if zero")
-            self._emit_branch(Opcode.BEQ, was_zero, "Branch if zero")
-            self._emit_immediate(Opcode.LDA_IMMEDIATE, 0, "Was non-zero, result = 0")
-            self._emit_branch(Opcode.BRA, done)
-            self.emitter.emit_label(was_zero)
-            self._emit_immediate(Opcode.LDA_IMMEDIATE, 1, "Was zero, result = 1")
-            self.emitter.emit_label(done)
-        elif op == '~':
+        if op == '~':
             # Bitwise NOT
             mask = 0xFFFF if is_u16 else 0xFF
             self._emit_immediate(Opcode.EOR_IMMEDIATE, mask, "Bitwise complement")

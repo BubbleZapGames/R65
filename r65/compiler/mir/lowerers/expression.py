@@ -169,6 +169,10 @@ class ExpressionLowerer:
     def _lower_arithmetic_op(self, expr: HIRBinaryOp) -> VirtualRegister:
         """Lower arithmetic/bitwise binary operation."""
 
+        folded = self._lower_constant_chain(expr)
+        if folded is not None:
+            return folded
+
         left = self.builder.lower_expression(expr.left)
 
         # OPTIMIZATION: If left operand uses A register (hardware reg or will load into A),
@@ -204,6 +208,78 @@ class ExpressionLowerer:
             type_info=expr.expr_type
         ))
 
+        return result
+
+    def _lower_constant_chain(self, expr: HIRBinaryOp) -> Optional[VirtualRegister]:
+        """One operation for a chain with a constant at each step.
+
+        `player.x + 8 - PLR_BBOX_HWDT` is `x + 6`: integer `+`/`-` wrap at
+        the type's width, so a chain of them is `±x + k` whatever the order,
+        and `10 - G - 3` is `7 - G` (a reverse subtract when G is in A). A
+        chain of one bitwise operator combines its constants the same way.
+        Every step must have the root's integer type; a width change is a
+        cast node and ends the chain. A chain that cancels out is left
+        alone rather than handing back x's own vreg as the result.
+        """
+        from r65.compiler.hir.hir_const_eval import try_eval_const_int, _get_type_mask
+        from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
+
+        def int_name(type_info):
+            t = strip_newtype(type_info) if type_info is not None else None
+            if isinstance(t, BasicTypeInfo) and t.name in ('u8', 'u16', 'i8', 'i16'):
+                return t.name
+            return None
+
+        name = int_name(expr.expr_type)
+        if name is None or expr.op not in ('+', '-', '&', '|', '^'):
+            return None
+        m = _get_type_mask(expr.expr_type)
+        additive = expr.op in ('+', '-')
+
+        node, sign, k, steps = expr, 1, (0 if additive else None), 0
+        while (isinstance(node, HIRBinaryOp) and int_name(node.expr_type) == name
+               and ((node.op in ('+', '-')) if additive else node.op == expr.op)):
+            lc, rc = try_eval_const_int(node.left), try_eval_const_int(node.right)
+            if (lc is None) == (rc is None):
+                break
+            if not additive:
+                c = lc if rc is None else rc
+                k = c if k is None else {'&': k & c, '|': k | c, '^': k ^ c}[node.op]
+                node = node.right if rc is None else node.left
+            elif rc is not None:
+                k += sign * (rc if node.op == '+' else -rc)
+                node = node.left
+            else:
+                k += sign * lc
+                if node.op == '-':
+                    sign = -sign
+                node = node.right
+            steps += 1
+
+        if steps < 2:
+            return None
+        k &= m
+        identity = {'+': 0, '-': 0, '&': m, '|': 0, '^': 0}[expr.op]
+        if sign == 1 and k == identity:
+            return None
+
+        x = self.builder.lower_expression(node)
+        if isinstance(x, Immediate):
+            v = x.value
+            if additive:
+                return Immediate((sign * v + k) & m)
+            return Immediate({'&': v & k, '|': v | k, '^': v ^ k}[expr.op] & m)
+        result =self.ctx.alloc_vreg(expr.expr_type, f"{expr.op}_result")
+        if not additive:
+            left, op, right = x, expr.op, Immediate(k)
+        elif sign == -1:
+            left, op, right = Immediate(k), '-', x
+        elif k > m // 2:
+            left, op, right = x, '-', Immediate((-k) & m)
+        else:
+            left, op, right = x, '+', Immediate(k)
+        self.emit(BinaryOp(dest=result, left=left, right=right, op=op,
+                           type_info=expr.expr_type))
         return result
 
     def _try_get_direct_memory_operand(self, expr) -> 'MemoryLocation':
@@ -265,6 +341,12 @@ class ExpressionLowerer:
             operand = temp
 
         result = self.ctx.alloc_vreg(expr.expr_type, f"{expr.op}_result")
+
+        if expr.op == '!':
+            # Typeck admits only a bool, which is 0 or 1: flip bit 0.
+            self.emit(BinaryOp(dest=result, left=operand, right=Immediate(1), op='^',
+                               type_info=expr.expr_type))
+            return result
 
         self.emit(UnaryOp(
             dest=result,

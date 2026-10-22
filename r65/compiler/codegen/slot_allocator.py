@@ -996,7 +996,8 @@ class StackSlotAllocator:
         Move variants just read A (STA/TAX/TAY preserve A); a Store or
         StoreIndirect of the vreg is an STA from A; Compare is CMP, which reads
         A without modifying it; a BinaryOp's left operand, or the right of a
-        commutative one, is read before the op overwrites A with its result; a narrowing convert or unsigned widening
+        commutative one or a subtract, is read before the op overwrites A with
+        its result; so is a UnaryOp's operand; a narrowing convert or unsigned widening
         reads A and leaves its own result there; a Call argument is pushed or
         stored from A.
 
@@ -1029,11 +1030,17 @@ class StackSlotAllocator:
             return True
         # A commutative op with the vreg on the right swaps its operands
         # (select_binary_op), so it reads A as the left and the left operand
-        # from memory. A left in A or B would need A for itself.
-        if (use_type is BinaryOp and use.op in ('+', '&', '|', '^') and
+        # from memory; a subtract complements A and adds the left
+        # (EOR #$FF / SEC / ADC). A left in A or B would need A for itself.
+        if (use_type is BinaryOp and use.op in ('+', '-', '&', '|', '^') and
             type(use.right) is VirtualRegister and
             use.right.id == vreg_id and
             not self._in_accumulator(use.left)):
+            return True
+        # A unary op (EOR / EOR+INC) works on its operand in A.
+        if (use_type is UnaryOp and
+            type(use.operand) is VirtualRegister and
+            use.operand.id == vreg_id):
             return True
         # A narrowing convert or unsigned widening reads A and leaves
         # its own result there — the same read-then-redefine shape as
