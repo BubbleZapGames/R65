@@ -18,7 +18,7 @@ SCRIPTS := $(wildcard *.script)
 
 tests:
 	@if ! command -v $(MESEN_GDB) >/dev/null 2>&1; then \
-		echo "[TESTS] mesen-gdb not found, skipping."; \
+		printf '\033[31m[TESTS] mesen-gdb not found, skipping.\033[0m\n'; \
 		echo "        Get it from https://github.com/BubbleZapGames/Mesen-GDB"; \
 		echo "        or run: make tests MESEN_GDB=/path/to/mesen-gdb"; \
 		exit 0; \
