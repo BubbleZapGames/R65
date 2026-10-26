@@ -318,7 +318,6 @@ class SymbolDefinitionGenerator:
         """
         from r65.compiler.hir import HIRIncludeBytesExpr
         from collections import defaultdict
-        import os
 
         allocations = self.allocator.get_allocations_by_type('rom')
 
@@ -335,11 +334,9 @@ class SymbolDefinitionGenerator:
                 static_decl = alloc.symbol.definition
                 if hasattr(static_decl, 'initializer') and static_decl.initializer:
                     if isinstance(static_decl.initializer, HIRIncludeBytesExpr):
-                        filepath = static_decl.initializer.path
-                        try:
-                            file_size = os.path.getsize(filepath)
-                        except OSError:
-                            file_size = 0
+                        # Sized by the frontend, which resolved the path
+                        # against the including file
+                        file_size = static_decl.initializer.size
 
                         bank_num = rom_static_bank(static_decl)
                         if bank_num is not None:
@@ -359,7 +356,7 @@ class SymbolDefinitionGenerator:
                 label = f"{alloc.symbol.name}_data"
                 filepath = static_decl.initializer.path
                 alloc.symbol.rom_label = label
-                self.emitter.emit_incbin(filepath, label=label)
+                self.emitter.emit_incbin(filepath, file_size, label=label)
 
         # Auto-bank data packs upward from the program's auto bank
         if auto_bank_data:
@@ -377,7 +374,7 @@ class SymbolDefinitionGenerator:
                 label = f"{alloc.symbol.name}_data"
                 filepath = static_decl.initializer.path
                 alloc.symbol.rom_label = label
-                self.emitter.emit_incbin(filepath, label=label)
+                self.emitter.emit_incbin(filepath, file_size, label=label)
                 current_size += file_size
 
         self.emitter.emit_blank_line()

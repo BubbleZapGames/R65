@@ -7,7 +7,7 @@ into WLA-DX assembly output.
 """
 
 import sys
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from r65.compiler.mir import MIRProgram, MIRFunction
 from r65.compiler.mir.nodes import SymbolByte
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -18,7 +18,8 @@ from r65.compiler.codegen.symbol_gen import (
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.optimize.peephole import optimize_nodes
 from r65.compiler.codegen.branch_fixup import fixup_nodes
-from r65.compiler.codegen.bank_size import rom_bank_size
+from r65.compiler.codegen.bank_size import (
+    HIROM_TRAMPOLINE_ORG, LOROM_HEADER_START, check_bank_overflow, rom_bank_size)
 from r65.compiler.codegen.emitter import emit_nodes
 from r65.compiler.codegen.constants import DEFAULT_STACK_LOWER, DEFAULT_STACK_UPPER, calculate_rom_size
 from r65.compiler.codegen.debug_info import DebugInfoCollector
@@ -567,8 +568,11 @@ class ProgramCodeGenerator:
         if len(self.emitter.nodes) > start:
             function_starts.append(self.emitter.nodes[start])
 
-        # Interrupt vectors
-        self._emit_interrupt_vectors(mir_program)
+        # Interrupt vectors. They, the header and HiROM's trampolines go at
+        # fixed addresses, so the bank check leaves them out.
+        start = len(self.emitter.nodes)
+        bank0_end = self._emit_interrupt_vectors(mir_program)
+        fixed = {id(n) for n in self.emitter.nodes[start:]}
 
         # Get structured nodes from emitter
         nodes = self.emitter.get_nodes()
@@ -598,6 +602,10 @@ class ProgramCodeGenerator:
 
         if num_branch_fixups > 0:
             print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed", file=sys.stderr)
+
+        # Every bank's code and data must fit, sized as WLA-DX will lay them out
+        check_bank_overflow([n for n in final_nodes if id(n) not in fixed],
+                            mir_program, rom_banks, is_hirom, bank0_end)
 
         # Convert nodes to assembly string
         assembly = emit_nodes(final_nodes)
@@ -832,9 +840,9 @@ class ProgramCodeGenerator:
         - Functions with no bank attribute default to bank 0.
         - Functions with #[bank(auto)] (bank_attr present, bank_number=None,
           guaranteed `far` by HIR validation) are placed together in
-          `auto_bank_number(mir_program)`. wlalink reports an overflow if
-          they do not fit; the user can then split with explicit #[bank(n)]
-          directives.
+          `auto_bank_number(mir_program)`. If they do not fit,
+          check_bank_overflow reports it, and the user splits them with
+          explicit #[bank(n)] directives.
 
         Returns:
             Dictionary mapping bank number to list of functions
@@ -890,7 +898,7 @@ class ProgramCodeGenerator:
 
         return handlers, reset_handler
 
-    def _emit_interrupt_vectors(self, mir_program: MIRProgram):
+    def _emit_interrupt_vectors(self, mir_program: MIRProgram) -> Optional[Tuple[int, str]]:
         """
         Emit SNES ROM header and interrupt vector table.
 
@@ -899,6 +907,11 @@ class ProgramCodeGenerator:
 
         Args:
             mir_program: MIR program
+
+        Returns:
+            Where bank 0's own code and data must end, and what starts
+            there: HiROM's trampolines, else the header; None when there
+            is no header.
         """
         # Find interrupt handlers
         handlers, reset_handler = self._find_vector_handlers(mir_program)
@@ -955,6 +968,11 @@ class ProgramCodeGenerator:
 
             # Emit interrupt vectors
             self.emitter.emit_interrupt_vectors(reset=actual_reset, **targets)
+
+            if is_hirom:
+                return HIROM_TRAMPOLINE_ORG, "the vector trampolines start"
+            return LOROM_HEADER_START, "the ROM header starts"
+        return None
 
     def _emit_rom_data_table(self, rom_data):
         """Emit a single ROM data table (label + .db rows of 16 bytes)."""

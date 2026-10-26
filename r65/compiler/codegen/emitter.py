@@ -1066,12 +1066,13 @@ class AssemblyEmitter:
         """
         self.emit_directive(f"    .DSB {size}, {fill_value}")
 
-    def emit_incbin(self, filepath: str, label: Optional[str] = None):
+    def emit_incbin(self, filepath: str, size: int, label: Optional[str] = None):
         """
         Emit binary file inclusion (.INCBIN directive).
 
         Args:
-            filepath: Path to binary file to include
+            filepath: Path to binary file to include, as the assembler finds it
+            size: The file's size, which the node carries for layout
             label: Optional label for the data
 
         Generated:
@@ -1080,7 +1081,7 @@ class AssemblyEmitter:
         """
         if label:
             self.emit_label(label)
-        self.emit_directive(f'    .INCBIN "{filepath}"')
+        self.nodes.append(RawAsm(f'    .INCBIN "{filepath}"', size=size))
 
     # ========================================================================
     # SNES Header and Interrupt Vectors
@@ -1250,8 +1251,9 @@ class AssemblyEmitter:
             __hirom_irq:   JML irq_handler
         """
         self.emit_section_header("HiROM Vector Trampolines")
+        from r65.compiler.codegen.bank_size import HIROM_TRAMPOLINE_ORG
         self.emit_directive(".BANK 0 SLOT 0")
-        self.emit_directive(".ORG $FF00")
+        self.emit_directive(f".ORG ${HIROM_TRAMPOLINE_ORG:04X}")
 
         if reset:
             self.emit_label("__hirom_reset")

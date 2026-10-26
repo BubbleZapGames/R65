@@ -6,7 +6,7 @@ Provides address calculation for generating debug info with accurate
 instruction addresses for source-level debugging.
 """
 
-from typing import List, Dict, Tuple
+from typing import List, Dict, Set, Tuple
 
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Directive, ModeChange, BlankLine, Comment,
@@ -27,6 +27,9 @@ class AddressCalculator:
     the bank; `.BANK` alone keeps it, as WLA-DX does, even when that bank was
     left somewhere else. An address is base_address plus that offset, and
     node_banks / label_banks say which WLA bank.
+
+    A RawAsm that carries its size (an `.INCBIN`) takes that many bytes; an
+    `.INCLUDE`d file is not measured, and its bank goes in unsized_banks.
     """
 
     def __init__(self, base_address: int, m16: bool = False, x16: bool = True):
@@ -46,6 +49,7 @@ class AddressCalculator:
         self.node_banks: Dict[int, int] = {}
         self.label_banks: Dict[str, int] = {}
         self.bank_ends: Dict[int, int] = {}
+        self.unsized_banks: Set[int] = set()
 
     def calculate(self, nodes: List[AsmNode]) -> Dict[int, Tuple[int, int]]:
         """Node addresses only: calculate_with_labels without the labels."""
@@ -72,6 +76,7 @@ class AddressCalculator:
         self.node_banks = {}
         self.label_banks = {}
         self.bank_ends = {}
+        self.unsized_banks = set()
         self._bank = 0
         self._offset = 0
         self._m16 = self.m16
@@ -89,6 +94,9 @@ class AddressCalculator:
                     label_addresses[node.name] = self.base_address + self._offset
                     self.label_banks[node.name] = self._bank
                     continue
+                case RawAsm(text, size=int() as known):
+                    start, size = self._offset, known
+                    self._advance(size)
                 case RawAsm(text):
                     start, size = self._place_text(text)
                 case _:
@@ -119,6 +127,9 @@ class AddressCalculator:
             word, _, rest = code.partition(' ')
             word = word.upper()
             rest = rest.strip()
+            if word == '.INCLUDE':
+                self.unsized_banks.add(self._bank)
+                continue
             if word == '.BANK':
                 self._bank = _parse_int(rest.split()[0]) if rest else 0
                 continue

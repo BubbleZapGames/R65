@@ -235,6 +235,9 @@ class RawAsm(AsmNode):
     text: str
     # asm!'s source line, for debug info
     source_loc: SourceLocation | None = None
+    # Bytes the text assembles to, where the text cannot say: an `.INCBIN`
+    # of a file found through the assembler's include path.
+    size: int | None = None
 
     def __repr__(self) -> str:
         return f"RawAsm({self.text})"
