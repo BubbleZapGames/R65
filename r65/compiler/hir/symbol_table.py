@@ -145,7 +145,12 @@ class SymbolTable:
         """Declare a symbol in the current scope."""
         current = self.scopes[self.current_scope_id]
         if name in current.symbols:
-            raise HIRError(f"Redefinition of '{name}' in current scope", source_loc=None)
+            loc = getattr(symbol.definition, 'source_loc', None)
+            previous = getattr(current.symbols[name].definition, 'source_loc', None)
+            message = f"Redefinition of '{name}' in current scope"
+            if previous is not None:
+                message += f"\n  first defined at {previous.format_with_package()}"
+            raise HIRError(message, source_loc=loc)
         current.symbols[name] = symbol
 
     def lookup(self, name: str) -> Optional[Symbol]:

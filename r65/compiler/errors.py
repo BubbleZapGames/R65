@@ -36,15 +36,22 @@ class SourceLocation:
     source_line: Optional[str] = None
     # Optional: end column for multi-character underlines
     end_column: Optional[int] = None
+    # The package the file belongs to ("stdlib 0.4.0"), set by the
+    # preprocessor for a file reached through a resolved package
+    origin_package: Optional[str] = None
 
     def __str__(self) -> str:
         if self.line > 0:
             return f"{self.file_path}:{self.line}:{self.column}"
         return self.file_path
 
+    def format_with_package(self) -> str:
+        """The location, with its package when it has one."""
+        return f"{self} ({self.origin_package})" if self.origin_package else str(self)
+
     def format_with_includes(self) -> str:
         """Format location with full include chain."""
-        result = str(self)
+        result = self.format_with_package()
         loc = self.included_from
         while loc is not None:
             result += f"\n  included from {loc}"
@@ -364,7 +371,7 @@ def format_error(message: str, source_loc: Optional[SourceLocation] = None,
     # Location and source context
     if source_loc and source_loc.line > 0:
         # Location pointer
-        lines.append(f"  --> {source_loc}")
+        lines.append(f"  --> {source_loc.format_with_package()}")
 
         # Get the source line. The location's own file comes first:
         # source_text is the top-level file only, and an error inside an

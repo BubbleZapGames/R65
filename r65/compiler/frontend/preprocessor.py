@@ -46,6 +46,9 @@ class Preprocessor:
         self.source_dir = self.source_file.parent
         # Include paths for searching (resolved to absolute paths)
         self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
+        # The bank directive in force at the end of the items emitted so
+        # far (None: the default, bank 0), restored after an include.
+        self._bank: Optional[ast.BankDirective] = None
         # Track files currently being processed (for cycle detection)
         self._include_stack: List[IncludeContext] = []
         # Track all files that have been included (to avoid duplicate processing)
@@ -91,11 +94,22 @@ class Preprocessor:
 
         for item in items:
             if isinstance(item, ast.IncludeStmt):
-                # Expand this include
+                # Expand this include. A bank directive inside it is scoped
+                # to it: the includer's bank is restored after the spliced
+                # items, so an included file cannot rebank what follows.
+                bank = self._bank
                 included_items = self._process_include(item, base_dir)
                 result.extend(included_items)
+                if any(isinstance(d, ast.BankDirective) for d in included_items):
+                    result.append(ast.BankDirective(
+                        bank_number=None if bank is not None and bank.is_auto
+                        else (bank.bank_number if bank is not None else 0),
+                        source_loc=item.source_loc))
+                    self._bank = bank
             else:
                 # Keep non-include declarations as-is
+                if isinstance(item, ast.BankDirective):
+                    self._bank = item
                 result.append(item)
 
         return result

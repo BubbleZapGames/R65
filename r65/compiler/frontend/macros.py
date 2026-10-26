@@ -185,6 +185,15 @@ class MacroExpander:
         """Collect all macro definitions from the program."""
         for item in program.items:
             if isinstance(item, ast.MacroDecl):
+                # Two files defining one macro (two packages, say) is an
+                # error, not last-wins; within a file a redefinition replaces.
+                previous = self.macros.get(item.name)
+                first = previous.source_loc if previous is not None else None
+                if (first is not None and item.source_loc is not None
+                        and first.file_path != item.source_loc.file_path):
+                    raise MacroError(f"macro '{item.name}!' is defined in two files\n"
+                                     f"  first defined at {first.format_with_package()}",
+                                     item.source_loc)
                 self.macros[item.name] = self._make_definition(
                     item.name, item.arms, item.source_loc
                 )

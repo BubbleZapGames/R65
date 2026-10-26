@@ -282,3 +282,29 @@ include!("missing.r65")
         out = format_error("boom", source_loc=loc, source_text=top_source)
         assert "static POOL: [E; 2];" in out
         assert "fn start()" not in out
+
+
+class TestIncludeBankScope:
+    """A bank directive in an included file is scoped to it: the includer's
+    bank is restored after the spliced items."""
+
+    def _banks(self, tmp_path, main_source):
+        from r65.compiler.main import run_frontend
+        main = tmp_path / "main.r65"
+        main.write_text(main_source)
+        hir = run_frontend(main_source, str(main)).hir_program
+        return {d.name: d.bank_attr.bank_number for d in hir.declarations
+                if getattr(d, 'bank_attr', None) is not None}
+
+    def test_declarations_after_an_include_keep_their_bank(self, tmp_path):
+        (tmp_path / "inc.r65").write_text("#[bank(1)]\nfar fn helper() { A = 1; }\n")
+        banks = self._banks(tmp_path, 'include!("inc.r65")\nfn after() { A = 2; }\n'
+                                      '#[entry]\nfn main() { helper(); after(); }\n')
+        assert banks == {"helper": 1, "after": 0, "main": 0}
+
+    def test_the_restored_bank_is_the_includers(self, tmp_path):
+        (tmp_path / "inc.r65").write_text("#[bank(3)]\nfar fn helper() { A = 1; }\n")
+        banks = self._banks(tmp_path, '#[bank(2)]\nfar fn before() { A = 0; }\n'
+                                      'include!("inc.r65")\nfar fn after() { A = 2; }\n'
+                                      '#[bank(0)]\n#[entry]\nfn main() { before(); helper(); after(); }\n')
+        assert banks == {"before": 2, "helper": 3, "after": 2, "main": 0}

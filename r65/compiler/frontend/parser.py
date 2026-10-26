@@ -86,17 +86,19 @@ class ASTBuilder(Transformer):
     the matched nodes into AST nodes.
     """
 
-    def __init__(self, filename: str = "<input>", included_from=None):
+    def __init__(self, filename: str = "<input>", included_from=None, origin_package=None):
         """
         Initialize the AST builder.
 
         Args:
             filename: Current source file name
             included_from: SourceLocation of include! statement if this is included
+            origin_package: The package the file belongs to ("stdlib 0.4.0")
         """
         super().__init__()
         self.filename = filename
         self.included_from = included_from
+        self.origin_package = origin_package
 
     def _make_source_loc(self, meta):
         """Create a SourceLocation from Lark meta info."""
@@ -106,7 +108,8 @@ class ASTBuilder(Transformer):
             file_path=self.filename,
             line=getattr(meta, 'line', 0),
             column=getattr(meta, 'column', 0),
-            included_from=self.included_from
+            included_from=self.included_from,
+            origin_package=self.origin_package,
         )
 
     def _source_loc_from_token(self, token):
@@ -118,6 +121,7 @@ class ASTBuilder(Transformer):
             line=getattr(token, 'line', 0) or 0,
             column=getattr(token, 'column', 0) or 0,
             included_from=self.included_from,
+            origin_package=self.origin_package,
         )
 
     def _take(self, items, idx, tok_type):
@@ -2721,7 +2725,7 @@ class Parser:
         self.lark = Parser._lark_cache
 
     def parse(self, source: str, filename: str = "<input>",
-              included_from=None) -> ast.Program:
+              included_from=None, origin_package=None) -> ast.Program:
         """
         Parse source code into an AST.
 
@@ -2738,7 +2742,8 @@ class Parser:
         """
         try:
             tree = self.lark.parse(source)
-            transformer = ASTBuilder(filename=filename, included_from=included_from)
+            transformer = ASTBuilder(filename=filename, included_from=included_from,
+                                     origin_package=origin_package)
             program = transformer.transform(tree)
             return program
 
@@ -2785,7 +2790,8 @@ class Parser:
                 line=line,
                 column=column,
                 source_line=source_line,
-                included_from=included_from
+                included_from=included_from,
+                origin_package=origin_package,
             )
 
             error = ParseError(message, source_loc)
@@ -2815,7 +2821,8 @@ class Parser:
                 line=line,
                 column=column,
                 source_line=source_line,
-                included_from=included_from
+                included_from=included_from,
+                origin_package=origin_package,
             )
 
             error = ParseError(message, source_loc)
@@ -2846,7 +2853,8 @@ class Parser:
                 line=line,
                 column=column,
                 source_line=source_line,
-                included_from=included_from
+                included_from=included_from,
+                origin_package=origin_package,
             )
 
             error = ParseError(message, source_loc)
@@ -2880,7 +2888,8 @@ class Parser:
                 line=line,
                 column=column,
                 source_line=source_line,
-                included_from=included_from
+                included_from=included_from,
+                origin_package=origin_package,
             ) if line > 0 else None
 
             raise ParseError(str(orig), source_loc) from e
@@ -3148,7 +3157,8 @@ class Parser:
 _parser = Parser()
 
 
-def parse(source: str, filename: str = "<input>", included_from=None) -> ast.Program:
+def parse(source: str, filename: str = "<input>", included_from=None,
+          origin_package=None) -> ast.Program:
     """
     Convenience function to parse source code.
 
@@ -3160,4 +3170,5 @@ def parse(source: str, filename: str = "<input>", included_from=None) -> ast.Pro
     Returns:
         Program AST node
     """
-    return _parser.parse(source, filename, included_from=included_from)
+    return _parser.parse(source, filename, included_from=included_from,
+                         origin_package=origin_package)

@@ -311,10 +311,6 @@ Two constructs assume there is exactly one of them in the program, so a package 
 
 **Approach if revisited**: for SoA, a per-static method instantiation (one copy of each method per backing static) trades ROM for the restriction. For TypeIds, hash the type name instead of counting, and check for collisions at build time.
 
-### `#[bank(n)]` Is Positional State
-
-Not deferred — this one must be fixed *with* the packaging work, and is recorded here only so the hazard is discoverable from this file. `#[bank(n)]` mutates a cursor over the flat declaration list, so an included file containing a bank directive silently rebanks everything after its include site. The fix is a bank restore at include boundaries in `Preprocessor._process_include`; see [packaging-system.md](packaging-system.md#correctness-fixes-packaging-depends-on).
-
 ---
 
 ## Parser
