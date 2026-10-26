@@ -5,7 +5,7 @@ Symbol definition generator: emits .DEFINE and .EQU directives.
 Generates symbol definitions from memory allocations and constants.
 """
 
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 from r65.compiler.hir import HIRConstDecl
 from r65.compiler.codegen.memory_alloc import MemoryAllocator, AllocationInfo
 from r65.compiler.codegen.emitter import AssemblyEmitter
@@ -24,6 +24,43 @@ def rom_static_bank(static_decl) -> Optional[int]:
 # #[bank(auto)] never goes below this bank, leaving banks 0-3 to
 # hand-placed code and data.
 AUTO_BANK_FLOOR = 4
+
+
+def include_bytes_by_bank(mir_program, bank_size: int) -> Dict[int, List[Tuple[str, str, int]]]:
+    """Where each include_bytes! static's data goes: (label, path, size) by
+    WLA bank, and each static's rom_label set to its label.
+
+    A #[bank(n)] static goes in bank n; #[bank(auto)] ones pack upward from
+    `auto_bank_number`, *bank_size* bytes per bank. The data is emitted in
+    its bank's window together with the bank's code: a bank opened on its
+    own beforehand would be re-entered by `.BANK` alone, which WLA-DX
+    continues at the offset the previous bank reached, laying the code
+    over the data.
+    """
+    from r65.compiler.hir import HIRIncludeBytesExpr
+    placed: Dict[int, List[Tuple[str, str, int]]] = {}
+    auto: List[Tuple[str, str, int]] = []
+    for decl in mir_program.statics:
+        init = getattr(decl, 'initializer', None)
+        if getattr(decl, 'is_extern', False) or not isinstance(init, HIRIncludeBytesExpr):
+            continue
+        label = f"{decl.symbol.name}_data"
+        decl.symbol.rom_label = label
+        # Sized by the frontend, which resolved the path against the including file
+        entry = (label, init.path, init.size)
+        bank = rom_static_bank(decl)
+        if bank is None:
+            auto.append(entry)
+        else:
+            placed.setdefault(bank, []).append(entry)
+
+    bank, used = auto_bank_number(mir_program), 0
+    for entry in auto:
+        if used and used + entry[2] > bank_size:
+            bank, used = bank + 1, 0
+        placed.setdefault(bank, []).append(entry)
+        used += entry[2]
+    return placed
 
 
 def auto_bank_number(mir_program) -> int:
@@ -297,89 +334,6 @@ class SymbolDefinitionGenerator:
         self.emitter.emit_blank_line()
 
     # ========================================================================
-    # ROM Data Definitions
-    # ========================================================================
-
-    def emit_rom_data(self, auto_bank: int, bank_size: int):
-        """
-        Emit ROM data with initializers.
-
-        For static variables in ROM with include_bytes! initializers,
-        emits .INCBIN directives. Respects #[bank(n)] attributes; auto-bank
-        data packs upward from *auto_bank*, *bank_size* bytes per bank.
-
-        Generated:
-            ; ============================================================================
-            ; ROM Data
-            ; ============================================================================
-            .BANK 1 SLOT 0
-            GRAPHICS_DATA:
-            .INCBIN "gfx.bin"
-        """
-        from r65.compiler.hir import HIRIncludeBytesExpr
-        from collections import defaultdict
-
-        allocations = self.allocator.get_allocations_by_type('rom')
-
-        if not allocations:
-            return
-
-        # Collect ROM data allocations with include_bytes initializers
-        # Group by bank number
-        bank_data = defaultdict(list)  # bank_number -> [(alloc, static_decl, file_size)]
-        auto_bank_data = []  # allocations without explicit bank
-
-        for alloc in allocations:
-            if hasattr(alloc.symbol, 'definition') and alloc.symbol.definition:
-                static_decl = alloc.symbol.definition
-                if hasattr(static_decl, 'initializer') and static_decl.initializer:
-                    if isinstance(static_decl.initializer, HIRIncludeBytesExpr):
-                        # Sized by the frontend, which resolved the path
-                        # against the including file
-                        file_size = static_decl.initializer.size
-
-                        bank_num = rom_static_bank(static_decl)
-                        if bank_num is not None:
-                            bank_data[bank_num].append((alloc, static_decl, file_size))
-                        else:
-                            auto_bank_data.append((alloc, static_decl, file_size))
-
-        if not bank_data and not auto_bank_data:
-            return
-
-        self.emitter.emit_section_header("ROM Data")
-
-        # Emit data for each explicit bank in order
-        for bank_num in sorted(bank_data.keys()):
-            self.emitter.emit_bank_directive(bank_num, slot=0)
-            for alloc, static_decl, file_size in bank_data[bank_num]:
-                label = f"{alloc.symbol.name}_data"
-                filepath = static_decl.initializer.path
-                alloc.symbol.rom_label = label
-                self.emitter.emit_incbin(filepath, file_size, label=label)
-
-        # Auto-bank data packs upward from the program's auto bank
-        if auto_bank_data:
-            current_bank = auto_bank
-            current_size = 0
-            self.emitter.emit_bank_directive(current_bank, slot=0)
-
-            for alloc, static_decl, file_size in auto_bank_data:
-                # Check if we need to switch banks
-                if current_size + file_size > bank_size:
-                    current_bank += 1
-                    current_size = 0
-                    self.emitter.emit_bank_directive(current_bank, slot=0)
-
-                label = f"{alloc.symbol.name}_data"
-                filepath = static_decl.initializer.path
-                alloc.symbol.rom_label = label
-                self.emitter.emit_incbin(filepath, file_size, label=label)
-                current_size += file_size
-
-        self.emitter.emit_blank_line()
-
-    # ========================================================================
     # Stack Bounds
     # ========================================================================
 
@@ -405,16 +359,12 @@ class SymbolDefinitionGenerator:
     # All Definitions
     # ========================================================================
 
-    def emit_all_definitions(self, constants: Optional[list[HIRConstDecl]], auto_bank: int,
-                             bank_size: int):
+    def emit_all_definitions(self, constants: Optional[list[HIRConstDecl]]):
         """
         Emit all symbol definitions in order.
 
         Args:
             constants: Optional list of constant declarations
-            auto_bank: The bank #[bank(auto)] include_bytes! data starts in
-                (`auto_bank_number`)
-            bank_size: Bytes per ROM bank, for packing that data
 
         Order:
         1. Stack bounds (.DEFINE __R65_STACK_LO / __R65_STACK_HI)
@@ -424,7 +374,9 @@ class SymbolDefinitionGenerator:
         5. Hardware Registers (.DEFINE)
         6. RAM (.RAMSECTION)
         7. Overlay planes (.DEFINE)
-        8. ROM data (.INCBIN)
+
+        include_bytes! data is placed by include_bytes_by_bank and emitted in
+        its bank's window with the code.
         """
         # Stack bounds first — stable well-known symbols usable from asm!()
         self.emit_stack_bounds()
@@ -439,9 +391,6 @@ class SymbolDefinitionGenerator:
         self.emit_hw_definitions()
         self.emit_ram_definitions()
         self.emit_overlay_definitions()
-
-        # ROM data with initializers
-        self.emit_rom_data(auto_bank, bank_size)
 
     # ========================================================================
     # Helper Methods

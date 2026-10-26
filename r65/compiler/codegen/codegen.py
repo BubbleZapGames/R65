@@ -13,7 +13,7 @@ from r65.compiler.mir.nodes import SymbolByte
 from r65.compiler.codegen.emitter import AssemblyEmitter
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
 from r65.compiler.codegen.symbol_gen import (
-    SymbolDefinitionGenerator, auto_bank_number, rom_static_bank,
+    SymbolDefinitionGenerator, auto_bank_number, include_bytes_by_bank, rom_static_bank,
 )
 from r65.compiler.codegen.function_gen import ProgramFunctionGenerator
 from r65.compiler.optimize.peephole import optimize_nodes
@@ -341,21 +341,23 @@ class ProgramCodeGenerator:
         self.emitter.emit_file_header()
         self.emitter.emit_processor_directive()
 
-        # Organize functions by bank first to determine bank count
-        functions_by_bank = self._organize_functions_by_bank(mir_program)
-        # ROM data goes in its static's bank; open a window for each such bank.
-        rom_data_by_bank = self._rom_data_by_bank(mir_program)
-        for data_bank in rom_data_by_bank:
-            functions_by_bank.setdefault(data_bank, [])
-        max_bank = max(functions_by_bank.keys()) if functions_by_bank else 0
-        bank_count = max_bank + 1  # Banks are 0-indexed
-
         # Determine ROM type from snesrom_config
         is_hirom = False
         is_fastrom = False
         if mir_program.snesrom_config:
             is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
             is_fastrom = mir_program.snesrom_config.fastrom
+
+        # Organize functions by bank first to determine bank count
+        functions_by_bank = self._organize_functions_by_bank(mir_program)
+        # ROM data and include_bytes! data go in their static's bank; open a
+        # window for each such bank.
+        rom_data_by_bank = self._rom_data_by_bank(mir_program)
+        incbins_by_bank = include_bytes_by_bank(mir_program, rom_bank_size(is_hirom))
+        for data_bank in [*rom_data_by_bank, *incbins_by_bank]:
+            functions_by_bank.setdefault(data_bank, [])
+        max_bank = max(functions_by_bank.keys()) if functions_by_bank else 0
+        bank_count = max_bank + 1  # Banks are 0-indexed
 
         # Calculate minimum ROM size (power-of-2 banks and ROMSIZE value)
         # calculate_rom_size rounds up to power of 2 and enforces 256KB minimum
@@ -396,8 +398,7 @@ class ProgramCodeGenerator:
 
         # Symbol definitions
         symbol_gen = SymbolDefinitionGenerator(self.emitter, self.allocator)
-        symbol_gen.emit_all_definitions(mir_program.constants, auto_bank_number(mir_program),
-                                        rom_bank_size(is_hirom))
+        symbol_gen.emit_all_definitions(mir_program.constants)
 
         # Function code generation
         self.func_gen = ProgramFunctionGenerator(self.emitter, self.allocator)
@@ -559,6 +560,8 @@ class ProgramCodeGenerator:
 
             # ROM static data and initializer tables placed in this bank
             self._emit_rom_data_sections(rom_data_by_bank.get(bank_num, []))
+            for label, path, size in incbins_by_bank.get(bank_num, []):
+                self.emitter.emit_incbin(path, size, label=label)
 
         # Trait dispatch tables (jump tables and wrapper functions): a
         # region of their own, each wrapper entered in its caller's mode.
