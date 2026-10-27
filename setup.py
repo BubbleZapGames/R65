@@ -53,6 +53,7 @@ setup(
         "console_scripts": [
             "r65c=r65.compiler.main:main",
             "r65x=r65.cli:main",
+            "r65pkg=r65.pkg.cli:main",
             "r65-emu=r65.emulator.cli:main",
         ],
     },
@@ -66,6 +67,7 @@ setup(
             "templates/**/*.r65",  # Project templates
             "templates/**/*.md",   # Template documentation
             "templates/**/Makefile",  # Project Makefiles
+            "templates/**/.gitignore",
         ],
     },
 

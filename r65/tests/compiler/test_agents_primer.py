@@ -18,9 +18,9 @@ PRIMER = REPO / "docs" / "AGENTS_R65.md"
 PRELUDE = """\
 #[snesrom(name="PRIMER")]
 #[stack(0x0100, 0x01FF)]
-include!("lib/65816.r65")
-include!("lib/sneslib.r65")
-include!("lib/math.r65")
+include!("stdlib/65816.r65")
+include!("stdlib/sneslib.r65")
+include!("stdlib/math.r65")
 #[bank(0)]
 #[entry]
 fn init_reset() -> ! { snes_init(); main(); }
@@ -39,7 +39,7 @@ def _blocks():
 
 
 def _compile(tmp_path, source):
-    (tmp_path / "lib").symlink_to(REPO / "stdlib")
+    (tmp_path / "stdlib").symlink_to(REPO / "stdlib")
     src = tmp_path / "main.r65"
     src.write_text(source, encoding="utf-8")
     return subprocess.run(

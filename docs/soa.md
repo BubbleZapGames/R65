@@ -55,7 +55,7 @@ which clocks classickong's per-frame `mul8(i, 3)` at ~57 cycles against ~16
 for the inline `(i<<1)+i`.
 
 Above 16 bytes the cost is not just cycles. The call requires
-`include!("lib/math.r65")` (`_check_runtime_mul_available`,
+`include!("stdlib/math.r65")` (`_check_runtime_mul_available`,
 `multiply.py:39`), clobbers registers, and — per the module docstring at
 `multiply.py:8-24` — silently truncates the index to 0–255.
 
@@ -489,7 +489,7 @@ LDA #$01
 STA $0211,X
 ```
 
-Plus the obligation to `include!("lib/math.r65")`, the register clobber,
+Plus the obligation to `include!("stdlib/math.r65")`, the register clobber,
 and the silent truncation of the index to 0–255 (`multiply.py:8-24`).
 This is the case that makes the feature worth having, and the reason
 `classickong/src/enemy.r65` is 15 hand-written arrays.

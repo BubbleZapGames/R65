@@ -6,9 +6,9 @@
 #[stack(0x0100, 0x01FF)]
 
 // Include standard libraries
-include!("lib/65816.r65")
-include!("lib/sneslib.r65")
-include!("lib/math.r65")
+include!("stdlib/65816.r65")
+include!("stdlib/sneslib.r65")
+include!("stdlib/math.r65")
 {{ABI_INCLUDES}}
 
 // Bank 0 - Main code

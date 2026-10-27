@@ -71,10 +71,11 @@ def dump_ast(source: str, filename: str):
 
 
 def dump_hir(source: str, filename: str, cfg_options: list[str] = None,
-             include_paths: list[str] = None):
+             include_paths: list[str] = None, packages=()):
     """Dump HIR."""
     hir_program = run_frontend(source, filename, cfg_options=cfg_options,
-                               include_paths=include_paths, typecheck=False).hir_program
+                               include_paths=include_paths, packages=packages,
+                               typecheck=False).hir_program
 
     print(f"HIR for {filename}:")
     print("=" * 80)
@@ -93,10 +94,10 @@ def dump_hir(source: str, filename: str, cfg_options: list[str] = None,
 
 
 def dump_mir(source: str, filename: str, cfg_options: list[str] = None,
-             include_paths: list[str] = None):
+             include_paths: list[str] = None, packages=()):
     """Dump MIR."""
     hir_program = run_frontend(source, filename, cfg_options=cfg_options,
-                               include_paths=include_paths).hir_program
+                               include_paths=include_paths, packages=packages).hir_program
     mir_builder = MIRBuilder()
     mir_program = mir_builder.build_program(hir_program)
 
@@ -173,11 +174,12 @@ class FrontendResult:
     hir_program: object
     hir_warnings: list
     typeck_warnings: list
+    included_files: list = None  # every source file read, the main one first
 
 
 def run_frontend(source: str, filename: str, cfg_options: list[str] = None,
                  include_paths: list[str] = None, typecheck: bool = True,
-                 log=None) -> FrontendResult:
+                 log=None, packages=()) -> FrontendResult:
     """Parse, preprocess, expand macros, inject the built-in traits, build HIR
     and (unless `typecheck` is False) type check.
 
@@ -189,6 +191,8 @@ def run_frontend(source: str, filename: str, cfg_options: list[str] = None,
         cfg_options: cfg conditions (e.g. ['snes'])
         include_paths: include search paths
         log: called with a progress line before each phase (verbose mode)
+        packages: resolved packages' include roots (PackageRoot), searched
+            after include_paths
     """
     include_paths = include_paths or []
     cfg_evaluator = (CfgEvaluator.from_string_list(cfg_options)
@@ -199,15 +203,18 @@ def run_frontend(source: str, filename: str, cfg_options: list[str] = None,
     program = parse(source, filename)
 
     log("  [2/9] Preprocessing...")
-    program = preprocess(program, filename, include_paths=include_paths)
+    included_files = []
+    program = preprocess(program, filename, include_paths=include_paths,
+                         packages=packages, included_files=included_files)
 
     log("  [3/9] Expanding macros...")
     program = expand_macros(program)
     _inject_builtin_traits(program)
 
     log("  [4/9] Building HIR...")
+    # include_bytes! searches the package roots after -I, as include! does.
     builder = HIRBuilder(source_file=filename, cfg_evaluator=cfg_evaluator,
-                         include_paths=include_paths)
+                         include_paths=include_paths + [str(p.include_dir) for p in packages])
     hir_program = builder.build_program(program)
 
     typeck_warnings = []
@@ -217,7 +224,7 @@ def run_frontend(source: str, filename: str, cfg_options: list[str] = None,
         type_checker.check()
         typeck_warnings = type_checker.warnings
 
-    return FrontendResult(hir_program, builder.warnings, typeck_warnings)
+    return FrontendResult(hir_program, builder.warnings, typeck_warnings, included_files)
 
 
 # Diagnostic label per compiler error class, checked in order.
@@ -276,7 +283,8 @@ def compile_source(source: str, filename: str, output_file: str = None,
                    abi_model=None,
                    lint: bool = False, lint_only: bool = False,
                    lint_allow: list[str] = None, lint_deny: list[str] = None,
-                   lint_config_path: str = None):
+                   lint_config_path: str = None, packages=(),
+                   depfile: str = None, depfile_extra=()):
     """Compile R65 source to WLA-DX assembly.
 
     Args:
@@ -294,6 +302,9 @@ def compile_source(source: str, filename: str, output_file: str = None,
         abi_model: Optional ABIModel instance (default: Default ABI)
         lint, lint_only: Run the linter; lint_only stops after it
         lint_allow, lint_deny, lint_config_path: Lint rule overrides and config file
+        packages: Resolved packages' include roots (from r65.toml)
+        depfile: Write a make rule here: output_file depends on every file read
+        depfile_extra: More prerequisites for it (the manifests and lockfile)
     """
 
     def log(msg: str):
@@ -311,7 +322,7 @@ def compile_source(source: str, filename: str, output_file: str = None,
             log(f"Compiling {filename}...")
         frontend = run_frontend(source, filename, cfg_options=cfg_options,
                                 include_paths=include_paths,
-                                log=log if verbose else None)
+                                log=log if verbose else None, packages=packages)
         hir_program = frontend.hir_program
 
         # Print HIR warnings
@@ -418,6 +429,9 @@ def compile_source(source: str, filename: str, output_file: str = None,
         # Stack-usage check passed — commit assembly + sidecar files to disk.
         if output_file:
             codegen.write_outputs(output_file, debug=debug)
+            if depfile:
+                write_depfile(depfile, output_file,
+                              list(frontend.included_files or []) + list(depfile_extra))
 
         # Print codegen warnings (always printed, not gated by quiet mode)
         if codegen.warnings:
@@ -444,6 +458,57 @@ def compile_source(source: str, filename: str, output_file: str = None,
 
     except Exception as e:
         _exit_with_error(e, source, verbose)
+
+def write_depfile(depfile: str, target: str, prerequisites) -> None:
+    """A make rule: `target` depends on each prerequisite. Each also gets an
+    empty rule, so deleting an included file does not break the build."""
+    def esc(path) -> str:
+        return str(path).replace(' ', '\\ ')
+    seen = list(dict.fromkeys(str(Path(p).resolve()) for p in prerequisites))
+    lines = [f"{esc(target)}: " + " \\\n  ".join(esc(p) for p in seen), ""]
+    lines += [f"{esc(p)}:" for p in seen]
+    Path(depfile).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def load_packages(source_file: str, cfg_options, manifest: str = None):
+    """Resolve the root source file's r65.toml (the nearest at or above it,
+    or `manifest`): the packages' include roots, the cfg the build uses
+    ([bin] cfg plus --cfg), and the files the resolution read. A file with
+    no package manifest above it gets none of these.
+
+    Raises PackageError for a bad manifest, a stale or missing lockfile, a
+    package not fetched, or an unmet build requirement."""
+    from r65 import __version__
+    from r65.compiler.frontend.preprocessor import PackageRoot
+    from r65.pkg.lockfile import LOCK_FILENAME
+    from r65.pkg.manifest import PackageError, discover_manifest, load_manifest
+    from r65.pkg.resolve import check_build, resolve
+    from r65.pkg.version import parse_version
+
+    path = manifest or (discover_manifest(source_file) if source_file != '-' else None)
+    if path is None:
+        return [], cfg_options, []
+    root = load_manifest(path)
+    if not root.is_package:
+        return [], cfg_options, []
+    resolution = resolve(root)
+
+    cfg = list(root.bin_cfg or [])
+    for flag in cfg_options or []:
+        key = flag.split('=', 1)[0]
+        clash = [c for c in cfg if '=' in c and '=' in flag and c.split('=', 1)[0] == key and c != flag]
+        if clash:
+            raise PackageError(f"--cfg {flag} contradicts [bin] cfg {clash[0]!r} in {root.path}")
+        if flag not in cfg:
+            cfg.append(flag)
+    check_build(resolution, parse_version(__version__), cfg)
+
+    packages = [PackageRoot(p.name, p.include_dir, p.label) for p in resolution.ordered()]
+    files = [root.path] + [p.manifest.path for p in resolution.ordered()]
+    if (root.dir / LOCK_FILENAME).is_file():
+        files.append(root.dir / LOCK_FILENAME)
+    return packages, (cfg or None), files
+
 
 def compile_string(source: str, filename: str = "<string>", abi_model=None,
                    cfg_options: list[str] = None, include_paths: list[str] = None) -> str:
@@ -552,6 +617,17 @@ examples:
                        metavar='PATH',
                        help='Add directory to include search path (can be used multiple times)')
 
+    # Packages (r65.toml)
+    parser.add_argument('--manifest',
+                       metavar='PATH',
+                       help='Use this r65.toml instead of the nearest one above the source file')
+    parser.add_argument('--no-manifest',
+                       action='store_true',
+                       help='Ignore r65.toml: resolve includes from the source directory and -I only')
+    parser.add_argument('--depfile',
+                       metavar='PATH',
+                       help='Write a make rule naming every file the build read')
+
     # Code generation options
     parser.add_argument('--disable-scratch-parameters',
                        action='store_true',
@@ -639,8 +715,19 @@ examples:
         print(f"Error reading file: {e}", file=sys.stderr)
         sys.exit(1)
 
-    frontend_opts = dict(cfg_options=args.cfg_options,
-                         include_paths=args.include_paths)
+    try:
+        packages, cfg_options, manifest_files = (
+            ([], args.cfg_options, []) if args.no_manifest
+            else load_packages(args.file, args.cfg_options, args.manifest))
+    except Exception as e:
+        from r65.pkg.manifest import PackageError
+        if not isinstance(e, PackageError):
+            raise
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    frontend_opts = dict(cfg_options=cfg_options,
+                         include_paths=args.include_paths, packages=packages)
 
     try:
         if args.dump_tokens:
@@ -670,14 +757,16 @@ examples:
         abi_model = abi_model_from_string(args.abi)
 
         compile_source(source, filename, args.output, args.verbose, args.quiet,
-                       args.cfg_options, args.include_paths, opt_level=args.opt_level,
+                       cfg_options, args.include_paths, opt_level=args.opt_level,
                        debug=args.generate_debug,
                        disable_scratch_params=args.disable_scratch_params,
                        disable_loop_promotion=args.disable_loop_promotion,
                        abi_model=abi_model,
                        lint=args.lint, lint_only=args.lint_only,
                        lint_allow=args.lint_allow, lint_deny=args.lint_deny,
-                       lint_config_path=args.lint_config)
+                       lint_config_path=args.lint_config,
+                       packages=packages, depfile=args.depfile,
+                       depfile_extra=manifest_files)
 
     except Exception as e:
         # compile_source reports its own errors; this reports the dump and

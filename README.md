@@ -557,7 +557,7 @@ let masked = value & 0x0F;
 let shifted = value << 2;     // Constant shift only
 
 // Slow (use functions from math.r65 - makes cost visible)
-include!("lib/math.r65")
+include!("stdlib/math.r65")
 
 let product: u16 = mul8(a, b);       // 8x8 -> 16-bit multiply
 let quotient: u8 = div8(a, b);       // 8-bit divide
@@ -940,7 +940,7 @@ r65-emu game.smc --trace        # Built-in 65816 emulator: --breakpoint, --disas
 | [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md) | Interrupt handler modes |
 | [docs/array-bounds-checking.md](docs/array-bounds-checking.md) | Array bounds design rationale |
 | [docs/reserved-keywords.md](docs/reserved-keywords.md) | Reserved keywords, assembly interop |
-| [docs/packaging-system.md](docs/packaging-system.md) | Package system design (`r65.toml`, `r65pkg`) - not yet implemented |
+| [docs/packaging-system.md](docs/packaging-system.md) | Packages: `r65.toml`, `r65.lock` and the `r65pkg` tool |
 | [docs/future-work.md](docs/future-work.md) | Deferred features and why |
 
 ## External References

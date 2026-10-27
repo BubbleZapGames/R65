@@ -11,7 +11,7 @@
 //! `F32_RAW!` macro.
 //!
 //! ```
-//! include!("lib/F32.r65")
+//! include!("stdlib/F32.r65")
 //!
 //! #[ram] static mut V: F32 = F32_RAW!(0x00, 0x00, 0x0000);   // 0.0
 //!

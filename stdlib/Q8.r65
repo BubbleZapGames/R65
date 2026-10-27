@@ -22,7 +22,7 @@
 //! because the operator traits cannot yet be implemented for a newtype.
 //!
 //! ```
-//! include!("lib/Q8.r65")
+//! include!("stdlib/Q8.r65")
 //!
 //! #[zeropage] static mut ALPHA: Q8;
 //!
@@ -123,7 +123,7 @@ impl Q8 {
     ///
     /// Truncates. Uses the SNES hardware multiplier.
     ///
-    /// Requires: `include!("lib/sneslib.r65")`
+    /// Requires: `include!("stdlib/sneslib.r65")`
     #[cfg(snes)]
     fn mul(self, other: Q8) -> Q8 {
         // Simpler than Q10's: the operands are unsigned, so there is no magnitude
@@ -250,7 +250,7 @@ impl Q8 {
     /// overflow: dividing by 1 or more only shrinks the value, so unlike `div`
     /// and `round` there is no range precondition.
     ///
-    /// Requires: `include!("lib/sneslib.r65")`
+    /// Requires: `include!("stdlib/sneslib.r65")`
     #[cfg(snes)]
     fn div_u8(self, d: u8) -> Q8 {
         if d == 0 {
@@ -277,7 +277,7 @@ impl Q8 {
     /// `Q8_ONE` extrapolates past `b`, but unlike Q10 that can wrap rather than
     /// overshoot cleanly, so clamp `t` at the call site if it may exceed one.
     ///
-    /// Requires: `include!("lib/sneslib.r65")`
+    /// Requires: `include!("stdlib/sneslib.r65")`
     #[cfg(snes)]
     fn lerp(a: Q8, b: Q8, t: Q8) -> Q8 {
         // Both directions are written out because the payload is unsigned:

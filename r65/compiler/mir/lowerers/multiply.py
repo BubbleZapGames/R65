@@ -6,7 +6,7 @@ Array indexing scales a variable index by the element size:
     - a power of 2: one shift.
     - other sizes up to 16 bytes: shift-and-add, inline.
     - other sizes over 16 bytes: a call to stdlib `mul16(size, index)`, a
-      16x16 -> 16 multiply, so `include!("lib/math.r65")` is required. Any
+      16x16 -> 16 multiply, so `include!("stdlib/math.r65")` is required. Any
       u16 index whose byte offset fits in 16 bits is exact.
     A constant index is scaled at compile time.
 """
@@ -35,7 +35,7 @@ def _check_runtime_mul_available(ctx: 'LoweringContext', struct_size: int):
             f"not a power of 2) requires runtime multiplication.\n"
             f"\n"
             f"Add this to your source file:\n"
-            f"    include!(\"lib/math.r65\")",
+            f"    include!(\"stdlib/math.r65\")",
             source_loc=ctx.current_source_loc
         )
 

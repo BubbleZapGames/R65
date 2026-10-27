@@ -7,7 +7,7 @@
 // strings unless otherwise noted. No bounds checking is performed.
 //
 // Usage:
-//   include!("lib/string.r65")
+//   include!("stdlib/string.r65")
 
 // ============================================================================
 // Memory Primitives

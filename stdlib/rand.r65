@@ -4,7 +4,7 @@
 // Fast and suitable for games (not cryptographic).
 //
 // Usage:
-//   include!("lib/rand.r65")
+//   include!("stdlib/rand.r65")
 //
 //   // Seed the generator (must be non-zero)
 //   __rand_seed = 0xBEEF;

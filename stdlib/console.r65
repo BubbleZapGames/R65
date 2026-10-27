@@ -13,7 +13,7 @@
 //   - stdlib/sneslib.r65  (VRAM registers, DMA macros)
 //
 // Usage:
-//   include!("lib/console.r65")
+//   include!("stdlib/console.r65")
 // ============================================================================
 
 include!("sneslib.r65")

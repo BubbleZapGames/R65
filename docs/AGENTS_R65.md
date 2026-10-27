@@ -28,9 +28,9 @@ handler, an NMI handler, and a main loop that syncs to VBlank.
 #[snesrom(name="DEMO")]
 #[stack(0x0100, 0x01FF)]
 
-include!("lib/65816.r65")
-include!("lib/sneslib.r65")
-include!("lib/math.r65")
+include!("stdlib/65816.r65")
+include!("stdlib/sneslib.r65")
+include!("stdlib/math.r65")
 
 #[bank(0)]
 
@@ -204,9 +204,10 @@ or a stack frame you did not expect, restructure.
 
 ## 5. The standard library
 
-`r65x init` copies `65816.r65`, `sneslib.r65` and `math.r65` into `src/lib/`
-(plus `scratch_regs.r65` for a FixedStack project). For
-the others, copy them from the R65 repo's `stdlib/` or pass `-I path/to/stdlib`.
+The standard library is a package. A project from `r65x init` depends on it in
+`r65.toml`, `make` fetches it (`r65pkg fetch`), and every file below is
+included by package name: `include!("stdlib/string.r65")`. Nothing is copied
+into the project.
 
 | File | What's in it |
 |---|---|
@@ -231,8 +232,8 @@ audio and compressed data.
 A project from `r65x init my_game` has a Makefile. `init` asks
 for the ABI model (`--abi Default|FixedStack` skips the prompt); the Makefile
 records it as `ABI =` and passes `--abi $(ABI)` to r65c. A FixedStack project
-also gets `src/lib/scratch_regs.r65`, the direct-page scratch slots its
-parameters live in, included from `main.r65`.
+also includes `stdlib/scratch_regs.r65`, the direct-page scratch slots its
+parameters live in, from `main.r65`.
 
 ```bash
 make            # src/main.r65 -> build/main.asm -> ROM (r65c -v --cfg snes --dbg -I src)

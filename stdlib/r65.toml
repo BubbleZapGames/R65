@@ -1,0 +1,8 @@
+[package]
+name        = "stdlib"
+version     = "0.1.0"
+r65-version = "0.2"
+repository  = "https://github.com/BubbleZapGames/R65"
+
+[lib]
+include_dir = "."

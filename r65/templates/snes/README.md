@@ -8,13 +8,21 @@ boots the console, handles VBlank (NMI) and runs an empty game loop.
 ```
 {{PROJECT_NAME}}/
 ├── src/
-│   ├── main.r65       # Reset and NMI handlers, game loop
-│   └── lib/           # Standard library (65816, sneslib, math)
+│   └── main.r65       # Reset and NMI handlers, game loop
 ├── build/             # Generated assembly, debug symbols and ROM
 ├── tests/             # mesen-gdb test scripts (*.script)
 ├── Makefile           # Build system for WLA-DX
+├── r65.toml           # Package manifest: the stdlib version this project uses
+├── r65.lock           # The stdlib release in use, written by r65pkg (commit it)
 └── r65-lint.toml      # Lint rules (r65c --lint)
 ```
+
+The standard library is a package: `r65.toml` depends on its GitHub release,
+and sources include it by package name - `include!("stdlib/sneslib.r65")`.
+`r65x init` put a copy of the stdlib installed with r65 in `.r65/deps/`, so the
+first build needs no network; a fresh checkout of the project fetches it
+(`make` runs `r65pkg fetch`). `r65pkg update` moves to the newest compatible
+stdlib release; `r65pkg tree` shows what is in use.
 
 ## Getting Started
 
@@ -34,12 +42,13 @@ make clean      # Remove build artifacts
 
 The project compiles with the `{{ABI}}` ABI, chosen at `r65x init`. Change the
 `ABI` variable in the Makefile (or `make ABI=Default`) to switch; a FixedStack
-build needs `src/lib/scratch_regs.r65` included from `main.r65`.
+build needs `stdlib/scratch_regs.r65` included from `main.r65`.
 
 ### Manual Compilation
 
 ```bash
-# Compile R65 to assembly (--dbg also writes symbols for Mesen)
+# Fetch stdlib, then compile R65 to assembly (--dbg also writes symbols for Mesen)
+r65pkg fetch
 r65c src/main.r65 -o build/main.asm --cfg snes --dbg -I src
 
 # Assemble with WLA-DX

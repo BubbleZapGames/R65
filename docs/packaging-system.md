@@ -4,34 +4,35 @@ How R65 code is shared between projects: a manifest (`r65.toml`), a lockfile
 (`r65.lock`), and the `r65pkg` tool. Designed so that a single git repository can
 hold several independently versioned packages.
 
-*Status: design. Not yet implemented — see [Implementation](#implementation).*
+*Status: implemented (`r65/pkg/`). stdlib is a package, `r65x init` depends on
+it, and five of this repository's projects are migrated — see
+[Implementation](#implementation).*
 
 ---
 
 ## Motivation
 
-R65 has no way to share code. `include!()` has exactly one resolution rule — try
-the including file's directory, then each `-I` directory
+Before packages, R65 had no way to share code. `include!()` had exactly one
+resolution rule — try the including file's directory, then each `-I` directory
 (`r65/compiler/frontend/preprocessor.py::_resolve_include_path`) — and nothing
-above it. There is no manifest, no version, and no dependency graph.
+above it. There was no manifest, no version, and no dependency graph.
 
-`stdlib/` is not even reachable from a project. Every project Makefile passes
-exactly `-I src`, and nothing points at the repository's `stdlib/`. So
-distribution happens by copying: `r65x init` physically copies 3 of the 14 stdlib
-files into `<project>/src/lib/` (`r65/cli.py::_copy_stdlib`), and nothing ever
-re-syncs them.
+`stdlib/` was not even reachable from a project. No project build pointed at the
+repository's `stdlib/`: five Makefiles passed exactly `-I src`, classickong's
+passed no `-I` at all, and astroids had no Makefile. So distribution happened by
+copying: `r65x init` physically copied 3 of the 14 stdlib files (4 under
+FixedStack) into `<project>/src/lib/`, and nothing ever re-synced them.
 
-The result, measured across the projects in this repository:
+The result, measured across the projects in this repository before migration:
 
-- **four distinct `sneslib.r65` files** across six projects (pacman; astroids and
-  bubblebobble; stdlib and rotor_raiders; textadv; kungfu) — 53 to 169 diff lines
-  apart;
-- `math.r65` stale in five of six projects;
-- `rotor_raiders/src/lib/rand.r65` is a *forward* fork — it carries fixes stdlib
-  does not, with no path back;
-- the 11 stdlib files `init` does not copy (`console`, `string`, `Q10`, `F32`,
-  `I32`, `U32`, …) were hand-copied in by users;
-- 13 e2e test files reach stdlib by interpolating an absolute path into an
+- **six distinct `sneslib.r65` files** across seven projects (astroids and
+  bubblebobble; classickong; kungfu; pacman; textadv; rotor_raiders, the only
+  one matching stdlib) — the five that differ are 4 to 175 diff lines from it;
+- `math.r65` differs from stdlib in all seven, by 5 to 61 diff lines;
+- the stdlib files `init` does not copy (`console`, `string`, `Q10`, `U32`, …)
+  were hand-copied in by users and drift too: `string.r65` is 343 diff lines
+  from stdlib in both rotor_raiders and textadv;
+- 19 e2e test files reach stdlib by interpolating an absolute path into an
   `include!` string.
 
 This is not drift in one direction that a sync script would fix; it is
@@ -68,12 +69,18 @@ A library:
 # stdlib/r65.toml
 [package]
 name        = "stdlib"
-version     = "0.4.0"
+version     = "0.1.0"
 r65-version = "0.2"        # the oldest r65c that builds it
+repository  = "https://github.com/BubbleZapGames/R65"
 
 [lib]
 include_dir = "."          # dir added to the include path for dependents
 ```
+
+`repository` is where the package is released from. `r65x init` reads stdlib's,
+with its version, to write a new project's dependency: the release the installed
+compiler ships, and anything compatible after it (see
+[A new project's stdlib](#a-new-projects-stdlib)).
 
 An application:
 
@@ -88,20 +95,26 @@ main = "src/main.r65"
 cfg  = ["snes"]            # the build's --cfg conditions
 
 [dependencies]
-stdlib = { git = "https://github.com/BubbleZapGames/R65", version = "0.4" }
-q10    = { path = "../q10" }
+stdlib = { git = "https://github.com/BubbleZapGames/R65", version = "0.1" }
 ```
+
+A path dependency is `q10 = { path = "../q10" }`, optionally with a `version`
+requirement checked against that directory's manifest.
 
 The workspace root:
 
 ```toml
 # /home/nathan/R65/r65.toml
 [workspace]
-members = ["stdlib", "pacman", "textadv", "rotor_raiders", "astroids", "bubblebobble", "kungfu.r65"]
+members = ["stdlib", "pacman", "astroids", "bubblebobble", "textadv", "kungfu.r65"]
 
 [patch]
 stdlib = { path = "stdlib" }
 ```
+
+The example projects are not tracked in the R65 repository, so a fresh clone
+has members that do not exist. A missing member is not an error: resolution only
+asks whether a package's directory is listed, and `r65pkg check` warns.
 
 ### One repo, many versioned packages
 
@@ -161,9 +174,10 @@ cfg         = ["snes"]           # cfg conditions it must be built with
 - **`cfg`** lists the conditions the package requires. A package that merely
   *offers* more under a cfg (`#[cfg(snes)]` in `math.r65`) does not list it.
 
-The application's side is `[bin] cfg`. `r65c` uses it when `--cfg` is absent
-and fails when a flag contradicts it, so the Makefile and the manifest cannot
-drift.
+The application's side is `[bin] cfg`: conditions every build of it is
+compiled with. `--cfg` adds to them (a debug build's `--cfg debug`), and a flag
+that gives a `key=value` condition a different value from `[bin]` is an error,
+so the Makefile and the manifest cannot drift.
 
 The ABI is deliberately absent. It is a compile-time choice — `--abi` on the
 `r65c` command line — and packaging has no say in it.
@@ -171,7 +185,8 @@ The ABI is deliberately absent. It is a compile-time choice — `--abi` on the
 ### Overriding a package — `[patch]`
 
 `[patch]` in the root manifest — the workspace root, or the application when it
-has none — replaces a package by name for the whole graph, as Cargo's does:
+has none — replaces a package by name for the whole graph, as Cargo's does. A
+patch is a `path`:
 
 ```toml
 [patch]
@@ -220,9 +235,9 @@ Resolution produces an ordered list of package include directories, appended to
 deterministically (topological, then alphabetical). `include!("sneslib.r65")`
 then simply works, and existing sources compile unchanged.
 
-The same directory can arrive twice — from the manifest, and from
-`r65pkg path --include-flags` in the Makefile — so the list is deduplicated by
-resolved path before anything below looks at it.
+The same directory can arrive twice — from `-I` and from a package — so the
+list is deduplicated by resolved path before anything below looks at it.
+`include_bytes!` searches the package roots after `-I` too.
 
 ### Package-qualified includes
 
@@ -251,27 +266,30 @@ package, by either spelling, without forking it.
 ### Ambiguity is an error, not first-wins
 
 Because a bare include names only a file, two packages could each provide
-`math.r65`. `_resolve_include_path` returns the first hit today; it must instead
-collect every hit across *package* roots and fail when two distinct files match:
+`math.r65`. Rather than take the first hit, `_resolve_include_path` collects
+every hit across *package* roots and fails when two distinct files match:
 
 ```
-error: include!: 'math.r65' is provided by two packages
-  stdlib 0.4.0  -> .r65/deps/stdlib/math.r65
-  mathx  0.1.0  -> .r65/deps/mathx/math.r65
+error: include!: 'math.r65' is provided by 2 packages
+  stdlib 0.4.0     -> .r65/deps/stdlib/stdlib/math.r65
+  mathx 0.1.0      -> .r65/deps/mathx/math.r65
   note: include it qualified ('stdlib/math.r65'), or shadow it with a local copy under -I
 ```
 
 ### Fetching — `.r65/deps/`
 
 `r65pkg` lists a repository's `NAME-v*` tags with `git ls-remote --tags` to
-resolve version requirements, then `r65pkg fetch` clones each git dependency
-into `<project>/.r65/deps/<name>/` at the locked commit: a shallow clone at the
-tag, then `rev-parse` to pin. No shared cache, no committed vendor tree; `.r65/`
-is gitignored.
+resolve version requirements, then clones each git dependency into
+`<project>/.r65/deps/<name>/` at the chosen commit: a shallow clone at the tag,
+detached, then `rev-parse` to pin. A clone already at the locked commit is kept,
+so a fetch with nothing new runs no network command. No shared cache, no
+committed vendor tree; `.r65/` is gitignored.
 
-`r65.lock` sits next to `r65.toml` and **is** committed:
+`r65.lock` sits next to the application's `r65.toml` and **is** committed:
 
 ```toml
+version = 1
+
 [[package]]
 name    = "stdlib"
 version = "0.4.2"
@@ -279,9 +297,25 @@ source  = "git+https://github.com/BubbleZapGames/R65?tag=stdlib-v0.4.2"
 rev     = "0bf2f0f4a1..."
 ```
 
+### A new project's stdlib
+
+`r65x init` does not clone. It copies the stdlib installed with r65 into
+`.r65/deps/stdlib/` and locks it as the GitHub release it is — `source =
+"git+https://github.com/BubbleZapGames/R65?tag=stdlib-v0.1.0"`, with no `rev`.
+The first build needs no network, and the project still points at the
+repository:
+
+- `r65c` and `r65pkg fetch` take a rev-less git entry's copy as fetched while its
+  manifest is at the locked version;
+- a fetch with no copy there (a fresh checkout of the project, since `.r65/` is
+  gitignored) clones the locked tag and pins its commit;
+- `r65pkg update` resolves against the repository's tags like any git
+  dependency and replaces the copy with a clone.
+
 The lock records the version chosen, not the requirement, so `r65pkg update`
 is the only thing that moves it to a newer 0.4.x. Path dependencies and patched
-packages are recorded without a rev. Only the root's lockfile counts: a
+packages are recorded as `source = "path+../stdlib"`, without a rev; `r65c`
+needs no lockfile for them. Only the root's lockfile counts: a
 dependency's own `r65.lock` is ignored, as Cargo ignores it. `r65c` fails with an
 actionable message when the lockfile is stale or a dependency is missing, rather
 than fetching implicitly — the compiler never touches the network.
@@ -299,41 +333,69 @@ that writes manifests, writes the lockfile, or runs `git`.
 | `r65pkg add NAME --path ../q10` | Add a path dependency |
 | `r65pkg add NAME --git URL [--version REQ \| --tag T \| --rev R \| --branch B]` | Add a git dependency (default: a caret requirement on the newest tag), resolve it, update the lock |
 | `r65pkg remove NAME` | Drop a dependency and its lock entry |
-| `r65pkg fetch` | Materialize everything in `r65.lock` into `.r65/deps/` |
+| `r65pkg fetch` | Lock any dependency not locked yet, then materialize everything in `r65.lock` into `.r65/deps/` |
 | `r65pkg update [NAME]` | Re-resolve (all dependencies, or one) to the newest versions the requirements allow, and rewrite the lock |
 | `r65pkg tree` | Print the dependency graph with versions and sources |
 | `r65pkg list` | Resolved packages: version, source, include dir |
 | `r65pkg check` | Validate manifests, lock freshness, version conflicts, build requirements (`r65-version`, `cfg`), tag/manifest agreement, cross-package include ambiguity, and bare-name includes of another package's files — without compiling |
-| `r65pkg path [--include-flags]` | Print resolved include dirs, or `-I a -I b`, for Makefiles |
+| `r65pkg path [--include-flags]` | Print resolved include dirs, or `-I a -I b`, for tools other than `r65c` |
 | `r65pkg tag NAME` | Create the `NAME-v<version>` git tag from that member's manifest version |
 
-`r65pkg path --include-flags` is what keeps Makefiles honest — a project appends
-`$(shell r65pkg path --include-flags)` to both `R65C_FLAGS` and `WLA_FLAGS`
-instead of hardcoding paths. `r65pkg tag` is the monorepo release helper: it
-reads the member's `[package] version`, so a tag can never disagree with the
-manifest it claims to release.
+`r65pkg tag` is the monorepo release helper: it reads the member's `[package]
+version`, refuses while that manifest differs from `HEAD`, and creates an
+annotated tag, so a tag can never disagree with the manifest it claims to
+release. Pushing the tag is left to you (`git push origin stdlib-v0.1.0`).
+`--manifest PATH` before the command picks the package; `fetch`, `update` and
+`add` take `--offline`.
+
+### `r65c` and the Makefile
+
+`r65c` reads `r65.toml` itself — the nearest one above the root source file,
+or `--manifest PATH`; `--no-manifest` ignores it — so neither `R65C_FLAGS` nor
+`WLA_FLAGS` names the package directories, and `include_bytes!` emits absolute
+`.INCBIN` paths the assembler needs no `-I` for. A project Makefile runs
+`r65pkg` as `$(PYTHON) -m r65.pkg.cli`, like `r65c`:
+
+```make
+$(BUILD_DIR)/main.asm: $(MAIN_SRC) | deps
+	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS) --depfile $(BUILD_DIR)/main.d
+
+-include $(BUILD_DIR)/main.d
+
+deps:
+	$(R65PKG) fetch
+```
+
+`--depfile` writes a make rule naming every file the build read — each
+included source, the manifests and the lockfile — so an edit to a stdlib file
+or a `r65pkg update` rebuilds.
 
 ### Module layout
 
 Split so the compiler links only against the read-only half:
 
 ```
+r65/pkg/version.py    # versions and caret requirements
 r65/pkg/manifest.py   # read-only: Manifest, Dependency, load/discover
-r65/pkg/resolve.py    # read-only: workspace, graph walk, unification
+r65/pkg/resolve.py    # read-only: workspace, graph walk, unification, LockedGit
 r65/pkg/lockfile.py   # read + write
-r65/pkg/fetch.py      # git subprocess — CLI only
+r65/pkg/fetch.py      # git subprocess (RemoteGit) — CLI only
 r65/pkg/cli.py        # r65pkg entry point
 ```
 
-`r65c` imports `manifest` and `resolve` and nothing else, so it structurally
-cannot shell out to git or mutate a manifest.
+`r65c` imports `version`, `manifest`, `lockfile` (to read) and `resolve`, and
+nothing else, so it structurally cannot shell out to git or mutate a manifest.
+The two resolvers share one graph walk and differ only in where a git
+package's version comes from: `LockedGit` reads the lock and the clone,
+`RemoteGit` lists tags and clones.
 
 ---
 
 ## Correctness fixes packaging depends on
 
-These are not polish. Each is a latent silent-miscompile today that packaging
-makes *reachable*, so each must land with the system.
+These are not polish. Each was a latent silent miscompile or a silent choice
+that packaging made *reachable*, so each landed with the system. They apply to
+every program, packaged or not.
 
 ### Bank state leaks across include boundaries
 
@@ -343,27 +405,33 @@ Because `include!` splices items into one flat list, a package containing a bank
 directive **silently rebanks every declaration after its include site**, and a
 package's own contents inherit whatever bank the includer happened to be in.
 
-Fix in `Preprocessor._process_include`: when an included file emits any
-`BankDirective`, append a synthesized `BankDirective` restoring the includer's
-bank after the spliced items. Contained, and directly testable against the
-emitted `.BANK` directives.
+Fix in `Preprocessor._expand_declarations`: when an included file emits any
+`BankDirective`, a synthesized one restoring the includer's bank follows the
+spliced items. No project in this repository relied on the leak: their
+assembly was byte-identical before and after.
 
 ### Collision diagnostics carry no location
 
-`SymbolTable.declare` raises `Redefinition of 'foo' in current scope` with
-`source_loc=None` — no file, no line, no pointer at the original definition. With
-packages the number of reachable collisions multiplies, so the error must name
-both sites and both packages.
+`SymbolTable.declare` raised `Redefinition of 'foo' in current scope` with
+`source_loc=None` — no file, no line, no pointer at the original definition.
+With packages the number of reachable collisions multiplies, so the error now
+names both sites and their packages:
 
-`SourceLocation` already chains `included_from` (`r65/compiler/errors.py`); add
-an `origin_package` alongside it, set in the preprocessor, and pass
-`symbol.definition.source_loc` into the error.
+```
+error: Redefinition of 'clash' in current scope
+  first defined at .../one/a.r65:1:1 (one 0.1.0)
+  --> .../app/main.r65:2:1
+```
+
+`SourceLocation` carries an `origin_package` beside `included_from`, set by the
+parser for a file the preprocessor reached through a package.
 
 ### Macro redefinition is silently last-wins
 
-`MacroExpander` collects macros with a bare dict assignment. Two packages
-defining `debug!` pick one with no diagnostic at all. Make cross-file macro
-redefinition an error, using the same provenance.
+`MacroExpander` collected macros with a bare dict assignment, so two packages
+defining `debug!` picked one with no diagnostic at all. A macro defined in two
+files is now an error naming the first; a redefinition within one file still
+replaces it.
 
 ---
 
@@ -389,71 +457,63 @@ gets worse as package count grows; see `docs/future-work.md`.
 
 ## Implementation
 
-Small verified slices; each lands green on its own.
+Landed:
 
-**0 — This document.** Written before the code, and kept current as the slices
-land rather than describing an intent the code outgrew. Indexed in `CLAUDE.md`
-and `README.md`; hazards recorded in `docs/future-work.md`.
+- **`r65/pkg/`** — the modules above, and the `r65pkg` console script in
+  `setup.py` (`pip install -e .` again to put it on `PATH`; Makefiles do not
+  need it there).
+- **`r65c`** — manifest discovery, `--manifest`, `--no-manifest`, `--depfile`,
+  the build-requirement checks and `[bin] cfg`; the preprocessor's package
+  roots, qualified includes and ambiguity error.
+- **The correctness fixes** above.
+- **stdlib** — `stdlib/r65.toml` at 0.1.0, and the workspace root with its
+  `[patch]`.
+- **`r65x init`** — writes `r65.toml` depending on the stdlib release it ships
+  (`TemplateManager.stdlib_release`), seeded with the installed copy in
+  `.r65/deps/stdlib/`, instead of copying files into `src/lib/`;
+  the template includes `stdlib/...`, its Makefile has the `deps:` target and
+  the depfile, and its `.gitignore` covers `.r65/`.
+- **Migration** — pacman, astroids, bubblebobble, textadv and kungfu.r65: each
+  has an `r65.toml` depending on stdlib by `git` and `version` (the root patch
+  resolves it to `stdlib/`), `include!("stdlib/...")` in place of
+  `include!("lib/...")`, and no `src/lib/`. None of their copies carried a fix
+  stdlib lacked.
 
-**1 — Manifest and path dependencies (no network).**
-`r65/pkg/manifest.py` (`Manifest`, `Dependency`, `load_manifest`,
-`discover_manifest`, `PackageError`; unknown keys rejected) and
-`r65/pkg/resolve.py` (workspace discovery, graph walk, single-version
-unification, ordered include dirs). `r65/compiler/main.py` discovers and resolves
-before `compile_source`, with `--no-manifest` and `--manifest PATH`; it checks
-the build requirements (`r65-version`, `cfg`) and takes `--cfg` from `[bin]`
-when the flag is absent. `_resolve_include_path` gains the
-package-root list, package-qualified paths and the ambiguity error.
+Not yet:
 
-**2 — Provenance and diagnostics.** `origin_package` on `SourceLocation`, set in
-`_process_include`; used by `SymbolTable.declare` and by the macro collector.
-
-**3 — Bank scoping.** The `_process_include` restore, plus a test asserting that
-declarations after an include site keep their original bank.
-
-**4 — `r65pkg`, git dependencies and the lockfile.** `r65/pkg/lockfile.py`,
-`r65/pkg/fetch.py`, `r65/pkg/cli.py`; the `r65pkg` entry point in `setup.py`;
-version requirements resolved against `NAME-v*` tags, the tag/manifest
-agreement check, and `[patch]`; `--offline`; `.r65/` in the template
-`.gitignore`.
-
-**5 — Migration.** `stdlib/r65.toml` and the workspace root, with its
-`[patch] stdlib = { path = "stdlib" }`, first. Then per project: add `r65.toml`
-depending on stdlib by `git` and `version` — the patch resolves it to `stdlib/`
-here — with `[bin] cfg` matching the Makefile, and delete `src/lib/`.
-**rotor_raiders last** — its `rand.r65` is a forward fork whose changes must be
-merged *into* stdlib first, or they are lost. `r65x init` stops copying stdlib
-and writes a manifest instead; the Makefile template gets a `deps:` target,
-include dirs from `r65pkg path --include-flags`, and a dependency on the full
-include graph rather than just `$(MAIN_SRC)`.
+- **The first release.** No `stdlib-v*` tag exists. A new project builds from
+  its installed copy regardless, but a fresh checkout of one, or `r65pkg
+  update`, needs the tag: `r65pkg tag stdlib` after `stdlib/r65.toml` is
+  committed, then `git push origin stdlib-v0.1.0`.
+- **rotor_raiders and classickong** still carry `src/lib/` copies. They are
+  separate repositories; migrating one is the same three steps.
 
 ## Verification
 
-- `pytest r65/tests/pkg/` — manifest parse, workspace discovery, version
-  unification and its conflict error, include ambiguity, lockfile round-trip, and
-  `r65pkg` subcommands driven against a throwaway local git repository holding
-  two independently tagged members. That last one is the direct test that one
-  repo can serve two versioned packages. Against the same repository: two
-  caret requirements unifying to the newest tag both allow, an exact rev outside
-  a range refused, a tag whose manifest version disagrees refused, and a
-  `[patch]` that redirects a git dependency and fails when its version no longer
-  satisfies the requirement.
-- **Includes and build requirements.** A qualified include resolving into the
-  named package while a bare one is ambiguous; a local file shadowing either
-  spelling; a qualified and a bare include of one file compiling it once; and
-  the `r65-version` and `cfg` errors, including a `--cfg` flag that
-  contradicts `[bin]`.
-- **Byte-identical proof for slice 1.** For an unmigrated project, compile once
-  through the manifest and once with the equivalent hand-written `-I`, and assert
-  the two `.asm` outputs are identical. This proves the resolver changes only
-  *how* include directories are computed, not what is compiled.
-- **Migration diff, per project.** Build the ROM before migrating, migrate,
-  rebuild, diff `build/main.asm`. Every hunk is stdlib drift being adopted — read
-  it and confirm it is wanted before accepting. pacman is the first candidate,
-  and its `play.sh` scripted-screenshot harness gives a runtime check on top of
-  the diff.
-- `pytest r65/tests/e2e/` stays green throughout: the 13 files interpolating an
-  absolute `STDLIB_DIR` keep working because relative and `-I` resolution are
-  unchanged.
-- End to end: `r65x init /tmp/pkgtest && cd /tmp/pkgtest && make`
-  succeeds with no `src/lib/`, and `r65pkg tree` / `r65pkg check` report clean.
+- `pytest r65/tests/pkg/` — manifest parse, version requirements, workspace
+  discovery, unification and its conflict errors, `[patch]` (and its version
+  check), build requirements, and, against throwaway local git repositories:
+  one repository serving two independently tagged members, two caret ranges
+  unifying to the newest release both allow, exact pins, a tag disagreeing with
+  its manifest refused, the lockfile kept until `update` and stale for `r65c`
+  after a requirement changes, and `r65pkg add` / `remove` / `tree` / `tag`.
+- **Includes, provenance and build requirements**, through `r65c`: a qualified
+  include into the named package while a bare one is ambiguous; a local file
+  shadowing either spelling; a qualified and a bare include of one file
+  compiling it once; the depfile; the `r65-version` and `cfg` errors and a
+  `--cfg` clash with `[bin]`; both redefinition errors. Bank scoping is in
+  `r65/tests/compiler/frontend/test_preprocessor.py`.
+- **No change to unmigrated output.** pacman, bubblebobble, textadv,
+  kungfu.r65, rotor_raiders and classickong compiled to byte-identical assembly
+  before and after the compiler changes.
+- **Migration.** Each migrated project's assembly is identical to a build with
+  the current stdlib copied into its `src/lib/`, so the migration adopts
+  stdlib's drift and nothing else. Run headless in Mesen against the
+  pre-migration ROMs — idle, after Start, after holding Right — every
+  screenshot matched and WRAM differed only in the stack page (return
+  addresses that moved with the code).
+- **End to end**: `r65x init` then `make` builds the ROM from the installed copy
+  with no network and no `src/lib/` (the GitHub tag does not exist yet);
+  `r65pkg tree` and `r65pkg check` report clean. In the tests, a missing copy
+  is cloned and pinned and `update` replaces it with the newest release, against
+  a local repository.

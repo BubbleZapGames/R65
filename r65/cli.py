@@ -11,10 +11,12 @@ Usage:
     r65x fontgen                         # Generate console font from TrueType
 """
 
+import re
+import shutil
 import sys
 import argparse
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 
 class R65XError(Exception):
@@ -79,10 +81,10 @@ class TemplateManager:
         build_dir = target_dir / "build"
         build_dir.mkdir(exist_ok=True)
 
-        # Create lib directory and copy stdlib files
-        lib_dir = src_dir / "lib"
-        lib_dir.mkdir(exist_ok=True)
-        self._copy_stdlib(lib_dir, abi)
+        # The manifest: stdlib is a package dependency on its GitHub release,
+        # seeded with the installed copy so the first build needs no network
+        self._write_manifest(target_dir, project_name)
+        self._seed_stdlib(target_dir)
 
         # Copy template files to src directory
         self._copy_directory(template_dir, src_dir, project_name, abi)
@@ -92,8 +94,8 @@ class TemplateManager:
         for item in src.iterdir():
             # Skip hidden files (vim swap files, .DS_Store, .git, etc.) —
             # they should never end up in a user's new project. Exception:
-            # .gitattributes is a real project file we want to ship.
-            if item.name.startswith('.') and item.name != '.gitattributes':
+            # .gitattributes and .gitignore are real project files we ship.
+            if item.name.startswith('.') and item.name not in ('.gitattributes', '.gitignore'):
                 continue
             if item.is_file():
                 content = self._render(item, project_name, abi)
@@ -102,7 +104,7 @@ class TemplateManager:
                 if item.suffix == '.md':
                     # Keep README.md in project root
                     dst_item = dst.parent / item.name
-                elif item.name in ('Makefile', '.gitattributes'):
+                elif item.name in ('Makefile', '.gitattributes', '.gitignore'):
                     # Keep these in project root
                     dst_item = dst.parent / item.name
                 elif item.suffix == '.toml':
@@ -140,22 +142,59 @@ class TemplateManager:
         abi_includes = ''
         if abi == 'FixedStack':
             abi_includes = ('// FixedStack ABI: direct-page scratch slots for parameters\n'
-                            'include!("lib/scratch_regs.r65")\n')
+                            'include!("stdlib/scratch_regs.r65")\n')
         return content.replace("{{ABI_INCLUDES}}\n", abi_includes)
 
-    def _copy_stdlib(self, lib_dir: Path, abi: str):
-        """Copy standard library files to lib directory."""
-        if not self.stdlib_dir.exists():
-            return
+    def stdlib_release(self) -> Tuple[str, str]:
+        """The stdlib this compiler ships: (repository, version). A new
+        project requires that release - the newest this compiler is known to
+        build - and anything compatible after it."""
+        from r65.pkg.manifest import PackageError, load_manifest
+        from r65.pkg.version import format_version
+        try:
+            stdlib = load_manifest(self.stdlib_dir / "r65.toml")
+        except PackageError as e:
+            raise ProjectInitError(f"cannot read the bundled stdlib manifest: {e}")
+        if not stdlib.repository:
+            raise ProjectInitError(f"{stdlib.path} has no [package] repository")
+        return stdlib.repository, format_version(stdlib.version)
 
-        stdlib_files = ['sneslib.r65', 'math.r65', '65816.r65']
-        if abi == 'FixedStack':
-            stdlib_files.append('scratch_regs.r65')
-        for filename in stdlib_files:
-            src_file = self.stdlib_dir / filename
-            if src_file.exists():
-                content = src_file.read_text(encoding='utf-8')
-                (lib_dir / filename).write_text(content, encoding='utf-8')
+    def _seed_stdlib(self, target_dir: Path):
+        """Copy the installed stdlib into `.r65/deps/stdlib/` and lock it as
+        the GitHub release it is, with no commit: `r65pkg update`, or a fetch
+        in a checkout without the copy, replaces it with a clone of that
+        repository and pins the commit."""
+        from r65.pkg.lockfile import LOCK_FILENAME, LockedPackage, git_source, write_lock
+        from r65.pkg.resolve import DEPS_DIRNAME
+        from r65.pkg.version import parse_version
+        repository, version = self.stdlib_release()
+        dest = target_dir / DEPS_DIRNAME / "stdlib"
+        shutil.copytree(self.stdlib_dir, dest,
+                        ignore=shutil.ignore_patterns('.*', '__pycache__'))
+        source = git_source(repository, "tag", f"stdlib-v{version}")
+        write_lock(target_dir / LOCK_FILENAME,
+                   {"stdlib": LockedPackage("stdlib", parse_version(version), source)})
+
+    def _write_manifest(self, target_dir: Path, project_name: str):
+        from r65.pkg.cli import caret_of
+        from r65.pkg.version import parse_version
+        repository, version = self.stdlib_release()
+        # A package name is letters, digits, '_' and '-'.
+        name = re.sub(r'[^A-Za-z0-9_-]', '-', project_name).strip('-') or 'game'
+        if name[0].isdigit():
+            name = 'game-' + name
+        (target_dir / "r65.toml").write_text(
+            "[package]\n"
+            f'name    = "{name}"\n'
+            'version = "0.1.0"\n'
+            "\n"
+            "[bin]\n"
+            'main = "src/main.r65"\n'
+            'cfg  = ["snes"]\n'
+            "\n"
+            "[dependencies]\n"
+            f'stdlib = {{ git = "{repository}", version = "{caret_of(parse_version(version))}" }}\n',
+            encoding='utf-8')
 
 
 def init_command(args):
@@ -176,7 +215,7 @@ def init_command(args):
         print(f"✓ Initialized {args.platform} project in '{target_dir}' (ABI: {abi})")
         print(f"  Next steps:")
         print(f"    cd {target_dir}")
-        print(f"    make             # Build the ROM")
+        print(f"    make             # Fetch stdlib and build the ROM")
         print(f"    make run         # Run with emulator")
         
     except R65XError as e:

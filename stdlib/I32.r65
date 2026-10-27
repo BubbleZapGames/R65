@@ -8,7 +8,7 @@
 //! explicit `A`-register use for correct m8-mode codegen.
 //!
 //! ```
-//! include!("lib/I32.r65")
+//! include!("stdlib/I32.r65")
 //!
 //! #[ram] static mut POSITION: I32 = I32!(10000);
 //! #[ram] static mut VELOCITY: I32 = I32!(-256);

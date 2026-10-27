@@ -3,7 +3,7 @@
 // Provides multiplication, division, modulo, and variable shift operations.
 //
 // Usage:
-//   include!("lib/math.r65")
+//   include!("stdlib/math.r65")
 //
 // Hardware registers used (defined in sneslib.r65, included below):
 //   WRMPYA, WRMPYB, RDMPYL, RDMPYH - Multiplication unit

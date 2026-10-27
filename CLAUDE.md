@@ -561,7 +561,7 @@ Hardware-aware operators with restrictions for expensive operations:
 - ❌ Module system (`mod`, `pub`)
 - ❌ `unsafe` keyword
 - ❌ Bounds checking
-- ❌ `cargo` or package manager (no Cargo.toml, no crates)
+- ❌ A package registry — packages come from git or a path (`r65.toml`, `r65pkg`; see [docs/packaging-system.md](docs/packaging-system.md))
 
 ## Compiler Architecture
 

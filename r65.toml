@@ -1,0 +1,8 @@
+# The R65 workspace: stdlib, and the example projects developed alongside the
+# compiler. Members depend on stdlib from git like any outside project; the
+# [patch] below points them at this checkout's stdlib/ instead.
+[workspace]
+members = ["stdlib", "pacman", "astroids", "bubblebobble", "textadv", "kungfu.r65"]
+
+[patch]
+stdlib = { path = "stdlib" }

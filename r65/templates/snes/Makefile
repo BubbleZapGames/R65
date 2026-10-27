@@ -10,6 +10,7 @@ ROM_FILE = $(BUILD_DIR)/$(PROJECT).smc
 # Tools
 PYTHON = python
 R65C = $(PYTHON) -m r65.compiler.main
+R65PKG = $(PYTHON) -m r65.pkg.cli
 WLA = wla-65816
 WLA_LINK = wlalink
 
@@ -30,10 +31,17 @@ RM = $(PYTHON) -c "import glob, os, sys; [os.remove(f) for p in sys.argv[1:] for
 # Default target
 all: $(ROM_FILE)
 
-# Compile R65 source to WLA-DX assembly
-$(BUILD_DIR)/main.asm: $(MAIN_SRC)
+# Compile R65 source to WLA-DX assembly. r65c finds stdlib through r65.toml;
+# the depfile names every file the build read, so editing any one rebuilds.
+$(BUILD_DIR)/main.asm: $(MAIN_SRC) | deps
 	@$(MKDIR) $(BUILD_DIR)
-	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS) --abi $(ABI)
+	$(R65C) $(MAIN_SRC) -o $@ $(R65C_FLAGS) --abi $(ABI) --depfile $(BUILD_DIR)/main.d
+
+-include $(BUILD_DIR)/main.d
+
+# Lock the r65.toml dependencies (r65.lock) and fetch them into .r65/deps/
+deps:
+	$(R65PKG) fetch
 
 # Assemble WLA-DX object file
 $(BUILD_DIR)/main.o: $(BUILD_DIR)/main.asm
@@ -95,6 +103,7 @@ syntax: $(BUILD_DIR)/main.asm
 help:
 	@echo "Available targets:"
 	@echo "  all          - Build ROM (default)"
+	@echo "  deps         - Lock and fetch the r65.toml dependencies"
 	@echo "  r65x-build   - Build using r65x tool"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  install-deps - Install WLA-DX dependencies"
@@ -111,4 +120,4 @@ debug-vars:
 	@echo "ROM_FILE: $(ROM_FILE)"
 	@echo "ABI: $(ABI)"
 
-.PHONY: all clean install-deps run tests debug syntax r65x-build help debug-vars
+.PHONY: all deps clean install-deps run tests debug syntax r65x-build help debug-vars
