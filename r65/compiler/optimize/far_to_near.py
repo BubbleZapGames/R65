@@ -18,6 +18,8 @@ The optimization is safe when:
    wrapper reaches its implementors through `JML` trampolines that
    expect an `RTL`, and those edges are not `Call` instructions.
 5. The function has at least one direct caller.
+6. The function has no `#[mode(databank=...)]`: DBR management is defined
+   for far functions only, and codegen emits it only while `is_far` holds.
 """
 
 from typing import Dict, Set, List, Optional, Tuple
@@ -37,6 +39,7 @@ class FunctionBankInfo:
     is_far: bool
     has_address_taken: bool = False
     is_interrupt: bool = False
+    manages_dbr: bool = False
     callers: Set[str] = field(default_factory=set)
 
 
@@ -55,6 +58,13 @@ def effective_bank(func: MIRFunction, auto_bank_num: int) -> int:
     if func.bank_attr.bank_number is not None:
         return func.bank_attr.bank_number
     return auto_bank_num
+
+
+def _manages_dbr(func: MIRFunction) -> bool:
+    """True for a `#[mode(databank=inline|caller)]` function."""
+    from r65.compiler.hir.attributes import DataBankMode
+    return (func.mode_attr is not None
+            and func.mode_attr.databank != DataBankMode.NONE)
 
 
 class FarToNearOptimizer:
@@ -137,6 +147,7 @@ class FarToNearOptimizer:
                 is_far=func.is_far,
                 has_address_taken=func.name in graph.address_taken,
                 is_interrupt=func.interrupt_attr is not None,
+                manages_dbr=_manages_dbr(func),
                 callers=graph.callers_of(func.name, direct=True),
             )
 
@@ -166,6 +177,11 @@ class FarToNearOptimizer:
             if info.is_interrupt:
                 if self.verbose:
                     print(f"  Skip {func_name}: interrupt handler")
+                continue
+
+            # Skip databank=inline/caller functions: their DBR handling is
+            # only emitted for a far function
+            if info.manages_dbr:
                 continue
 
             # Skip *dyn dispatch targets (entered via JML from the far
