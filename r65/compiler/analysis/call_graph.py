@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Set, Tuple
 from dataclasses import dataclass, field
 from r65.compiler.mir.nodes import (
     CallBase,
-    MIRProgram, Call, TraitDispatch, Move, FunctionPointer, SymbolByte,
+    MIRProgram, Call, TraitDispatch, Move, Store, FunctionPointer, SymbolByte,
 )
 from r65.compiler.errors import DiagnosticCollector
 from r65.compiler.trait_dispatch import trait_impls_table
@@ -155,7 +155,10 @@ def build_call_graph(program: MIRProgram) -> CallGraph:
                     edges.add(instr.function)
                 elif isinstance(instr, TraitDispatch):
                     edges |= graph.resolve_trait_method(instr.trait_name, instr.method_name)
-                if isinstance(instr, Move) and isinstance(instr.source, FunctionPointer):
+                # A Move takes an address in code; a Store does in
+                # `__init_start`, for a static initialized to a function.
+                if (isinstance(instr, (Move, Store))
+                        and isinstance(instr.source, FunctionPointer)):
                     refs.add(instr.source.function_name)
                 elif isinstance(instr, CallBase):
                     refs.update(arg.value.function_name for arg in instr.args

@@ -62,3 +62,30 @@ def test_fn_in_a_rom_static_keeps_stack_params(e2e):
         fn main() { put(3, 4); call_hp(); }
     ''', ExpectedState(memory={0x7E0010: [7, 8]}))
     assert result.success, f"Failures: {result.failures}"
+
+
+def test_fn_in_a_ram_static_initializer_stays_far(e2e):
+    # `__init_start` stores the address with a `Store`, which the call graph
+    # did not count: `bump`, also called directly from its own bank, became
+    # near while the call through `FP` pushed a return bank.
+    result = e2e.run('''
+        #[zeropage(0x10)] static mut O: [u8; 2];
+        #[zeropage(0x20)] static mut FP: fn() = bump;
+
+        fn bump() { O[0] = O[0] + 1; }
+
+        #[inline(never)]
+        fn call_fp() { FP(); }
+
+        #[entry]
+        fn main() {
+            O[0] = 0;
+            O[1] = 0;
+            bump();
+            call_fp();
+            O[1] = O[1] + 1;
+            call_fp();
+            O[1] = O[1] + 1;
+        }
+    ''', ExpectedState(memory={0x7E0010: [3, 2]}))
+    assert result.success, f"Failures: {result.failures}"
