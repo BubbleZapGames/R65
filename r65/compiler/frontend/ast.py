@@ -382,6 +382,7 @@ class TypeAlias(Declaration):
     """Type alias declaration."""
     name: str
     aliased_type: Type
+    doc: Optional[str] = None
 
 
 @dataclass

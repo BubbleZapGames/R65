@@ -57,6 +57,24 @@ class TestOuterDocComments:
         program = parse(source, '<test>')
         assert program.items[0].doc == 'Renderable objects'
 
+    def test_trait_method_doc(self):
+        """/// before a trait method attaches to it, after a default body too."""
+        source = ('trait Scene {\n'
+                  '    /// Required\n    fn load(*self);\n'
+                  '    /// Defaulted\n    fn nmi(*self) { }\n'
+                  '    /// After a default body\n    fn draw(*self);\n'
+                  '    /// A constant\n    const N: u8;\n'
+                  '}')
+        program = parse(source, '<test>')
+        docs = [m.doc for m in program.items[0].methods]
+        assert docs == ['Required', 'Defaulted', 'After a default body']
+
+    def test_type_alias_doc(self):
+        """/// before a type alias attaches to it."""
+        source = '/// A transition\ntype Trans = far fn(u16) -> bool;'
+        program = parse(source, '<test>')
+        assert program.items[0].doc == 'A transition'
+
     def test_impl_doc(self):
         """/// before impl attaches to impl."""
         source = '/// Player methods\nimpl Player { fn tick(*self) { } }'

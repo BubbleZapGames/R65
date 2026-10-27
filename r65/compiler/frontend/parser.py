@@ -956,7 +956,7 @@ class ASTBuilder(Transformer):
         """Method signature in trait declaration (no body)."""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'NEAR'})
 
-        idx = 0
+        doc, idx = self._collect_doc_comments(items, 0)
 
         # Trait methods are far by default; `near fn` opts out
         _is_far, is_near, idx = self._take_far_near(items, idx)
@@ -1003,6 +1003,7 @@ class ASTBuilder(Transformer):
             params=params,
             return_type=return_type,
             body=default_body,
+            doc=doc,
             self_by_value=self_by_value,
             has_self=has_self,
             source_loc=self._make_source_loc(tree.meta)
@@ -1023,16 +1024,18 @@ class ASTBuilder(Transformer):
     def trait_const(self, items):
         """Associated constant declaration in trait: const NAME: type;"""
         items = self._filter_tokens(items)
-        name = _tok(items[0])
-        const_type = items[1]
+        _, idx = self._collect_doc_comments(items, 0)
+        name = _tok(items[idx])
+        const_type = items[idx + 1]
         return ast.TraitConst(name=name, const_type=const_type)
 
     def type_alias(self, items):
         """Type alias."""
         items = self._filter_tokens(items)
-        name = _tok(items[0])
-        aliased_type = items[1]
-        return ast.TypeAlias(name=name, aliased_type=aliased_type)
+        doc, idx = self._collect_doc_comments(items, 0)
+        name = _tok(items[idx])
+        aliased_type = items[idx + 1]
+        return ast.TypeAlias(name=name, aliased_type=aliased_type, doc=doc)
 
     @v_args(tree=True)
     def include_stmt(self, tree):
