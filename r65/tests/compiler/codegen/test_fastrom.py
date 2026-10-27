@@ -256,6 +256,7 @@ trait T { far fn put(far *self); }
 impl T for P { far fn put(far *self) { WRMPYA = self.x; } }
 #[ram] static mut OBJ: P = P { x: 1 };
 #[inline(never)]
+#[used]
 fn go(p: far *dyn T) { p.put(); }
 #[entry] fn main() { go(&OBJ); }
 """
@@ -305,10 +306,12 @@ impl Bump for P { fn bump(far *self) { self.n = self.n + LR; } }
 static ARR: [u8; 4] = [5, 6, 7, 8];
 #[ram] static mut BUF: [u8; 4] = [1, 2, 3, 4];
 #[inline(never)]
+#[used]
 far fn rdn(q: *u8) { RESULT = *q; }
 #[entry] fn main() { f(&BUF[0]); }
 #[bank(1)]
 #[inline(never)]
+#[used]
 far fn f(p: far *u8) {
     Z0 = p[0]; Z1 = p[1]; Z2 = Z0 + Z1; Z3 = Z2 + Z0; Z0 = Z3 + Z1; Z1 = Z0 + Z2;
     Z2 = Z1 + Z3; Z3 = Z2 + Z1; Z0 = Z0 + Z3; Z1 = Z1 + Z0; Z2 = Z2 + Z1;

@@ -150,6 +150,7 @@ def caller_body(callee: str, call: str, extra: str = "",
 static mut OUT: u16;
 {extra}
 {callee}
+#[used]
 fn caller({params}) -> u16 {{ return {call}; }}
 #[entry]
 fn main() {{ OUT = caller({args}); }}
@@ -250,7 +251,7 @@ class TestAlreadyCorrect:
 class TestNoFreeIndexRegister:
     """Both X and Y are argument targets, so neither can hold the saved value."""
 
-    CALLEE = ('#[inline(never)] far fn xy(a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
+    CALLEE = ('#[used] #[inline(never)] far fn xy(a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
               '{ return p + q; }')
 
     def test_falls_back_to_the_stack(self):
@@ -315,7 +316,9 @@ class TestPreservedRegisterNotUsedForParking:
 #[zeropage(0x20)]
 static mut OUT: u16;
 {preserves}
+#[used]
 far fn callee(a @ A: u8, p @ X: u16) -> u8 {{ X = 1; Y = 2; return a; }}
+#[used]
 fn caller(v @ A: u8, w: u16) -> u16 {{
     Y = 0x1234;
     let r: u8 = callee(v, w);
@@ -359,7 +362,9 @@ class TestStackArgSaveRespectsPreserves:
 #[zeropage(0x20)]
 static mut OUT: u16;
 {preserves}
+#[used]
 far fn callee(s: u8, a @ A: u8) -> u8 {{ X = 1; Y = 2; return a + s; }}
+#[used]
 fn caller(v @ A: u8, w: u8) -> u16 {{
     Y = 0x1234;
     let r: u8 = callee(w, v);
@@ -385,7 +390,7 @@ fn main() {{ OUT = caller(7, 9); }}
     def test_no_free_index_register(self):
         """Both index registers are argument targets."""
         source = caller_body(
-            '#[inline(never)] far fn xy(s: u8, a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
+            '#[used] #[inline(never)] far fn xy(s: u8, a @ A: u8, p @ X: u16, q @ Y: u16) -> u16 '
             '{ return p + q + (s as u16) + (a as u16); }',
             "xy(w, v, p, q)", params="v @ A: u8, w: u8, p: u16, q: u16",
             args="7, 9, 1, 2")
@@ -401,7 +406,9 @@ class TestStackArgCleanupRespectsPreserves:
 #[zeropage(0x20)] static mut OUT: u16;
 #[zeropage(0x22)] static mut R: u8;
 {preserves}
+#[used]
 #[inline(never)] far fn callee(s: u8, t: u8) -> u8 {{ X = 1; return s + t; }}
+#[used]
 fn caller(w: u8) -> u16 {{
     X = 0x1234;
     R = callee(w, 3);
@@ -435,6 +442,7 @@ class TestIndexArgumentSwap:
 #[zeropage(0x20)]
 static mut OUT: u16;
 #[inline(never)] far fn f(a @ X: u16, b @ Y: u16) -> u16 { return a + b; }
+#[used]
 fn caller() -> u16 { X = 0x1111; Y = 0x2222; return f(Y, X); }
 #[entry]
 fn main() { OUT = caller(); }

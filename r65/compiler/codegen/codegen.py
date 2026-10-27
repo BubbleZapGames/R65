@@ -132,6 +132,16 @@ class ProgramCodeGenerator:
             if func_eliminated > 0:
                 print(f"Dead function elimination: {func_eliminated} function(s) removed", file=sys.stderr)
 
+            # Constant arguments - a stack parameter every call passes the
+            # same constant (`&PLAYER` as a single instance's `self`) is
+            # defined by the callee instead. Before DCE, which drops the
+            # callers' now-unread Moves, and before far_to_near, which
+            # adjusts the stack offsets this recomputes.
+            from r65.compiler.optimize.const_args import fold_constant_args
+            args_folded = fold_constant_args(mir_program, abi_kind=abi_model.kind)
+            if args_folded > 0:
+                print(f"Constant arguments: {args_folded} folded into callees", file=sys.stderr)
+
             # Dead code elimination - remove unreachable blocks and dead stores
             dead_code_elim = DeadCodeEliminator(verbose=False)
             code_eliminated = dead_code_elim.eliminate(mir_program)

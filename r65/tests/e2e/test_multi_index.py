@@ -182,6 +182,7 @@ ROW_SUM = '''
         }
     }
 
+    #[used]
     fn row_sum(i: u16) -> u8 {
         let mut s: u8 = 0;
         for j in 0..4 { s = s + T[i][j]; }
@@ -189,6 +190,7 @@ ROW_SUM = '''
     }
 
     // `i` changes inside the loop, so it is rescaled every pass.
+    #[used]
     fn diagonal_sum(i: u16) -> u8 {
         let mut s: u8 = 0;
         let mut r: u16 = i;
@@ -200,6 +202,7 @@ ROW_SUM = '''
     }
 
     // `r` is declared in the loop, so it does not exist before it.
+    #[used]
     fn column_sum(j: u16) -> u8 {
         let mut s: u8 = 0;
         for k in 0..4 {

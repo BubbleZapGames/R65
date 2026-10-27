@@ -10,6 +10,7 @@ SOURCE = """
 #[ram(0x7E2000)] static mut BUF: [u8; 8];
 #[zeropage(0x10)] static mut R: u8;
 #[inline(never)]
+#[used]
 fn rd(q: far *u8) -> u8 {{ return *q; }}
 #[entry] fn main() {{ {body} }}
 """

@@ -10,6 +10,7 @@ def test_address_of_three_byte_element_uses_shift_and_add():
         struct V3 { x: u8, y: u8, z: u8 }
         #[lowram] static mut TBL: [V3; 8];
         #[lowram] static mut OUT: u16;
+        #[used]
         #[inline(never)] fn addr(i: u8) -> *V3 { return &TBL[i]; }
         #[entry] fn main() { OUT = addr(5) as u16; }
     ''')
@@ -22,6 +23,7 @@ def test_power_of_two_struct_over_16_bytes_shifts():
     asm = compile_string('''
         struct Big { a: [u8; 31], b: u8 }
         #[lowram] static mut ARR: [Big; 4];
+        #[used]
         #[inline(never)] fn set(i: u8) { ARR[i].b = 1; }
         #[entry] fn main() { set(2); }
     ''')

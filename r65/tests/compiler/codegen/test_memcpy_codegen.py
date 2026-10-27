@@ -80,6 +80,7 @@ def _loop_body(asm: str) -> list[str]:
 
 
 MEMCPY_SOURCE = """
+#[used]
 far fn memcpy(dst: far *u8, src: far *u8, n: u16) {
     let count: u16 = n;
     if count == 0 { return; }

@@ -146,6 +146,10 @@ add:
 
 A pre-codegen analysis pass promotes eligible stack parameters to direct-page scratch registers when available (`--disable-scratch-parameters` turns this off). Promoted parameters are passed via `STA $dp` instead of PHA, avoiding stack-relative addressing entirely.
 
+**Constant arguments are not passed at all** (`-O1`+, `optimize/const_args.py`). When every call to a function passes a stack parameter the same constant — a number, or a static's address — the function defines the parameter itself and the calls stop pushing it. The common case is a method only ever called on one instance: `PLAYER.update()` everywhere passes `&PLAYER` as `self`, so `update` takes no argument, and its `self.field` accesses address `PLAYER` directly, the same way `PLAYER.field` does outside the method. A far `self` on a `#[ram]` static becomes long addressing, without the D=S or DBR setup. A method that hands its constant `self` on to another method makes that call constant too. Calling the method on a second instance turns it back into an ordinary pointer parameter; nothing needs to change in the source.
+
+The callers must all be visible: a function whose address is taken, a trait method, a recursive function, one marked `#[used]`, and one containing `asm!` (which may read a parameter at its stack offset) keep their parameters. A parameter the function assigns to is kept too. The Pascal ABI is excluded, since its callee pops the arguments.
+
 ### Parameter Ordering Rules
 
 Stack parameters must appear before register/variable-bound parameters in the signature:

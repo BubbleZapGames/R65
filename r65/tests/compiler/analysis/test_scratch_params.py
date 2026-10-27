@@ -41,6 +41,7 @@ class TestScratchParamGlobalReservation:
         """Verify that far fn callees get scratch-promoted params."""
         source = self.SCRATCHES + """
         #[inline(never)]
+        #[used]
         far fn helper(a: u8, b: u8) -> u8 {
             return a + b;
         }
@@ -64,6 +65,7 @@ class TestScratchParamGlobalReservation:
         """
         source = self.SCRATCHES + """
         #[inline(never)]
+        #[used]
         far fn helper(a: u8, b: u8) -> u8 {
             return a + b;
         }

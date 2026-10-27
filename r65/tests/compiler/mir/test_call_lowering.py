@@ -14,6 +14,7 @@ def test_type_id_through_far_dyn_reads_far():
         impl Draw for P { fn draw(*self) {} }
         #[ram] static mut PL: P;
         #[lowram] static mut TID: u8;
+        #[used]
         #[inline(never)] fn tid(p: far *dyn Draw) { TID = p.type_id(); }
         #[entry] fn main() { tid(&PL as far *dyn Draw); }
     ''')

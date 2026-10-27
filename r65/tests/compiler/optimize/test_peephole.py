@@ -416,6 +416,7 @@ class TestLoopInvariantLoadHoistGuards:
         #[zeropage(0x18, register)]
         static mut SCRATCH1: u16;
         #[lowram] static mut left: u16;
+        #[used]
         far fn step(budget: u16) -> u8 {
             if left > budget { left = left - budget; return 0; }
             left = 0;

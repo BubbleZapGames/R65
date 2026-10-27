@@ -20,6 +20,7 @@ CMP_LOOP = """
 #[ram] static mut A1: [u8; 8];
 #[ram] static mut B1: [u8; 8];
 #[ram] static mut R: u8;
+#[used]
 far fn cmp(a: far *u8, b: far *u8) -> {ret} {{
     let mut i: u16 = 0;
     loop {{

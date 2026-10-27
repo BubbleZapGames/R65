@@ -59,6 +59,7 @@ def test_d_equals_s_restore_keeps_results_captured_after_the_call():
     #[zeropage]
     static mut OUT: u8;
     fn two() -> u8, u8 { return 3, 4; }
+    #[used]
     fn get(p: far *u8, q: far *u8) {
         let v: u8 = *p;
         let a, b = two();

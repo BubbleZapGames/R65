@@ -37,6 +37,7 @@ def test_pointer_sum_loop_reads_words():
         #[lowram] static mut BUF: [u8; 64];
         #[lowram] static mut OUT: u16;
         #[inline(always)]
+        #[used]
         fn sum_bytes(p: *u8, n: u16) -> u16 {
             let mut s: u16 = 0;
             let mut i: u16 = 0;

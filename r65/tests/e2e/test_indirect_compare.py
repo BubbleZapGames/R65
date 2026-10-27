@@ -47,6 +47,7 @@ SET_DBR = """
 #[zeropage(0x10)] static mut R: [u8; 2];
 #[zeropage(0x20)] static mut K: u8;
 #[zeropage(0x21)] static mut Z: [u8; 8];
+#[used]
 far fn find(a: far *u8) -> u8 {
     let mut i: u16 = 0;
     let k: u8 = K;

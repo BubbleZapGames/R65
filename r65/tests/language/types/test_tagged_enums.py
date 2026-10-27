@@ -466,14 +466,14 @@ class TestDiscriminantCast:
         """One load off the tag plane, and nothing else — no bounds check and no
         lookup table, which is what a `match` would have added."""
         code = self._fn("#[zeropage(0x40)] static mut o: u8;\n"
-                        "fn id(i: u16) { o = POOL[i] as u8; }", "id", "id(0);")
+                        "#[used] fn id(i: u16) { o = POOL[i] as u8; }", "id", "id(0);")
         assert "LDA $0200,X" in code, code       # POOL__tag,X
         assert "CMP" not in code, code           # no match-style bounds check
         assert "LUT" not in code, code
 
     def test_u16_cast_widens_the_tag(self):
         code = self._fn("#[zeropage(0x40)] static mut o: u16;\n"
-                        "fn id(i: u16) { o = POOL[i] as u16; }", "id", "id(0);")
+                        "#[used] fn id(i: u16) { o = POOL[i] as u16; }", "id", "id(0);")
         assert "LDA $0200,X" in code, code
         assert "AND #$FF" in code, code          # explicit zero-extension
 

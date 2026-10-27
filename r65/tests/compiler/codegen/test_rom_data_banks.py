@@ -34,6 +34,7 @@ FIELD_READER = '''
     struct P { x: u8, y: u8 }
     #[zeropage(0x10)] static mut R: u8;
     #[inline(never)]
+    #[used]
     fn rd(q: far *u8) -> u8 { return *q; }
     #[entry] fn main() { R = rd(&ROMP.y); }
 '''
