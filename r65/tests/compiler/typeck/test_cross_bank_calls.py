@@ -62,7 +62,7 @@ class TestCrossBankCalls:
         }
 
         #[bank(1)]
-                fn bank1_func() {
+                near fn bank1_func() {
             A = 1;
         }
         """
@@ -73,9 +73,9 @@ class TestCrossBankCalls:
         assert "cannot call near function 'bank1_func'" in str(error)
         assert "bank 0" in str(error)
         assert "bank 1" in str(error)
-        # The hint suggests using far fn
+        # The hint suggests dropping near
         assert error.hint is not None
-        assert "far fn" in error.hint
+        assert "drop 'near'" in error.hint
 
     def test_cross_bank_method_call_allowed_by_default(self):
         """Methods are far by default, so a bank-1 caller may call a
@@ -102,7 +102,7 @@ class TestCrossBankCalls:
         assert "cannot call near function 'P__get_near'" in str(exc_info.value)
 
     def test_cross_bank_far_call_allowed(self):
-        """Far functions can be called from any bank."""
+        """Functions are far by default, so they can be called from any bank."""
         source = """
         #[bank(0)]
                 fn bank0_func() {
@@ -110,7 +110,7 @@ class TestCrossBankCalls:
         }
 
         #[bank(1)]
-                far fn bank1_func() {
+                fn bank1_func() {
             A = 1;
         }
         """
@@ -136,7 +136,7 @@ class TestCrossBankCalls:
         """Far function cannot call near function in different bank."""
         source = """
         #[bank(0)]
-                fn bank0_helper() {
+                near fn bank0_helper() {
             A = 1;
         }
 
@@ -154,7 +154,7 @@ class TestCrossBankCalls:
     def test_default_bank_zero(self):
         """Functions without explicit bank default to bank 0."""
         source = """
-                fn helper() {
+                near fn helper() {
             A = 1;
         }
 

@@ -297,9 +297,10 @@ class ASTBuilder(Transformer):
         # Check for const
         is_const, idx = self._take(items, idx, 'CONST')
 
-        # Check for far (free functions are near by default; `near fn` is
-        # accepted as the explicit spelling of that default)
-        is_far, _is_near, idx = self._take_far_near(items, idx)
+        # Functions are far by default; `near fn` opts out (`far fn` is
+        # accepted as the explicit spelling of the default)
+        _is_far, is_near, idx = self._take_far_near(items, idx)
+        is_far = not is_near
 
         name = items[idx]
         idx += 1
@@ -1053,13 +1054,15 @@ class ASTBuilder(Transformer):
 
     @v_args(tree=True)
     def extern_fn_decl(self, tree):
-        """Extern function declaration: `extern [far] fn name(...) -> ret;`"""
+        """Extern function declaration: `extern [far|near] fn name(...) -> ret;`"""
         items = self._filter_tokens(tree.children, keep_types={'IDENT', 'FAR', 'NEAR', 'INTEGER', 'STRING', 'BOOLEAN', 'REGISTER'})
 
         doc, idx = self._collect_doc_comments(items, 0)
         attrs, idx = self._collect_attributes(items, idx)
 
-        is_far, _is_near, idx = self._take_far_near(items, idx)
+        # Far by default, like every function; `extern near fn` opts out
+        _is_far, is_near, idx = self._take_far_near(items, idx)
+        is_far = not is_near
 
         name = items[idx]
         idx += 1
@@ -2673,13 +2676,13 @@ class ASTBuilder(Transformer):
         return ast.PointerType(is_far=is_far, pointee_type=pointee_type, is_dyn=is_dyn)
 
     def type_fn(self, items):
-        """Function type."""
-        items = self._filter_tokens(items, keep_types={'FAR'})
-        is_far = False
+        """Function type: far by default, `near fn(...)` for a near pointer."""
+        items = self._filter_tokens(items, keep_types={'FAR', 'NEAR'})
+        is_far = True
         idx = 0
 
-        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type == 'FAR':
-            is_far = True
+        if idx < len(items) and isinstance(items[idx], LarkToken) and items[idx].type in ('FAR', 'NEAR'):
+            is_far = items[idx].type == 'FAR'
             idx += 1
 
         param_types = []

@@ -40,12 +40,12 @@ def _compile(src: str, src_path: Path) -> str:
 
 
 def test_near_extern_call_emits_jsr(tmp_with_asm):
-    """`extern fn` is called via JSR (near, 16-bit)."""
+    """`extern near fn` is called via JSR (near, 16-bit)."""
     d, src_path = tmp_with_asm
     asm = _compile(
         '#[snesrom(name="T", lorom)]\n'
         '#[stack(0x0100, 0x01FF)]\n'
-        'extern fn add_helper(a @ A: u8) -> u8;\n'
+        'extern near fn add_helper(a @ A: u8) -> u8;\n'
         'include_asm!("helpers.s");\n'
         'fn main() { A = add_helper(5); }\n',
         src_path,
@@ -55,12 +55,12 @@ def test_near_extern_call_emits_jsr(tmp_with_asm):
 
 
 def test_far_extern_call_emits_jsl(tmp_with_asm):
-    """`extern far fn` is called via JSL (far, 24-bit)."""
+    """`extern fn` is far by default: called via JSL (24-bit)."""
     d, src_path = tmp_with_asm
     asm = _compile(
         '#[snesrom(name="T", lorom)]\n'
         '#[stack(0x0100, 0x01FF)]\n'
-        'extern far fn far_helper();\n'
+        'extern fn far_helper();\n'
         'include_asm!("helpers.s");\n'
         'fn main() { far_helper(); }\n',
         src_path,
@@ -74,7 +74,7 @@ def test_include_asm_emits_wla_include_directive(tmp_with_asm):
     asm = _compile(
         '#[snesrom(name="T", lorom)]\n'
         '#[stack(0x0100, 0x01FF)]\n'
-        'extern fn add_helper(a @ A: u8) -> u8;\n'
+        'extern near fn add_helper(a @ A: u8) -> u8;\n'
         'include_asm!("helpers.s");\n'
         'fn main() { A = add_helper(0); }\n',
         src_path,
@@ -170,7 +170,7 @@ def test_extern_fn_default_clobbers_all_no_preserves(tmp_with_asm):
     src = (
         '#[snesrom(name="T", lorom)]\n'
         '#[stack(0x0100, 0x01FF)]\n'
-        'extern fn add_helper(a @ A: u8) -> u8;\n'
+        'extern near fn add_helper(a @ A: u8) -> u8;\n'
         'include_asm!("helpers.s");\n'
         'fn main() {\n'
         '    X = 0x42;\n'
@@ -188,13 +188,13 @@ def test_extern_fn_default_clobbers_all_no_preserves(tmp_with_asm):
 
 
 def test_extern_far_static_call_in_explicit_bank(tmp_with_asm):
-    """An extern static + extern far fn inside #[bank(2)] still wires up."""
+    """An extern static + extern fn inside #[bank(2)] still wires up."""
     d, src_path = tmp_with_asm
     asm = _compile(
         '#[snesrom(name="T", lorom)]\n'
         '#[stack(0x0100, 0x01FF)]\n'
         '#[bank(2)]\n'
-        'extern far fn far_helper();\n'
+        'extern fn far_helper();\n'
         'extern static PALETTE: [u8; 4];\n'
         'include_asm!("helpers.s");\n'
         '#[bank(0)]\n'
@@ -225,7 +225,7 @@ def test_include_asm_resolves_via_include_paths():
         src = (
             '#[snesrom(name="T", lorom)]\n'
             '#[stack(0x0100, 0x01FF)]\n'
-            'extern fn vendor_helper();\n'
+            'extern near fn vendor_helper();\n'
             'include_asm!("vendor.s");\n'
             'fn main() { vendor_helper(); }\n'
         )
@@ -263,7 +263,7 @@ def test_include_asm_prefers_source_dir_over_include_paths():
         src = (
             '#[snesrom(name="T", lorom)]\n'
             '#[stack(0x0100, 0x01FF)]\n'
-            'extern fn shared_helper();\n'
+            'extern near fn shared_helper();\n'
             'include_asm!("shared.s");\n'
             'fn main() { shared_helper(); }\n'
         )
@@ -330,10 +330,10 @@ def test_address_of_extern_static(tmp_with_asm):
 
 
 def test_near_extern_cross_bank_call_rejected(tmp_with_asm):
-    """Near `extern fn` declared in one bank cannot be called from another.
+    """`extern near fn` declared in one bank cannot be called from another.
 
     Same rule as native near fns: JSR can't cross bank boundaries, so the
-    type checker rejects the call and suggests `far fn`.
+    type checker rejects the call and suggests dropping `near`.
     """
     d, src_path = tmp_with_asm
     with pytest.raises(Exception) as exc:
@@ -341,7 +341,7 @@ def test_near_extern_cross_bank_call_rejected(tmp_with_asm):
             '#[snesrom(name="T", lorom)]\n'
             '#[stack(0x0100, 0x01FF)]\n'
             '#[bank(2)]\n'
-            'extern fn helper_in_bank2();\n'
+            'extern near fn helper_in_bank2();\n'
             'include_asm!("helpers.s");\n'
             '#[bank(0)]\n'
             'fn main() { helper_in_bank2(); }\n',
@@ -353,7 +353,7 @@ def test_near_extern_cross_bank_call_rejected(tmp_with_asm):
 
 
 def test_extern_far_required_in_auto_bank(tmp_with_asm):
-    """Auto-bank mode forces extern fn to be `extern far fn`."""
+    """Auto-bank mode rejects `extern near fn`."""
     d, src_path = tmp_with_asm
     # Near extern in auto-bank should fail
     with pytest.raises(Exception):
@@ -361,17 +361,17 @@ def test_extern_far_required_in_auto_bank(tmp_with_asm):
             '#[snesrom(name="T", lorom)]\n'
             '#[stack(0x0100, 0x01FF)]\n'
             '#[bank(auto)]\n'
-            'extern fn helper();\n'
+            'extern near fn helper();\n'
             'include_asm!("helpers.s");\n'
             'far fn main() { helper(); }\n',
             src_path,
         )
-    # `extern far fn` in auto-bank works
+    # `extern fn` (far by default) in auto-bank works
     asm = _compile(
         '#[snesrom(name="T", lorom)]\n'
         '#[stack(0x0100, 0x01FF)]\n'
         '#[bank(auto)]\n'
-        'extern far fn far_helper();\n'
+        'extern fn far_helper();\n'
         'include_asm!("helpers.s");\n'
         'far fn main() { far_helper(); }\n',
         src_path,

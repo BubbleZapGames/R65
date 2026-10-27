@@ -43,10 +43,10 @@ class TestFarFunctions:
         func = parse_function("far fn cross_bank() { }")
         assert func.is_far is True
 
-    def test_near_function_default(self):
-        """Test normal function is not far."""
-        func = parse_function("fn local() { }")
-        assert func.is_far is False
+    def test_far_function_default(self):
+        """A bare function is far; `near fn` opts out."""
+        assert parse_function("fn local() { }").is_far is True
+        assert parse_function("near fn local() { }").is_far is False
 
 
 class TestFunctionTypes:

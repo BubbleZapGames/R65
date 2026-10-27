@@ -61,8 +61,8 @@ fn write_message(msg: *u8) {
 ### Function Pointers
 
 ```rust
-fn(u8) -> u8          // Near function pointer (2 bytes, JSR/RTS)
-far fn(u8) -> u8      // Far function pointer (3 bytes, JSL/RTL)
+fn(u8) -> u8          // Far function pointer (3 bytes, JSL/RTL), the default
+near fn(u8) -> u8     // Near function pointer (2 bytes, JSR/RTS)
 ```
 
 ### Null Pointers
@@ -404,8 +404,8 @@ far fn dma_copy_vram(channel: u16, src: far *u8, vram_offset: u16, size: u16) {
 ```
 Near pointer   (*T):       2 bytes (16-bit address)
 Far pointer    (far *T):   3 bytes (24-bit address)
-Near fn ptr    (fn()):     2 bytes
-Far fn ptr     (far fn()): 3 bytes
+Near fn ptr    (near fn()): 2 bytes
+Far fn ptr     (fn()):      3 bytes
 ```
 
 Pointers are just addresses — no metadata, no bounds, no ownership.

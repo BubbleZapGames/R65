@@ -687,14 +687,24 @@ far fn cross_bank() {
         assert func.is_far == True
 
     def test_near_function(self):
-        """Test regular (near) function."""
+        """`near fn` opts out of the far default."""
         source = """
-fn local_func() {
+near fn local_func() {
 }
 """
         hir = build_hir(source)
         func = hir.declarations[0]
         assert func.is_far == False
+
+    def test_bare_function_is_far(self):
+        """A bare `fn` is far."""
+        hir = build_hir("fn f() {\n}\n")
+        assert hir.declarations[0].is_far == True
+
+    def test_entry_and_interrupt_stay_near(self):
+        """The vectors reach them without a call, so they are not far."""
+        hir = build_hir("#[interrupt(nmi)]\nfn v() {\n}\n#[entry]\nfn main() {\n}\n")
+        assert [d.is_far for d in hir.declarations] == [False, False]
 
 
 class TestLabeledLoops:

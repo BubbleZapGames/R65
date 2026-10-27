@@ -535,7 +535,7 @@ type_array: "[" type_expr ";" expr "]"
 // Pointer type for casting: *type (implied near) or far *type or near *type
 // With optional dyn keyword for trait pointers: *dyn Trait or far *dyn Trait
 type_pointer: (FAR | NEAR)? STAR DYN? type_expr
-type_fn: FAR? FN "(" type_list? ")" ("->" type_expr)?
+type_fn: (FAR | NEAR)? FN "(" type_list? ")" ("->" type_expr)?
 
 type_list: type_expr ("," type_expr)* ","?
 

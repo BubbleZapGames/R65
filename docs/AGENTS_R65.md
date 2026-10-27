@@ -193,10 +193,11 @@ fn use_them() {
 }
 ```
 
-**Near and far.** A free `fn` is near (JSR/RTS) and callable only from its own
-bank. A method in an `impl` is far by default (JSL/RTL); `near fn` opts out, and
-`-O1`+ demotes far methods whose callers share their bank. Pointers: `*T` is 16-bit
-(current data bank), `far *T` is 24-bit.
+**Near and far.** Every `fn` is far by default (JSL/RTL) and callable from any
+bank: free functions, methods, `extern fn` and `fn()` pointer types alike.
+`near fn` opts out (JSR/RTS, its own bank only). `-O1`+ demotes far functions
+whose callers share their bank, so you rarely need `near`. Pointers: `*T` is
+16-bit (current data bank), `far *T` is 24-bit.
 
 **Check the cost.** `r65c src/main.r65 -I src --cfg snes` prints the assembly to
 stdout. Look at the function you just wrote. If you see `JSL mul8`, an `XBA` loop
@@ -212,7 +213,7 @@ into the project.
 | File | What's in it |
 |---|---|
 | `sneslib.r65` | Every PPU/CPU register as an `#[hw]` static (`INIDISP`, `BGMODE`, `VMADD`, `JOY1L`, ...). `snes_init()`, `clear_vram()`, `clear_oam()`, `delay(frames)`, `is_pal()`. Sync: `wait_nmi!()`, `wait_autojoy!()`, `clear_nmi!()`, `wait_vblank_sync!(FRAME, LAST)`. Joypad masks `JOY_A`, `JOY_B`, `JOY_UP`, ... (u16, compose `JOY1H:JOY1L`). DMA: `dma_copy_vram(ch, src, vram_word, bytes)`, `dma_copy_cgram(ch, src, colour, bytes)`, `dma_copy_oam(ch, src, bytes)` (functions, run-time far pointer), and `dma_copy_vram_const!`/`dma_copy_cgram_const!`/`dma_fill_vram!`/`dma_set_hdma!` (macros, compile-time labels). PPU setup macros: `set_bgmode!`, `set_bg1_map!`..`set_bg4_map!`, `set_bg12_chr!`, `set_bg1_hscroll!`.., `set_main_layers!`, `set_obj_sel!`, `set_brightness!`, `set_screen_off!`, `set_fixed_color!`, Mode 7 and window macros. `OamBuffer` (`.set_full!`, `.set_size!`, `.hide!`, `.dma_copy!`, `.clear()`). `Color` newtype (`Color::rgb!(r, g, b)`). Enums `Screen`, `ObjSize`, `BG`, `Interrupt`, `VmainTrigger`. |
-| `math.r65` | `mul8(a: u8, b: u8) -> u16`, `mul16(a: u16, b: u16) -> u16`, `div8(a: u8, d: u16) -> u8`, `div16(a: u16, d: u8) -> u16`, `mod8(a: u8, d: u16) -> u8`, `mod16(a: u16, d: u8) -> u16`, `shl8`/`shr8`/`shl16`/`shr16(value, amount)`, `shri8` (arithmetic shift right). All `far fn`; `--cfg snes` uses the hardware multiplier/divider. Decimal digits without `string.r65`: `q = div16(v, 10)`, digit `= v - ((q << 3) + (q << 1))`. |
+| `math.r65` | `mul8(a: u8, b: u8) -> u16`, `mul16(a: u16, b: u16) -> u16`, `div8(a: u8, d: u16) -> u8`, `div16(a: u16, d: u8) -> u16`, `mod8(a: u8, d: u16) -> u8`, `mod16(a: u16, d: u8) -> u16`, `shl8`/`shr8`/`shl16`/`shr16(value, amount)`, `shri8` (arithmetic shift right). `--cfg snes` uses the hardware multiplier/divider. Decimal digits without `string.r65`: `q = div16(v, 10)`, digit `= v - ((q << 3) + (q << 1))`. |
 | `65816.r65` | `block_move!` (MVN), `disable_irq!`/`enable_irq!`, `without_irq!`, `stack_guard_check!`. |
 | `string.r65` | `strlen`, `memcpy`, `memset`, `memcmp`, `strcpy`, `strcmp`, `u8_to_dec`, `u16_to_dec`, `u8_to_hex`, `format!(buf, "fmt", args)`. Pointers are `far *u8`. |
 | `console.r65` | `Console` text output to a BG tilemap buffer, VRAM or OAM: `init`, `set_area`, `set_cursor`, `print`, `println`, `print!("fmt", ...)`, `clear`, `upload_font`. Pulls in `string.r65`. |

@@ -48,13 +48,13 @@ class TestConstFnParsing:
 
     def test_parse_const_fn_flags(self):
         """const/far flags parse correctly on function declarations."""
-        # Regular fn
+        # Regular fn: far by default
         ast_prog = parse_program("fn foo(x: u8) -> u8 { return x; }")
         assert ast_prog.items[0].is_const is False
-        assert ast_prog.items[0].is_far is False
+        assert ast_prog.items[0].is_far is True
 
-        # const fn
-        ast_prog = parse_program("const fn foo(x: u8) -> u8 { return x; }")
+        # const near fn
+        ast_prog = parse_program("const near fn foo(x: u8) -> u8 { return x; }")
         assert ast_prog.items[0].is_const is True
         assert ast_prog.items[0].is_far is False
 

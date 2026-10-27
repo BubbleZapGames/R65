@@ -373,7 +373,7 @@ fn indexed(idx @ X: u16) { }     // X/Y always u16 (x16 mode)
 ```rust
 #[mode(databank=inline)]  // Callee manages DBR (saves/restores)
 #[mode(databank=caller)]  // Caller manages DBR
-far fn graphics_code() { }
+fn graphics_code() { }
 ```
 
 *(See [docs/mode-transition-analysis.md](docs/mode-transition-analysis.md) for details)*
@@ -429,27 +429,27 @@ fn calculate(a: u8, b: u8) -> u8 { }               // Stack (must come first)
 
 **Returns**: Implicit A return, explicit `return X`, multiple `return A, X;` (no parentheses), or via zero-page variables. Multi-return type written as a type list, e.g. `-> u8, u8` or `-> u8, u16`; the compiler maps each value to a register from its type and the mode: A first, then B when the second value is 8-bit in m8 (A, B, X, Y), otherwise X (A, X, Y). Caller captures values with `let a, b = f();` or `a, b = f();`. All return paths must have identical signatures. Use `-> !` for functions that never return (e.g., the main game loop); the compiler omits `RTS`/`RTL` and skips implicit return generation.
 
-**Function pointers**: `fn()` (near JSR/RTS), `far fn()` (cross-bank JSL/RTL).
+**Function pointers**: `fn()` (far, JSL/RTL, 3 bytes), `near fn()` (same bank, JSR/RTS, 2 bytes).
 
 *(See [docs/abi-models.md](docs/abi-models.md) for complete ABI)*
 
 ### Cross-Bank Function Calls
 
 ```rust
-fn local_function() { }              // JSR/RTS, bank 0
+near fn local_function() { }         // JSR/RTS, bank 0 only
 
 #[bank(1)]
-far fn sound_engine() { }            // JSL/RTL, bank 1
+fn sound_engine() { }                // JSL/RTL, callable from any bank
 
 #[mode(databank=inline)]
-far fn graphics_code() { }           // Callee manages DBR (PHB/PLB)
+fn graphics_code() { }               // Callee manages DBR (PHB/PLB)
 ```
 
 **Bank directive**: `#[bank(n)]` sets bank context, `#[bank(auto)]` for automatic placement. Immutable statics (ROM) inherit bank. The context carries on to every later declaration, but the `#[entry]` function and `#[interrupt]` handlers must be in bank 0 (the vectors are 16-bit): one after a `#[bank(n)]` is an error, so put `#[bank(0)]` above it.
 
-**Call rules**: Near functions can only call near functions in same bank. Far functions callable from anywhere.
+**Call rules**: A near function can only be called from its own bank. A far function is callable from anywhere.
 
-**Methods are far by default**: a plain `fn` inside an `impl` or `trait` is a far (JSL/RTL) method; `near fn` opts it back to JSR/RTS (`far fn` is accepted and redundant). Free functions stay near by default. The self-pointer spelling (`*self` vs `far *self`) is a separate axis. At `-O1`+ the `far_to_near` pass demotes any method whose direct callers are all in its bank, so same-bank code still gets JSR/RTS; `*dyn` dispatch is not demoted (far dispatch ~20–25 cycles vs ~10–12), so hot dispatched traits should be `near fn`. A trait's methods must all agree, an impl method must match its trait, and `near fn` is an error in `#[bank(auto)]`.
+**Functions are far by default**: a plain `fn` — free function, method, trait method or `extern fn` — is far (JSL/RTL), and so is a plain `fn()` pointer type; `near fn` opts back to JSR/RTS (`far fn` is accepted and redundant). The `#[entry]` function and `#[interrupt]` handlers are reached by vector, not called, so the default does not apply to them. The self-pointer spelling (`*self` vs `far *self`) is a separate axis. At `-O1`+ the `far_to_near` pass demotes any function whose direct callers are all in its bank, so same-bank code still gets JSR/RTS; it leaves alone a function whose address is taken and `*dyn` dispatch (far dispatch ~20–25 cycles vs ~10–12), so hot dispatched traits should be `near fn`. A trait's methods must all agree, an impl method must match its trait, and `near fn` is an error in `#[bank(auto)]`.
 
 ```rust
 impl Player {

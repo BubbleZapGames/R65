@@ -53,7 +53,7 @@ class TestNewtypeDeclaration:
     @pytest.mark.parametrize("decl", [
         "struct W(u8);", "struct W(i8);", "struct W(bool);",
         "struct W(u16);", "struct W(i16);",
-        "struct W(*u8);", "struct W(fn());",
+        "struct W(*u8);", "struct W(near fn());",
     ])
     def test_scalar_payloads_accepted(self, decl):
         build_and_check(decl)

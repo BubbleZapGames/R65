@@ -67,11 +67,12 @@ class TestTypeAliasParsing:
         assert alias.aliased_type.size.value == 256
 
     def test_function_type_alias(self):
-        """Test function type alias: type Callback = fn(u8) -> u8;"""
+        """Test function type alias: type Callback = fn(u8) -> u8; is far."""
         alias = parse_type_alias("type Callback = fn(u8) -> u8;")
         assert alias.name == "Callback"
         assert isinstance(alias.aliased_type, ast.FunctionType)
-        assert not alias.aliased_type.is_far
+        assert alias.aliased_type.is_far
+        assert not parse_type_alias("type N = near fn(u8) -> u8;").aliased_type.is_far
         assert len(alias.aliased_type.param_types) == 1
         assert alias.aliased_type.param_types[0].name == "u8"
         assert alias.aliased_type.return_type.name == "u8"
@@ -145,8 +146,8 @@ class TestTypeAliasHIRResolution:
         assert alias.aliased_type.element_type.name == "u8"
 
     def test_alias_resolves_to_function_type(self):
-        """Type alias to fn(u8) -> u8 resolves to FunctionTypeInfo."""
-        hir_prog = build_hir("type Callback = fn(u8) -> u8;")
+        """Type alias to near fn(u8) -> u8 resolves to FunctionTypeInfo."""
+        hir_prog = build_hir("type Callback = near fn(u8) -> u8;")
         alias = _get_type_aliases(hir_prog)[0]
         assert isinstance(alias.aliased_type, hir_types.FunctionTypeInfo)
         assert not alias.aliased_type.is_far
@@ -324,7 +325,7 @@ class TestTypeAliasUsage:
         func = hir_prog.functions[0]
         param = func.parameters[0]
         assert isinstance(param.param_type, hir_types.FunctionTypeInfo)
-        assert not param.param_type.is_far
+        assert param.param_type.is_far
         assert len(param.param_type.param_types) == 1
         assert param.param_type.param_types[0].name == "u8"
         assert param.param_type.return_type.name == "u8"

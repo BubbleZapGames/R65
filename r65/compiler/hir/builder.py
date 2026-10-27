@@ -767,8 +767,8 @@ class HIRBuilder:
 
     def _bank_attr_for(self, is_far: bool, not_far_error) -> BankAttribute:
         """The bank a declaration lands in: the current #[bank(n)] context, or
-        None (placed at link time) under #[bank(auto)] - where it must be far,
-        else *not_far_error()* is raised."""
+        None (placed at link time) under #[bank(auto)] - where it must not be
+        `near`, else *not_far_error()* is raised."""
         if self.auto_bank_mode:
             if not is_far:
                 raise not_far_error()
@@ -842,7 +842,7 @@ class HIRBuilder:
             )
 
         bank_attr = self._bank_attr_for(func.is_far, lambda: HIRError(
-            f"extern fn '{func.name}' in auto-bank mode must be declared `extern far fn`",
+            f"extern fn '{func.name}' in auto-bank mode cannot be `extern near fn`",
             source_loc=func.source_loc))
         self._check_databank_far(func.name, mode_attr, func.is_far, func.source_loc,
                                  keyword="extern far fn")
@@ -899,9 +899,12 @@ class HIRBuilder:
 
         self._check_vector_bank(func.name, is_entry, interrupt_attr, func.source_loc)
         bank_attr = self._bank_attr_for(func.is_far, lambda: HIRError(
-            f"function '{func.name}' in auto-bank mode must be declared as 'far fn'",
+            f"function '{func.name}' in auto-bank mode cannot be 'near fn'",
             source_loc=func.source_loc,
-            hint="use 'far fn " + func.name + "(...)' or place in explicit bank with #[bank(n)]"))
+            hint="drop 'near', or place it in an explicit bank with #[bank(n)]"))
+        # The vectors reach the entry and the interrupt handlers without a
+        # call, so the far default means nothing for them: keep them near.
+        is_far = func.is_far and not is_entry and interrupt_attr is None
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -927,7 +930,7 @@ class HIRBuilder:
         entry_m_mode, ret_type, exit_m_mode = self._signature_modes(
             hir_params, func.return_type, func.name, func.source_loc)
         func_symbol = self.symbol_table.lookup(func.name)
-        self._check_databank_far(func.name, mode_attr, func.is_far, func.source_loc)
+        self._check_databank_far(func.name, mode_attr, is_far, func.source_loc)
 
         inline_attr = self._auto_inline_hint(
             inline_attr, interrupt_attr, is_entry, hir_body)
@@ -938,7 +941,7 @@ class HIRBuilder:
 
         return hir.HIRFunctionDecl(
             name=func.name,
-            is_far=func.is_far,
+            is_far=is_far,
             is_const=func.is_const,
             parameters=hir_params,
             return_type=ret_type,

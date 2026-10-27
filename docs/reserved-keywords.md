@@ -91,8 +91,8 @@ Reserved by Rust for future use - we reserve them for compatibility:
 
 | Keyword | Purpose |
 |---------|---------|
-| `far` | Far function call (JSL/RTL) or far pointer type; the default for methods |
-| `near` | Near function call (JSR/RTS) or near pointer type; `near fn` opts a method out of the far default |
+| `far` | Far function call (JSL/RTL) or far pointer type; redundant on a function, which is far by default |
+| `near` | Near function call (JSR/RTS) or near pointer type; `near fn` opts a function out of the far default |
 
 ## Assembly Interop
 
@@ -114,8 +114,9 @@ Rules:
 - `extern fn` is body-less and ends in `;`. A body block (`{ }`) is a parse error.
 - Defaults to all-clobbered. Add `#[preserves(X, Y)]` to assert what the asm
   callee preserves — the compiler trusts the annotation.
-- `extern fn` lowers to `JSR symbol` (near, current bank); `extern far fn`
-  lowers to `JSL symbol` (24-bit).
+- `extern fn` lowers to `JSL symbol` (far, 24-bit), so the asm routine must end
+  in `RTL`; `extern near fn` lowers to `JSR symbol` (current bank) for a
+  routine that ends in `RTS`.
 - `extern static` cannot carry storage attributes (`#[ram]`, `#[zeropage]`,
   etc.) — the asm file owns placement. Reads/writes resolve to the bare label.
 - `include_asm!` paths resolve relative to the including `.r65` file (same

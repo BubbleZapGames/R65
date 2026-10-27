@@ -127,9 +127,9 @@ class TestFarFnPointerStackParamDetection:
         assert func.has_far_ptr_stack_params is False
 
     def test_near_fn_pointer_not_tracked(self):
-        """Near fn pointer params (no far) do not populate fn_ptr_param_indices."""
+        """Near fn pointer params do not populate fn_ptr_param_indices."""
         source = """
-            fn caller(handler: fn(u8)) {
+            fn caller(handler: near fn(u8)) {
             }
         """
         mir = build_mir(source)

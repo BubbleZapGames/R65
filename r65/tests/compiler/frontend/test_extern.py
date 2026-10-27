@@ -14,26 +14,27 @@ from r65.compiler.frontend import parse, ParseError, ast
 # extern fn
 # ============================================================================
 
-def test_extern_fn_near_no_args():
-    """Bare `extern fn name();` parses with is_extern=True and body=None."""
+def test_extern_fn_no_args():
+    """Bare `extern fn name();` parses far (the default), with is_extern=True
+    and body=None."""
     prog = parse("extern fn helper();")
     assert len(prog.items) == 1
     fn = prog.items[0]
     assert isinstance(fn, ast.FunctionDecl)
     assert fn.name == 'helper'
     assert fn.is_extern is True
-    assert fn.is_far is False
+    assert fn.is_far is True
     assert fn.body is None
     assert fn.params == []
     assert fn.return_type is None
 
 
-def test_extern_far_fn():
-    """`extern far fn` flips is_far on the resulting FunctionDecl."""
-    prog = parse("extern far fn sound_engine();")
+def test_extern_near_fn():
+    """`extern near fn` opts out of the far default."""
+    prog = parse("extern near fn sound_engine();")
     fn = prog.items[0]
     assert fn.is_extern is True
-    assert fn.is_far is True
+    assert fn.is_far is False
 
 
 def test_extern_fn_with_register_params_and_return():
@@ -133,8 +134,8 @@ def test_include_asm_semicolon_optional():
 def test_mixed_program_parses():
     """A realistic interop preamble: extern decls + include_asm + r65 caller."""
     src = """
-    extern fn add_asm(a @ A: u8, b @ X: u16) -> u8;
-    extern far fn audio_tick();
+    extern near fn add_asm(a @ A: u8, b @ X: u16) -> u8;
+    extern fn audio_tick();
     extern static PALETTE: [u8; 32];
 
     include_asm!("game_helpers.s");

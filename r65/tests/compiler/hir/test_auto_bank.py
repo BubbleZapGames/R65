@@ -37,18 +37,21 @@ fn test() {}
 class TestAutoBankValidation:
     """Tests for auto-bank validation rules."""
 
-    def test_auto_bank_requires_far_function(self):
-        """Functions in auto-bank mode must be far."""
+    def test_auto_bank_rejects_near_function(self):
+        """Functions are far by default, so only `near fn` is rejected in
+        auto-bank mode."""
         code = '''
 #[bank(auto)]
-fn test() {}
+near fn test() {}
 '''
         ast = parse(code)
         builder = HIRBuilder()
         with pytest.raises(HIRError) as exc_info:
             builder.build_program(ast)
 
-        assert "auto-bank mode must be declared as 'far fn'" in str(exc_info.value)
+        assert "auto-bank mode cannot be 'near fn'" in str(exc_info.value)
+
+        HIRBuilder().build_program(parse("#[bank(auto)]\nfn test() {}\n"))
 
     def test_auto_bank_method_defaults_to_far(self):
         """Methods are far by default, so a plain `fn` method is fine in

@@ -137,8 +137,8 @@ register, passed and returned by value, and its methods take `self` by value.
 **Layout**: Identical to the payload — a newtype adds nothing
 **Size**: The payload's size (1 or 2 bytes)
 **Payload**: `u8` `i8` `bool` `u16` `i16`, any enum, or any near pointer —
-including a near function pointer (`fn(u8) -> u8`). A `far` pointer of
-either kind is 3 bytes and is rejected.
+including a near function pointer (`near fn(u8) -> u8`). A far pointer of
+either kind (`far *T`, or a plain `fn(...)`) is 3 bytes and is rejected.
 
 This is the opposite trade-off from a [type alias](#type-aliases), which is
 transparent and adds no safety, and from a single-field struct, which is nominal
@@ -284,13 +284,13 @@ ptr: far *T  // 24-bit far pointer (includes bank)
 #### Function Pointers
 
 ```rust
-fn(params) -> return_type        // Near function (JSR/RTS)
-far fn(params) -> return_type    // Far function (JSL/RTL)
+fn(params) -> return_type        // Far function (JSL/RTL), the default
+near fn(params) -> return_type   // Near function (JSR/RTS)
 ```
 
 **Size**:
-- `fn()`: 2 bytes (16-bit address)
-- `far fn()`: 3 bytes (24-bit address)
+- `fn()`: 3 bytes (24-bit address)
+- `near fn()`: 2 bytes (16-bit address)
 
 **Calling Convention**: Encoded in type
 

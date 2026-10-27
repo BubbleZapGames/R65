@@ -388,8 +388,8 @@ Generated:
 MIR: call function_name
 
 Generated:
-    JSR function_name    ; Near call
-    JSL function_name    ; Far call (for far fn)
+    JSL function_name    ; Far call (the default)
+    JSR function_name    ; Near call (near fn, or demoted by far_to_near)
 ```
 
 **Return**:
@@ -398,8 +398,8 @@ MIR: return [value]
 
 Generated:
     [optional: load return value into A]
-    RTS              ; Near return
-    RTL              ; Far return (for far fn)
+    RTL              ; Far return (the default)
+    RTS              ; Near return (near fn, or demoted)
 ```
 
 ---

@@ -969,7 +969,7 @@ class CallValidator:
                 f"'function {func_name}' is in bank {callee_bank}",
                 source_loc=source_loc,
                 hint=f"near functions use JSR which cannot cross bank boundaries; "
-                     f"declare '{func_name}' as 'far fn' to allow cross-bank calls"
+                     f"drop 'near' from '{func_name}' to allow cross-bank calls"
             )
 
     def _check_size_of_builtin(self, expr: HIRFunctionCall) -> TypeInfo:
