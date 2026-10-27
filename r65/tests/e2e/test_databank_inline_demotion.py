@@ -49,3 +49,33 @@ def test_demoted_databank_inline_function_keeps_its_dbr(e2e):
     ''', ExpectedState(memory={0x7E0010: [0xA5, 0x5A]}))
     assert result.success, f"Failures: {result.failures}"
 
+
+def test_near_pointer_read_keeps_the_dbr_setup(e2e):
+    """Without the hardware write, a near-pointer read was the function's
+    only bank-dependent access, and the check for whether the DBR setup is
+    needed looked at static accesses and near calls only: it dropped the
+    setup, and `p[i]` read bank 0."""
+    result = e2e.run('''
+        #[zeropage(0x10)]
+        static mut OUT: [u8; 2];
+
+        #[bank(2)]
+
+        static TABLE: [u8; 2] = [0xA5, 0x5A];
+
+        #[inline(never)]
+        #[mode(databank=inline)]
+        fn read_near(i: u16) -> u8 {
+            let p: *u8 = &TABLE as *u8;
+            return p[i];
+        }
+
+        #[bank(0)]
+
+        #[entry]
+        fn main() {
+            OUT[0] = read_near(0);
+            OUT[1] = read_near(1);
+        }
+    ''', ExpectedState(memory={0x7E0010: [0xA5, 0x5A]}))
+    assert result.success, f"Failures: {result.failures}"

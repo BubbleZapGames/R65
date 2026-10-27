@@ -11,7 +11,8 @@ from r65.compiler.mir.nodes import (
     MIRFunction, Return, VirtualRegister,
     MemoryLocation, Load, Store, Move, BinaryOp, UnaryOp, Compare, BitTest,
     Jump, CondBranch, TypeConvert, LoadIndirect, StoreIndirect, Push,
-    MemoryFill, BlockCopy, InlineAsm, iter_operands,
+    MemoryFill, BlockCopy, InlineAsm, iter_operands, ModifyMemory,
+    CompareIndirect,
 )
 from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node, written_registers
 from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -1359,12 +1360,14 @@ class FunctionCodeGenerator:
         """Check if a databank=inline function actually needs DBR setup.
 
         Scans MIR instructions to determine if the function accesses any
-        bank-dependent memory (ROM data, HW registers) or makes near calls
-        (which inherit DBR and may access bank-dependent memory).
+        bank-dependent memory (ROM data, HW registers, anything through a
+        near pointer), makes near calls (which inherit DBR and may access
+        bank-dependent memory) or contains inline asm (opaque).
 
         Sets mir_func._skip_dbr_inline = True if DBR setup can be safely
         skipped because the function only accesses DBR-independent memory
-        (zeropage, lowram, RAM via long addressing) and makes no near calls.
+        (zeropage, lowram, RAM via long addressing, far pointers) and makes no
+        near calls.
         """
         from r65.compiler.hir.attributes import DataBankMode
 
@@ -1384,6 +1387,18 @@ class FunctionCodeGenerator:
                     if isinstance(instr.dest, MemoryLocation):
                         if instr.dest.storage_type in ('rom', 'hw'):
                             return
+                elif isinstance(instr, ModifyMemory):
+                    if instr.location.storage_type in ('rom', 'hw'):
+                        return
+
+                # A near pointer is DBR-relative by definition
+                elif isinstance(instr, (LoadIndirect, StoreIndirect, CompareIndirect)):
+                    if not instr.is_far:
+                        return
+
+                # asm! may use absolute addressing
+                elif isinstance(instr, InlineAsm):
+                    return
 
                 # Near calls inherit DBR — callee may access ROM/HW data
                 elif isinstance(instr, CallBase):
