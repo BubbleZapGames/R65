@@ -261,7 +261,9 @@ def cmd_check(args) -> None:
                                 f"{MANIFEST_FILENAME}")
     try:
         resolution = resolve(root)
-        cfg = root.bin_cfg if root.bin_cfg is not None else []
+        # A library checked alone has no build of its own: take the
+        # conditions it requires as given.
+        cfg = root.bin_cfg if root.bin_cfg is not None else list(root.cfg)
         check_build(resolution, compiler_version(), cfg)
     except PackageError as e:
         problems.append(str(e))
@@ -282,7 +284,7 @@ def cmd_check(args) -> None:
 def _package_files(pkg) -> Dict[str, Path]:
     return {f.relative_to(pkg.include_dir).as_posix(): f
             for f in pkg.include_dir.rglob("*.r65")
-            if ".r65" not in f.relative_to(pkg.include_dir).parts[:-1]}
+            if f.is_file() and ".r65" not in f.relative_to(pkg.include_dir).parts[:-1]}
 
 
 def _ambiguous_files(resolution: Resolution) -> List[str]:
