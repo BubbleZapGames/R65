@@ -16,7 +16,6 @@ from r65.compiler.codegen.constants import M_FLAG
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.type_utils import is_far_ptr
-from r65.compiler.hir.types import PointerTypeInfo
 
 
 is_far_pointer_type = is_far_ptr
@@ -401,7 +400,7 @@ class MemoryOperationSelector(BaseSelector):
             instr_index = None
 
         is_u16 = self.parent._is_16bit(instr.type_info)
-        is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+        is_far_ptr = is_far_pointer_type(instr.type_info)
 
         # Handle 24-bit far pointer indirect loads (3 bytes)
         if is_far_ptr:
@@ -595,7 +594,7 @@ class MemoryOperationSelector(BaseSelector):
             instr_index = None
 
         is_u16 = self.parent._is_16bit(instr.type_info)
-        is_far_ptr = isinstance(instr.type_info, PointerTypeInfo) and instr.type_info.is_far
+        is_far_ptr = is_far_pointer_type(instr.type_info)
 
         # Handle 24-bit far pointer indirect stores (3 bytes)
         if is_far_ptr:

@@ -39,3 +39,24 @@ class TestFnPointerStackArgs:
                      0x01, 0x00, 0x34, 0x12, 0x00, 0x00, 0xEF, 0xBE],
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_far_fn_field_through_self(self):
+        # A `far fn` field read or written through `*self` moved only its low
+        # byte: LoadIndirect/StoreIndirect asked for `far *T` and missed
+        # `far fn`, so the call landed at a wrong address.
+        result = E2ETest(abi="Default").run('''
+            type Tr = far fn(u16) -> bool;
+            struct C { a: u8, f: Tr, g: Tr }
+            #[lowram(0x0300)] static mut CC: C;
+            #[lowram(0x0310)] static mut OUT: u16;
+            #[inline(never)] far fn h(t: u16) -> bool { OUT = t; return true; }
+            impl C {
+                #[inline(never)] fn set(*self, f: Tr) { self.f = f; }
+                #[inline(never)] fn copy(*self) { let x: Tr = self.f; self.g = x; }
+                #[inline(never)] fn call(*self) -> bool { let x: Tr = self.g; return x(0x1234); }
+            }
+
+            #[entry]
+            fn main() { CC.set(h); CC.copy(); CC.call(); }
+        ''', ExpectedState(memory={0x0310: [0x34, 0x12]}))
+        assert result.success, f"Failures: {result.failures}"
