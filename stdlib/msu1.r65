@@ -112,7 +112,7 @@ const MSU_CTRL_RESUME_LOOP: u8 = 0x07;  // Resume + repeat
 
 // Detect MSU-1 hardware by reading the ID string "S-MSU1".
 // Returns true if MSU-1 is present, false otherwise.
-far fn msu1_detect() -> bool {
+fn msu1_detect() -> bool {
     // ID bytes: 'S'=0x53, '-'=0x2D, 'M'=0x4D, 'S'=0x53, 'U'=0x55, '1'=0x31
     if MSU_ID0 == 0x53 && MSU_ID1 == 0x2D && MSU_ID2 == 0x4D &&
        MSU_ID3 == 0x53 && MSU_ID4 == 0x55 && MSU_ID5 == 0x31 {
@@ -130,7 +130,7 @@ far fn msu1_detect() -> bool {
 //   track:  track number (matches filename: romname-{track}.pcm)
 //   volume: 0-255
 //   repeat: true to loop, false for one-shot
-far fn msu1_play(track: u16, volume: u8, repeat: u8) {
+fn msu1_play(track: u16, volume: u8, repeat: u8) {
     let t: u16 = track;
     let v: u8 = volume;
 
@@ -160,7 +160,7 @@ far fn msu1_play(track: u16, volume: u8, repeat: u8) {
 // Resume playback without restarting from beginning.
 // If the track is already playing, this is a no-op on the track select.
 // If a different track is requested, loads and plays it.
-far fn msu1_resume(track: u16, volume: u8, repeat: u8) {
+fn msu1_resume(track: u16, volume: u8, repeat: u8) {
     let t: u16 = track;
     let v: u8 = volume;
 
@@ -185,17 +185,17 @@ far fn msu1_resume(track: u16, volume: u8, repeat: u8) {
 }
 
 // Stop (pause) audio playback.
-far fn msu1_stop() {
+fn msu1_stop() {
     MSU_CONTROL = MSU_CTRL_PAUSE;
 }
 
 // Set playback volume (0-255).
-far fn msu1_set_volume(volume @ A: u8) {
+fn msu1_set_volume(volume @ A: u8) {
     MSU_VOLUME = A;
 }
 
 // Check if audio is currently playing.
-far fn msu1_is_playing() -> bool {
+fn msu1_is_playing() -> bool {
     if (MSU_STATUS & MSU_PLAYING) != 0 {
         return true;
     }
@@ -203,7 +203,7 @@ far fn msu1_is_playing() -> bool {
 }
 
 // Check if the last requested track was not found.
-far fn msu1_track_missing() -> bool {
+fn msu1_track_missing() -> bool {
     if (MSU_STATUS & MSU_TRACK_MISSING) != 0 {
         return true;
     }
@@ -218,7 +218,7 @@ far fn msu1_track_missing() -> bool {
 // Seek to a 32-bit offset in the data file (.msu).
 // Pass as two 16-bit halves: addr_lo = bits 0-15, addr_hi = bits 16-31.
 // Writing byte 3 triggers the seek; wait for MSU_DATA_BUSY to clear before reading.
-far fn msu1_seek(addr_lo: u16, addr_hi: u16) {
+fn msu1_seek(addr_lo: u16, addr_hi: u16) {
     let lo: u16 = addr_lo;
     let hi: u16 = addr_hi;
 
@@ -235,6 +235,6 @@ far fn msu1_seek(addr_lo: u16, addr_hi: u16) {
 
 // Read next byte from data file at current pointer.
 // Pointer auto-increments after each read.
-far fn msu1_read() -> u8 {
+fn msu1_read() -> u8 {
     return MSU_DATA;
 }

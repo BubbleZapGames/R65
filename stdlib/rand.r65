@@ -31,7 +31,7 @@ macro_rules! rand_update($value:expr) {
 // Advances the LFSR and returns the full 16-bit state.
 // Hand-written 65816 assembly for optimal cycle count.
 // Xorshift16 with taps (7, 9, 8): period 65535.
-far fn rand() -> u16 {
+fn rand() -> u16 {
     asm!(
         "REP #$20",          // m16: 16-bit accumulator
         "LDA __rand_seed",   // A = seed

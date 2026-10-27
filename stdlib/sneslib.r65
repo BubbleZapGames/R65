@@ -1722,7 +1722,7 @@ static dma_trigger_masks: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0
 // src: 24-bit far pointer to source data
 // vram_offset: destination VRAM word address
 // size: number of bytes to transfer
-far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
+fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
     // Save channel for trigger lookup
     Y = channel;
 
@@ -1759,7 +1759,7 @@ far fn dma_copy_vram(channel: u8, src: far *u8, vram_offset: u16, size: u16) {
 // src: 24-bit far pointer to source data
 // start_color: starting color index (0-255)
 // num_bytes: number of bytes to transfer (colors * 2)
-far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u16) {
+fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u16) {
     // Save channel for trigger lookup
     Y = channel;
 
@@ -1794,7 +1794,7 @@ far fn dma_copy_cgram(channel: u8, src: far *u8, start_color: u16, num_bytes: u1
 // channel: DMA channel (0-7)
 // src: 24-bit far pointer to source data
 // size: number of bytes to transfer (usually 544)
-far fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {
+fn dma_copy_oam(channel: u8, src: far *u8, size: u16) {
     // Save channel for trigger lookup
     Y = channel;
 
@@ -2125,7 +2125,7 @@ fn snes_init() {
 
 // Delay for specified number of frames
 // Usage: delay(60);  // Wait ~1 second (NTSC)
-far fn delay(frames: u16) {
+fn delay(frames: u16) {
     let mut count: u16 = frames;
     while count > 0 {
         wait_nmi!();
@@ -2144,7 +2144,7 @@ fn is_pal() -> bool {
 // level: 0 = off, 1 = min pixelization, 16 = max pixelization
 // bgs: which backgrounds to apply mosaic to (use Screen::BG1, etc.)
 // Usage: set_pixelize(4, Screen::BG1 | Screen::BG2);
-far fn set_pixelize(level: u8, bgs: u16) {
+fn set_pixelize(level: u8, bgs: u16) {
     if level == 0 {
         MOSAIC = 0;
     } else {

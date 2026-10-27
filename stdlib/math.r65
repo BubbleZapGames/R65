@@ -19,7 +19,7 @@ include!("sneslib.r65")
 // Uses SNES $4202-$4203 multiplication unit
 // Result: 16-bit widening product
 #[cfg(snes)]
-far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
+fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
     // WRMPYA ($4202) and WRMPYB ($4203) are adjacent, and the ABI has already
     // put multA in A and multB in B -- so the 16-bit accumulator holds exactly
     // the word those two registers want. One REP + STA writes both, where
@@ -51,7 +51,7 @@ far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
 // (A_hi*B_hi<<16 overflows 16-bit, skipped)
 // Cycles: ~60
 #[cfg(snes)]
-far fn mul16(multA @ A: u16, multB: u16) -> u16 {
+fn mul16(multA @ A: u16, multB: u16) -> u16 {
     // Extract bytes from multA (16-bit) while in m8
     let _a_lo: u8 = multA as u8;
     let _a_hi: u8 = B;
@@ -97,7 +97,7 @@ far fn mul16(multA @ A: u16, multB: u16) -> u16 {
 // Uses shift-and-add algorithm with 16-bit accumulation
 // Cycles: ~80-160 depending on operands
 #[cfg(not(snes))]
-far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
+fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
     let mut _multiplier: u8 = multB;
     let mut _multiplicand: u16 = multA as u16;
     let mut _result: u16 = 0;
@@ -128,7 +128,7 @@ far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 {
 // Shift-and-add on full 16-bit operands
 // Cycles: ~300-600 depending on operands
 #[cfg(not(snes))]
-far fn mul16(multA @ A: u16, multB: u16) -> u16 {
+fn mul16(multA @ A: u16, multB: u16) -> u16 {
     let mut _multiplicand: u16 = multA;
     let mut _multiplier: u16 = multB;
     let mut _result: u16 = 0;
@@ -170,7 +170,7 @@ far fn mul16(multA @ A: u16, multB: u16) -> u16 {
 // Returns: 16-bit quotient
 // Cycles: ~30 (16 wait + overhead)
 #[cfg(snes)]
-far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
+fn div16(dividend @ A: u16, divisor: u8) -> u16 {
     // Write 16-bit dividend (single 16-bit store covers $4204+$4205)
     WRDIV = dividend;
 
@@ -193,7 +193,7 @@ far fn div16(dividend @ A: u16, divisor: u8) -> u16 {
 // Extends dividend to 16-bit with zero high byte
 // Returns: 8-bit quotient
 #[cfg(snes)]
-far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
+fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Write dividend with zero high byte
     WRDIVL = dividend;
     WRDIVH = 0;
@@ -216,7 +216,7 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Uses SNES $4204-$4206 division unit, returns remainder
 // Cycles: ~30 (16 wait + overhead)
 #[cfg(snes)]
-far fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
+fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
     // Write 16-bit dividend (single 16-bit store covers $4204+$4205)
     WRDIV = dividend;
 
@@ -236,7 +236,7 @@ far fn mod16(dividend @ A: u16, divisor: u8) -> u16 {
 // Hardware 8/8 -> 8 modulo
 // Performs division and returns remainder
 #[cfg(snes)]
-far fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
+fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Write dividend with zero high byte
     WRDIVL = dividend;
     WRDIVH = 0;
@@ -260,7 +260,7 @@ far fn mod8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Returns: quotient
 // Cycles: ~200-400
 #[cfg(not(snes))]
-far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
+fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
     // Handle division by zero - return 0xFF (max value)
     if divisor == 0 {
         dividend = 0xFF;
@@ -321,7 +321,7 @@ far fn div8(dividend @ A: u8, divisor @ X: u16) -> u8 {
 // Software 8/8 -> 8 modulo
 // Uses division algorithm, returns remainder
 #[cfg(not(snes))]
-far fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
+fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
     // Handle division by zero - return original dividend
     if divisor == 0 {
         return dividend;
@@ -373,7 +373,7 @@ far fn mod_shift(dividend @ A: u8, divisor: u8) -> u8 {
 
 // Variable left shift: value << amount
 // Cycles: ~10 + 4*amount
-far fn shl8(value @ A: u8, amount @ X: u16) -> u8 {
+fn shl8(value @ A: u8, amount @ X: u16) -> u8 {
     // Handle zero shift
     if amount == 0 {
         return value;
@@ -399,7 +399,7 @@ far fn shl8(value @ A: u8, amount @ X: u16) -> u8 {
 
 // Variable right shift (logical): value >> amount
 // Cycles: ~10 + 4*amount
-far fn shr8(value @ A: u8, amount @ X: u16) -> u8 {
+fn shr8(value @ A: u8, amount @ X: u16) -> u8 {
     // Handle zero shift
     if amount == 0 {
         return value;
@@ -426,7 +426,7 @@ far fn shr8(value @ A: u8, amount @ X: u16) -> u8 {
 // Variable arithmetic right shift (preserves sign): value >>> amount
 // For signed values - shifts in sign bit instead of zero
 // Cycles: ~10 + 6*amount
-far fn shri8(value @ A: u8, amount @ X: u16) -> u8 {
+fn shri8(value @ A: u8, amount @ X: u16) -> u8 {
     if amount == 0 {
         return value;
     }
@@ -464,7 +464,7 @@ far fn shri8(value @ A: u8, amount @ X: u16) -> u8 {
 
 // 16-bit variable right shift (logical)
 // Cycles: ~15 + 6*amount
-far fn shr16(value @ A: u16, amount @ X: u16) -> u16 {
+fn shr16(value @ A: u16, amount @ X: u16) -> u16 {
     if amount == 0 {
         return value;
     }
@@ -486,7 +486,7 @@ far fn shr16(value @ A: u16, amount @ X: u16) -> u16 {
 }
 // 16-bit variable left shift
 // Cycles: ~15 + 6*amount
-far fn shl16(value @ A: u16, amount @ X: u16) -> u16 {
+fn shl16(value @ A: u16, amount @ X: u16) -> u16 {
     if amount == 0 {
         return value;
     }
