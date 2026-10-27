@@ -134,6 +134,44 @@ class TestTraitDispatch:
         ))
         assert result.success, f"Failures: {result.failures}"
 
+    def test_uninitialized_static_dispatches(self, e2e):
+        """A *dyn target declared without an initializer still gets its TypeId."""
+        result = e2e.run('''
+            #[zeropage(0x10, register)]
+            static mut SCRATCH0: u8;
+            #[zeropage(0x12, register)]
+            static mut SCRATCH1: u16;
+
+            #[lowram]
+            static mut RESULT: u8;
+
+            struct Player { x: u8 }
+            struct Enemy { x: u8 }
+
+            trait Drawable { fn draw(*self); }
+
+            impl Drawable for Player {
+                fn draw(*self) { RESULT = 42; }
+            }
+            impl Drawable for Enemy {
+                fn draw(*self) { RESULT = 99; }
+            }
+
+            #[lowram]
+            static mut PLAYER: Player;
+            #[lowram]
+            static mut ENEMY: Enemy;
+
+            #[entry]
+            fn main() {
+                let p: *dyn Drawable = &ENEMY;
+                p.draw();
+            }
+        ''', ExpectedState(
+            memory={0x7E0200: 99, 0x7E0201: 1, 0x7E0203: 2}
+        ))
+        assert result.success, f"Failures: {result.failures}"
+
     def test_trait_method_reads_self_fields(self, e2e):
         """Trait method can read fields through self pointer."""
         result = e2e.run('''

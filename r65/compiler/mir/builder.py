@@ -203,9 +203,13 @@ class MIRBuilder:
         # Check if we need to generate __init_start() for static initialization
         # Include ALL statics with initializers (even zero values)
         # SNES RAM is NOT zeroed on power-on - contents are unpredictable
+        # A struct that is a *dyn target also needs one even with no
+        # initializer: its TypeId byte is the compiler's, never the user's.
         statics_with_initializers = [
             d for d in hir_program.declarations
-            if isinstance(d, HIRStaticDecl) and d.initializer is not None
+            if isinstance(d, HIRStaticDecl) and (
+                d.initializer is not None
+                or self.static_init_lowerer.type_id_of_uninitialized(d) is not None)
         ]
 
         # Generate __init_start() if there are static initializers

@@ -14,11 +14,12 @@ from r65.compiler.hir import (
     SymbolKind,
 )
 from r65.compiler.hir.attributes import StorageKind
+from r65.compiler.hir.types import BasicTypeInfo, StructTypeInfo
 
 from r65.compiler.mir.nodes import (
     MIRFunction, BasicBlock,
     VirtualRegister, FunctionPointer, MemoryLocation,
-    Store, Return,
+    Store, Return, Immediate,
     MemoryFill, BlockCopy, ROMDataRef, SymbolByte,
 )
 
@@ -129,7 +130,16 @@ class StaticInitLowerer:
             initializer = static_decl.initializer
 
             # Handle different initializer types
-            if isinstance(initializer, HIRArrayFillExpr):
+            if initializer is None:
+                # No initializer: only the TypeId byte at offset 0 is set,
+                # so a `*dyn` to the static dispatches.
+                self.emit(Store(
+                    source=Immediate(self.type_id_of_uninitialized(static_decl)),
+                    dest=mem_loc,
+                    type_info=BasicTypeInfo('u8')
+                ))
+
+            elif isinstance(initializer, HIRArrayFillExpr):
                 # Array fill: a MemoryFill loop for a constant scalar into
                 # RAM; a ROM table otherwise (see _emit_array_fill_init)
                 self._emit_array_fill_init(static_decl, mem_loc, initializer,
@@ -192,6 +202,20 @@ class StaticInitLowerer:
         mir_func.exit_block_ids = self.builder.cfg_builder.find_exit_blocks()
 
         return mir_func
+
+    def type_id_of_uninitialized(self, static_decl: HIRStaticDecl) -> Optional[int]:
+        """The TypeId to stamp into a RAM struct static declared without an
+        initializer, or None when it has an initializer or no TypeId."""
+        if (static_decl.initializer is not None or not static_decl.is_mutable
+                or static_decl.is_extern or static_decl.is_soa
+                or (static_decl.storage_attr is not None
+                    and static_decl.storage_attr.storage_kind == StorageKind.HW)
+                or not isinstance(static_decl.var_type, StructTypeInfo)):
+            return None
+        type_id_sym = self.builder._hir_program.symbol_table.lookup(
+            f"{static_decl.var_type.name}::TYPE_ID"
+        )
+        return type_id_sym.const_value & 0xFF if type_id_sym else None
 
     def _emit_rom_scalar_init(self, static_decl: HIRStaticDecl,
                               initializer: HIRExpression):
