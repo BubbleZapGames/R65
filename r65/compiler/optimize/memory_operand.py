@@ -41,12 +41,22 @@ moves and ALU operations into vregs in between — no stores, calls, inline
 asm or index-register writes — which covers how the MIR builder emits
 ``a op b`` (the left operand loaded, then the right one computed) without
 any aliasing analysis. See `_may_pass`.
+
+A far call through a function pointer loaded from a low-RAM or direct-page
+static folds the same way, into the call itself::
+
+    %0 = Load [SCENES+22]
+    Call %0(%1)           ->     Call [SCENES+22](%1)
+
+`JML [abs]` reads its 3-byte target from bank 0 at an absolute address, so
+codegen calls through the static in place - PHK / PEA / JML [SCENES+22] -
+instead of copying the pointer out and running the RTL trampoline.
 """
 
 from typing import Dict, List, Optional
 
 from r65.compiler.mir.nodes import (
-    BinaryOp, Compare, HardwareRegister, Load, MemoryLocation, MIRFunction,
+    BinaryOp, Call, Compare, HardwareRegister, Load, MemoryLocation, MIRFunction,
     MIRProgram, Move, UnaryOp, VirtualRegister, count_vreg_reads,
 )
 
@@ -58,6 +68,10 @@ _COMMUTATIVE_OPS = frozenset({'+', '&', '|', '^'})
 # Statics the compiler places itself. A hardware register is volatile and
 # must be read exactly where written; anything else is not a plain static.
 _FOLDABLE_STORAGE = frozenset({'zeropage', 'lowram', 'ram', 'rom'})
+
+# Statics `JML [abs]` reaches: it reads from bank 0, where low RAM and the
+# direct page sit at their own addresses.
+_BANK0_STORAGE = frozenset({'zeropage', 'lowram'})
 
 
 def _type_size(type_info) -> Optional[int]:
@@ -146,7 +160,9 @@ class MemoryOperandFolder:
             return False
         if instr.dest.register_hint:
             return False
-        return _type_size(instr.type_info) in (1, 2)
+        # Three bytes only for a far function pointer, which only a Call
+        # takes (see _try_fold_call); an ALU fold needs a matching width.
+        return _type_size(instr.type_info) in (1, 2, 3)
 
     @staticmethod
     def _is_alias(instr, uses: Dict[int, int], pending: Dict[int, List[int]],
@@ -190,10 +206,14 @@ class MemoryOperandFolder:
         """`(rewritten instr, positions to delete)` if *instr*'s right operand
         is a pending load, or its left one is and the right is computed (see
         the module docstring), else None."""
+        if isinstance(instr, Call):
+            return self._try_fold_call(instr, out, pending)
         if isinstance(instr, BinaryOp):
             if instr.op not in _FOLDABLE_OPS:
                 return None
         elif not isinstance(instr, Compare):
+            return None
+        if _type_size(instr.type_info) not in (1, 2):
             return None
 
         left_fold = False
@@ -238,4 +258,22 @@ class MemoryOperandFolder:
         if self.verbose:
             print(f"  memory-operand: {load.dest} <- {load.source} folded into {instr}")
         instr.right = load.source
+        return instr, positions
+
+    def _try_fold_call(self, instr: Call, out: List, pending: Dict[int, int]):
+        """`(instr calling through the static, positions to delete)` if
+        *instr* is a far call through a pending load of a far pointer from
+        a bank-0 static, else None."""
+        ptr = instr.function
+        if not (instr.is_far and isinstance(ptr, VirtualRegister) and ptr.id in pending):
+            return None
+        load = out[pending[ptr.id][0]]
+        src = load.source
+        if (src.storage_type not in _BANK0_STORAGE or src.index_register is not None
+                or _type_size(load.type_info) != 3):
+            return None
+        positions = pending.pop(ptr.id)
+        if self.verbose:
+            print(f"  memory-operand: {load.dest} <- {src} folded into {instr}")
+        instr.function = src
         return instr, positions

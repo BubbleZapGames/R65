@@ -395,7 +395,7 @@ The strategy decision is also threaded through addressing-mode selection on
   guard — STZ has no LONG mode, so STZ is rewritten to LDA #$00 / STA when
   SET_DBR forces LONG).
 
-### 2.5 Indirect call lowering: JML [d] fast path
+### 2.5 Indirect call lowering: JML [abs] fast path
 
 Far indirect calls through a function pointer normally lower to a
 RTS/RTL trampoline (`_emit_indirect_call_trampoline` in
@@ -404,63 +404,38 @@ address-1 (with an SBC chain to handle the `RTL pops then increments`
 quirk), then `RTL` into the callee. This costs ~78 cycles and ~30
 bytes per call.
 
-When the function pointer is **DP-addressable**, the call lowers
-instead to a 4-instruction sequence using the 65816's `JML [d]`
-opcode (long indirect through DP, 0xDC):
+When the pointer sits at a bank-0 address the call instead lowers to
+`JML [abs]` (opcode $DC), which reads its 3-byte target from `$00:abs`:
 
 ```
+SEP #$20               ; the callee is entered in m8, as by the trampoline
 PHK                    ; push current PBR        ; 3 cyc, 1 byte
 PEA <ret-1             ; push 16-bit return-1    ; 5 cyc, 3 bytes
-JML [<dp_offset>]      ; long indirect via DP    ; 8 cyc, 2 bytes
+JML [<abs>]            ; absolute indirect long  ; 6 cyc, 3 bytes
 ret:
 ```
 
 The callee's `RTL` pops 3 bytes (lo, hi, PBR) and increments — control
 returns to `ret:` with the original PBR restored, matching the
-calling convention of a real `JSL`. Total: 16 cycles, 6 bytes — saving
-~62 cycles and ~24 bytes per call.
+calling convention of a real `JSL`. Total: 14 cycles, 7 bytes, plus the
+SEP when A is 16-bit.
 
-Soundness: PHK + PEA push 3 bytes; the callee's RTL pops 3 bytes. Net
-change at `ret:` is 0 (matches the existing trampoline). The fast path
-runs in whatever m-mode is active because PHK and PEA are mode-
-independent (PHK always pushes 1 byte, PEA always pushes 16 bits, JML
-loads exactly 24 bits from DP regardless of mode).
+**When it fires** (`is_far` only; a near pointer has no indirect-long
+form):
 
-**When it fires:** the fast path activates inside
-`_emit_indirect_call_trampoline` when both:
+1. The pointer is in a zeropage scratch slot — a fn-pointer parameter
+   promoted by `analyze_scratch_params`. With D at `$0000` the scratch
+   address is its bank-0 address (`_dp_offset_for_indirect_call`).
+2. The pointer is a `#[zeropage]` or `#[lowram]` static, or a field of
+   one. `optimize/memory_operand.py` folds the single-use load of it
+   into the `Call`, whose `function` becomes that `MemoryLocation`, so
+   the call reads the pointer in place, with no copy. This covers a
+   field read through a constant `self` (the constant-receiver fold
+   makes it a load of the static).
 
-1. `is_far == True` (no analogous opcode for 16-bit indirect calls).
-2. The function pointer's location is `SCRATCH` — i.e. the pointer
-   was promoted to a zeropage scratch slot by `analyze_scratch_params`.
-   With DP at the default `$0000`, `JML [<scratch_addr>]` reads the
-   3-byte target directly from zeropage.
-
-`_dp_offset_for_indirect_call` makes the decision; everything else
-falls through to the trampoline. Hardware-resident pointers, `MEMORY`
-locations, and `STACK` locations all keep using the trampoline.
-
-**STACK case (deferred):** the brief that introduced this fast path
-also described a `STACK + D=S` variant where stack offsets ARE DP
-offsets. That case is currently deferred. Under D=S, the call
-sequence in `_emit_call_instruction` emits a `PLD` *before* the call
-(via `_emit_d_restore_before_call`) to restore the caller's D for the
-callee's benefit. By the time `_emit_indirect_call_trampoline` runs,
-D no longer equals S, so a stack-offset `JML [d]` would read the
-wrong memory. Re-establishing D=S immediately before the JML is
-possible but trades some of the savings and forces the callee to
-receive D=S (incorrect for callees that perform DP-relative loads).
-For Case II thin invokers, real R65 code overwhelmingly has scratch
-registers available, and `analyze_scratch_params` promotes the fn
-ptr param into scratch, where the fast path applies. See
-`docs/future-work.md` for the open task to lower the STACK case.
-
-**Cost-model interaction (Case II):**
-`analyze_far_ptr_strategy._decide_fn_ptr_only_strategy` decides per
-function whether to enter D=S for the JML [d] fast path. With the
-STACK path deferred, that function currently always returns None for
-fn-pointer-only functions (no D=S benefit when STACK fast path is
-deferred); when the STACK path lands the function should resurrect
-the cost model in the docstring there.
+`JML [abs]` never reads D-relative, so a stack-resident pointer cannot
+take this path, D=S or not, and a `#[ram]` static (bank $7E) cannot
+either. Both keep the trampoline (see `docs/future-work.md`).
 
 ---
 

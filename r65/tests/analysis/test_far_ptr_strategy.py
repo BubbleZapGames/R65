@@ -47,13 +47,9 @@ class TestFnPtrOnlyStrategy:
 
     def test_thin_invoker_no_scratch_stays_no_strategy(self):
         """Function with one far fn ptr param, no scratch registers
-        available, body is one indirect call. The STACK fast path is
-        currently deferred (see _dp_offset_for_indirect_call), so the
-        Case II decision returns no-strategy and the function falls
-        back to the trampoline.
-
-        When the STACK path lands, this test should be updated to
-        assert FarPtrStrategy.D_EQUALS_S.
+        available, body is one indirect call. JML [abs] cannot read a
+        stack slot, D=S or not, so the Case II decision returns
+        no-strategy and the function falls back to the trampoline.
         """
         source = """
             fn invoke(handler: far fn()) {

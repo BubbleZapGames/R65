@@ -17,7 +17,7 @@ redundant push/pull operations.
 
 from typing import List, Set, Dict, NamedTuple, Optional, TYPE_CHECKING
 from r65.compiler.mir.nodes import (
-    Call, CallBase, TraitDispatch, VirtualRegister, ArgumentMechanism,
+    Call, CallBase, MemoryLocation, TraitDispatch, VirtualRegister, ArgumentMechanism,
     Immediate as MIRImmediate, ChainRole, iter_operands,
 )
 
@@ -1464,6 +1464,12 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_address(Opcode.JSL, instr.function)
             else:
                 self._emit_address(Opcode.JSR, instr.function)
+        elif isinstance(instr.function, MemoryLocation):
+            # Far call through the pointer a bank-0 static holds, read in
+            # place by JML [abs] (optimize/memory_operand.py folds the load).
+            loc = self.parent._get_operand_location(instr.function)
+            addr = loc.memory_addr if loc.memory_addr is not None else loc.memory_label
+            self._emit_dp_indirect_far_call(addr, comment=str(instr.function))
         else:
             raise InstructionSelectionError(f"Unknown function type in Call: {type(instr.function)}", source_loc=self.parent._current_source_loc)
 
@@ -1488,7 +1494,7 @@ class CallInstructionSelector(BaseSelector):
 
         return None
 
-    def _emit_dp_indirect_far_call(self, dp_offset: int, comment: str = ""):
+    def _emit_dp_indirect_far_call(self, dp_offset, comment: str = ""):
         """Emit the JML [abs] fast-path sequence for a far indirect call.
 
         Sequence (14 cycles total):
@@ -1498,8 +1504,9 @@ class CallInstructionSelector(BaseSelector):
             JML [<dp_offset>]  ; absolute indirect long        (6 cyc)
         ret:
 
-        JML [abs] reads the pointer from $00:abs, which is the zeropage
-        scratch slot only while D=0.
+        JML [abs] reads the pointer from $00:abs: a zeropage scratch slot
+        while D=0, or a low-RAM or direct-page static. *dp_offset* is that
+        address, or a label for it.
 
         The callee's RTL pops 3 bytes (lo, hi, pbr) and increments — control
         returns to ``ret`` with the original PBR restored. Same calling
@@ -1511,13 +1518,16 @@ class CallInstructionSelector(BaseSelector):
 
         Caller has already verified preconditions:
           - is_far == True
-          - the pointer is in a scratch slot
+          - the pointer is in a scratch slot or a bank-0 static
         """
         from r65.compiler.codegen.asm_nodes import Immediate, Address
 
         ret_label = self.parent._get_unique_label()
 
-        # PHK and PEA push 1 and 2 bytes whatever M is, so no mode pin is needed.
+        # PHK and PEA push 1 and 2 bytes whatever M is, but the callee is
+        # entered in m8: an indirect call has no callee mode to follow, and
+        # the trampoline it stands in for always enters in m8.
+        self._ensure_m8_mode("m8 for indirect callee")
         phk_comment = (
             f"Push PBR for far indirect call ({comment})"
             if comment else "Push PBR for far indirect call"
@@ -1535,9 +1545,11 @@ class CallInstructionSelector(BaseSelector):
         self._emit_instr(
             Opcode.JMP_INDIRECT_LONG,
             Address(dp_offset),
-            f"Far indirect call via JML [${dp_offset:02X}]",
+            f"Far indirect call via JML [{_format_jml_operand(dp_offset)}]",
         )
         self.emitter.emit_label(ret_label)
+        # The callee's RTL took back the three bytes PHK and PEA pushed.
+        self.emitter.note_stack(-3)
 
     def _emit_indirect_call_trampoline(self, func_ptr_vreg: VirtualRegister, is_far: bool,
                                        stack_bytes_pushed: int = 0):
@@ -2226,3 +2238,10 @@ class CallInstructionSelector(BaseSelector):
     def _emit_dbr_restore_after_call(self):
         """Restore ptr-bank DBR after a call returns."""
         self._emit_instr(Opcode.PLB, comment="Restore ptr-bank DBR after call")
+
+
+def _format_jml_operand(addr) -> str:
+    """`$1234` for an address, the label itself for a label."""
+    if not isinstance(addr, int):
+        return str(addr)
+    return f"${addr:02X}" if addr <= 0xFF else f"${addr:04X}"

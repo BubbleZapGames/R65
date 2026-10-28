@@ -11,7 +11,7 @@ The fast path fires for SCRATCH-resident far fn pointers and emits:
 
     PHK
     PEA <ret-1
-    JML [<dp_offset>]    ; WLA-DX form for opcode 0xDC (long indirect via DP)
+    JML [<dp_offset>]    ; WLA-DX form for opcode 0xDC (absolute indirect long)
 ret:
 
 The slow trampoline emits the SBC chain via PHA/SBC stack-relative ops.
@@ -100,9 +100,9 @@ def test_fast_path_fires_for_scratch_far_fn_ptr():
 # Slow path: STACK-resident far fn pointer (no scratch promotion)
 # ---------------------------------------------------------------------------
 
-# No scratch registers declared — far fn ptr param stays on stack. The
-# STACK fast path is currently deferred (see _dp_offset_for_indirect_call
-# docstring), so the trampoline fires.
+# No scratch registers declared — far fn ptr param stays on stack. JML
+# [abs] cannot read a stack slot (it never reads D-relative), so the
+# trampoline fires.
 STACK_INVOKER_SOURCE = """
 far fn target() {}
 

@@ -809,7 +809,9 @@ class Call(CallBase):
 
     returns = call function(args)
     """
-    function: Union[str, VirtualRegister]  # Function name or function pointer
+    # Function name, function pointer, or a static holding a far one (bank 0;
+    # see optimize/memory_operand.py)
+    function: Union[str, VirtualRegister, MemoryLocation]
     mode_attr: Optional[Any] = None  # ModeAttribute from callee (for caller-managed DBR)
     bank_attr: Optional[Any] = None  # BankAttribute from callee (for bank number)
     builtin_name: Optional[str] = None  # Set if this is a built-in function call
