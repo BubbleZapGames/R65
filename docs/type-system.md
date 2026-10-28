@@ -96,6 +96,10 @@ struct Name {
 **Size**: Sum of field sizes
 **Alignment**: No requirement
 
+A struct with no fields may be written `struct Name;`, the same as
+`struct Name {}`. It has no field bytes; a trait-object static of it is the one
+TypeId byte, the shape for a type whose behavior is all in its `impl`.
+
 A struct with a single positional field is a [newtype](#newtypes), which is a
 different thing entirely — a scalar, not an aggregate. Two or more positional
 fields are rejected:

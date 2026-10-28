@@ -36,6 +36,14 @@ class TestStructDeclaration:
         assert struct.name == "Empty"
         assert len(struct.fields) == 0
 
+    def test_unit_struct(self):
+        """`struct Empty;` is the empty struct."""
+        struct = parse_struct("/// Doc.\n#[soa] struct Empty;")
+        assert struct.name == "Empty"
+        assert len(struct.fields) == 0
+        assert struct.doc == "Doc."
+        assert [a.name for a in struct.attributes] == ["soa"]
+
 
 class TestStructInstances:
     """Tests for struct instances and access."""

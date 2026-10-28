@@ -256,7 +256,7 @@ offset 0); no `= n` on a tagged enum's variants.
 
 *(See [docs/enums.md](docs/enums.md) for the complete documentation)*
 
-**Structs**: Packed (no padding), fields in declaration order. Methods, associated functions and constants go in `impl` blocks (see *Cross-Bank Function Calls* for the far-by-default rule).
+**Structs**: Packed (no padding), fields in declaration order; a fieldless struct may be written `struct Marker;`. Methods, associated functions and constants go in `impl` blocks (see *Cross-Bank Function Calls* for the far-by-default rule).
 
 ```rust
 struct Player { x: u8, y: u8, health: u16 }  // 4 bytes total

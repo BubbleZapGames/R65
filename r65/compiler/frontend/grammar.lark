@@ -93,6 +93,8 @@ const_decl: doc_comment* CONST IDENT ":" type_expr "=" initializer_expr ";"
 
 // Struct declaration
 struct_decl: doc_comment* attribute* STRUCT IDENT "{" struct_field* "}"
+// Unit struct: `struct Marker;` is `struct Marker {}`
+           | doc_comment* attribute* STRUCT IDENT ";"
 // Newtype: a nominal name for a register-sized scalar
 newtype_decl: doc_comment* attribute* STRUCT IDENT "(" type_expr ","? ")" ";"
 // A newtype has exactly one field; matched so the error names the feature
