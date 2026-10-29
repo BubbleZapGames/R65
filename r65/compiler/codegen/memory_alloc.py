@@ -159,15 +159,7 @@ class MemoryAllocator:
                     source_loc=None
                 )
 
-            # Warn if explicit address overlaps with stack region
-            if self.stack_lower is not None:
-                alloc_end = address + size - 1
-                if address <= self.stack_upper and alloc_end >= self.stack_lower:
-                    self.warnings.append(
-                        f"W006: Zero-page variable '{symbol.name}' at "
-                        f"${address:04X}-${alloc_end:04X} overlaps with "
-                        f"stack region ${self.stack_lower:04X}-${self.stack_upper:04X}"
-                    )
+            self._warn_if_overlaps_stack("Zero-page", static_decl, address, size)
         else:
             # Auto-allocate - find next available address that fits
             address = self._find_zeropage_fit(size)
@@ -223,6 +215,32 @@ class MemoryAllocator:
         # Mark stack region as used in lowram
         for i in range(lower, upper + 1):
             self.lowram_used.add(i)
+
+    def _warn_if_overlaps_stack(self, kind: str, static_decl: HIRStaticDecl,
+                                address: int, size: int):
+        """W006 when a static fixed at low-RAM offset *address* overlaps the
+        stack region: pushes would overwrite it, or it the return addresses."""
+        if self.stack_lower is None:
+            return
+        end = address + size - 1
+        if address <= self.stack_upper and end >= self.stack_lower:
+            where = f"{static_decl.source_loc}: " if static_decl.source_loc else ""
+            self.warnings.append(
+                f"{where}W006: {kind} variable '{static_decl.symbol.name}' at "
+                f"${address:04X}-${end:04X} overlaps with "
+                f"stack region ${self.stack_lower:04X}-${self.stack_upper:04X}"
+            )
+
+    @staticmethod
+    def _lowram_offset(address: int) -> Optional[int]:
+        """The low-RAM offset *address* reaches, or None: bank 0's
+        $0000-$1FFF, and its mirrors in banks $00-$3F, $80-$BF and $7E."""
+        bank, offset = address >> 16, address & 0xFFFF
+        if offset > LOWRAM_END:
+            return None
+        if bank & 0x7F <= 0x3F or bank == 0x7E:
+            return offset
+        return None
 
     # ========================================================================
     # Low RAM Allocation (above zeropage, $0100-$1FFF for auto-allocation)
@@ -287,15 +305,7 @@ class MemoryAllocator:
                     source_loc=None
                 )
 
-            # Warn if explicit address overlaps with stack region
-            if self.stack_lower is not None:
-                alloc_end = address + size - 1
-                if address <= self.stack_upper and alloc_end >= self.stack_lower:
-                    self.warnings.append(
-                        f"W006: Low RAM variable '{symbol.name}' at "
-                        f"${address:04X}-${alloc_end:04X} overlaps with "
-                        f"stack region ${self.stack_lower:04X}-${self.stack_upper:04X}"
-                    )
+            self._warn_if_overlaps_stack("Low RAM", static_decl, address, size)
         else:
             # Auto-allocate - find next available address (starts at $0100)
             address = self._find_lowram_fit(size)
@@ -439,6 +449,10 @@ class MemoryAllocator:
             AllocationInfo for the allocation
         """
         size = self._decl_size(static_decl)
+
+        offset = self._lowram_offset(hw_addr)
+        if offset is not None:
+            self._warn_if_overlaps_stack("Hardware", static_decl, offset, size)
 
         alloc = AllocationInfo(
             symbol=symbol,
