@@ -13,7 +13,7 @@ from r65.compiler.frontend import ast
 from r65.compiler.frontend.ast import CfgCondition
 from r65.compiler.frontend.derive_compat import derive_hint, derive_trait_names
 from r65.compiler.hir.errors import *
-from r65.compiler.registers import PRESERVABLE_REGISTERS
+from r65.compiler.registers import CLOBBERABLE_REGISTERS, PRESERVABLE_REGISTERS
 
 
 # =============================================================================
@@ -44,6 +44,15 @@ class ModeAttribute(ProcessedAttribute):
 @dataclass
 class PreservesAttribute(ProcessedAttribute):
     """#[preserves(...)] - registers with `preservable=True` in registers.REGISTERS (not B, PBR or S)"""
+    registers: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ClobbersAttribute(ProcessedAttribute):
+    """#[clobbers(...)] - the registers a function may leave changed, for its
+    callers to save. Every other index register is kept; D and DBR listed are
+    saved around each call. A and B are always clobbered, so they are not
+    recorded."""
     registers: List[str] = field(default_factory=list)
 
 
@@ -224,6 +233,8 @@ class AttributeProcessor:
                 processed.append(self._process_mode(attr, context))
             elif attr.name == 'preserves':
                 processed.append(self._process_preserves(attr, context))
+            elif attr.name == 'clobbers':
+                processed.append(self._process_clobbers(attr, context))
             elif attr.name in _STORAGE_KINDS:
                 processed.append(self._process_storage(attr, context))
             elif attr.name == 'soa':
@@ -332,6 +343,36 @@ class AttributeProcessor:
         return PreservesAttribute(
             name='preserves',
             registers=registers
+        )
+
+    def _process_clobbers(self, attr: ast.Attribute, context: str) -> ClobbersAttribute:
+        """Process #[clobbers(...)] attribute."""
+        if context not in ['function']:
+            raise HIRError("#[clobbers] attribute only valid on functions", source_loc=attr.source_loc)
+
+        registers = []
+        for arg in attr.args:
+            if arg.name is not None:
+                raise HIRError("#[clobbers] does not accept named arguments", source_loc=attr.source_loc)
+            if isinstance(arg.value, (ast.Register, ast.Identifier)):
+                reg_name = arg.value.name
+            else:
+                raise HIRError("#[clobbers] expects register names", source_loc=attr.source_loc)
+
+            if reg_name == 'STATUS':
+                raise HIRError(
+                    "STATUS cannot be in #[clobbers]\n"
+                    "  every call already clobbers the flags",
+                    source_loc=attr.source_loc)
+            if reg_name not in CLOBBERABLE_REGISTERS:
+                raise HIRError(f"Invalid register in #[clobbers]: {reg_name}", source_loc=attr.source_loc)
+            if reg_name not in ('A', 'B') and reg_name not in registers:
+                registers.append(reg_name)
+
+        return ClobbersAttribute(
+            name='clobbers',
+            registers=registers,
+            source_loc=attr.source_loc,
         )
 
     def _process_soa(self, attr: ast.Attribute, context: str) -> SoaAttribute:

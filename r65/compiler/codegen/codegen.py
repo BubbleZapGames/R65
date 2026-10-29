@@ -64,6 +64,12 @@ def _function_modes(mir_func):
     return entry, exit_mode
 
 
+# What `_emit_dispatch_wrapper`'s code writes on the way to an implementor:
+# the TypeId in A, its table offset in X. Not read off the code, whose
+# `JMP (table,X)` leads where no summary does.
+DISPATCH_WRAPPER_WRITES = frozenset({'A', 'X'})
+
+
 class ProgramCodeGenerator:
     """
     Generates complete assembly program from MIR.
@@ -430,7 +436,8 @@ class ProgramCodeGenerator:
         # the PHB/PLB DBR bracket once per run instead of per-call.
         # Builds the trait-resolved call graph for soundness verification.
         from r65.compiler.analysis.call_graph import build_call_graph
-        analyze_trait_dispatch_chains(mir_program, build_call_graph(mir_program))
+        call_graph = build_call_graph(mir_program)
+        analyze_trait_dispatch_chains(mir_program, call_graph)
 
         # Run loop register promotion analysis (after scratch params)
         if not disable_loop_promotion:
@@ -478,21 +485,26 @@ class ProgramCodeGenerator:
             asm_includes_by_bank.setdefault(bank_for_inc, []).append(inc)
             functions_by_bank.setdefault(bank_for_inc, [])  # ensure bank window opens
 
-        # Generate callees before callers, so a call sees which index
-        # registers its callee leaves alone (clobber_summary); each body is
-        # laid out in its bank below. Every function starts from the same
-        # emitter state, in its own bank.
+        # Generate callees (trait implementors included) before callers, so a
+        # call sees which registers its callee leaves alone
+        # (clobber_summary); each body is laid out in its bank below. Every
+        # function starts from the same emitter state, in its own bank.
         from r65.compiler.codegen.clobber_summary import (
-            INDEX_REGS, callee_first, has_inline_asm, index_writes)
+            callee_first, extern_summaries, function_summary)
         from r65.compiler.codegen.emitter import _snapshot, _restore
         gen = self.func_gen.func_gen
-        gen.index_writes = {}
+        gen.register_summaries = summaries = {}
+        gen.call_graph = call_graph
         laid_out = [f for b in sorted(functions_by_bank) for f in functions_by_bank[b]]
         bank_of = {f.name: b for b, fs in functions_by_bank.items() for f in fs}
-        function_names = frozenset(bank_of)
+        # An extern's #[clobbers(...)] is its summary: a call or tail jump to
+        # one takes it, rather than reading the label as unknown or local.
+        externs = extern_summaries(laid_out) if opt_level >= 1 else {}
+        summaries.update(externs)
+        function_names = gen.function_labels = frozenset(bank_of) | frozenset(externs)
         fresh = _snapshot(self.emitter)
         bodies = {}
-        for mir_func in callee_first(laid_out):
+        for mir_func in callee_first(laid_out, call_graph.get_callees):
             _restore(self.emitter, fresh)
             self.emitter.code_bank = self.emitter.rom_base + bank_of[mir_func.name]
             outer, self.emitter.nodes = self.emitter.nodes, []
@@ -503,9 +515,8 @@ class ProgramCodeGenerator:
                 body, self.emitter.nodes = self.emitter.nodes, outer
             bodies[mir_func.name] = body
             if opt_level >= 1:
-                gen.index_writes[mir_func.name] = (
-                    INDEX_REGS if has_inline_asm(mir_func)
-                    else index_writes(body, gen.index_writes, function_names))
+                summaries[mir_func.name] = function_summary(
+                    mir_func, body, summaries, function_names)
         _restore(self.emitter, fresh)
 
         # Generate code for each bank
@@ -605,7 +616,9 @@ class ProgramCodeGenerator:
             from r65.compiler.codegen.clobber_summary import check_after_peephole
             check_after_peephole(optimized_nodes,
                                  {n: b[-1] for n, b in bodies.items() if b},
-                                 gen.index_writes, function_names)
+                                 gen.register_summaries, function_names,
+                                 frozenset(f.name for f in laid_out
+                                           if f.clobbers_attr is not None))
         else:
             optimized_nodes = nodes
 

@@ -32,16 +32,14 @@ was saved, so an `INC`-only handler ran at whatever width it interrupted.
 
 ### Which registers are saved
 
-`_analyze_interrupt_modified_regs` predicts the set from the MIR before the
-body is emitted (a call, `*dyn` dispatch, `asm!`, or a block fill/copy means
-all of them; a scratch pool forces A, since the pool is put back with
-PLA/STA). The prediction misses MIR nodes that reach a register only through
-their lowering — a `Store` of a constant goes through `LDA #imm`, so
-`V = 2` wrote A unsaved. After the body is emitted,
-`_reconcile_interrupt_saves` scans it (`emitter.written_registers`) and, if
-it writes a register outside the predicted set, rebuilds the prologue's save
-run and every RTI's restore run for the larger set. The emitted code is the
-authority; the MIR scan only keeps the common case from being rebuilt.
+The emitted body decides. The prologue's save run and every RTI's restore
+run are first emitted for all of A, X, Y, D and DBR; once the body is
+emitted, `_reconcile_interrupt_saves` reads what it writes
+(`clobber_summary.code_writes`, the scanner the call-site summaries use)
+and rebuilds the runs for exactly that set. A call takes its callee's
+summary (at -O1; at -O0, or for a callee with no summary, it writes
+everything), `asm!` text writes everything, and a scratch pool forces A,
+since the pool is put back with PLA/STA.
 
 ## Exit Wrapper
 

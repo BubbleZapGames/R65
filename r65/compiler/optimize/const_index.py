@@ -35,7 +35,8 @@ from typing import Dict, List, Optional, Set
 from r65.compiler.mir.nodes import (
     BinaryOp, BitTest, Compare, CondBranch, HardwareRegister, Immediate,
     ModifyMemory, Jump, Load, MemoryLocation, MIRFunction, MIRProgram, Move,
-    Return, Rotate, Store, ToBool, TypeConvert, UnaryOp, VirtualRegister, iter_memory_operands, map_memory_operands,
+    Return, Rotate, Store, ToBool, TypeConvert, UnaryOp, VirtualRegister, index_writes,
+    iter_memory_operands, map_memory_operands,
 )
 
 # Instructions whose only contact with X is through operands the pass sees:
@@ -60,8 +61,9 @@ def _is_x(v) -> bool:
 
 
 def _writes_x(instr) -> bool:
-    return isinstance(instr, (Move, BinaryOp, UnaryOp, TypeConvert, ToBool, Rotate)) \
-        and _is_x(getattr(instr, 'dest', None))
+    # Of the _TRANSPARENT nodes, only an explicit X dest writes X, and wholly;
+    # a node outside them is taken to read X as well.
+    return 'X' in index_writes(instr)
 
 
 def _reads_x(instr) -> bool:

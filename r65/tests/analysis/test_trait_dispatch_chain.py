@@ -22,7 +22,6 @@ from r65.compiler.analysis.call_graph import build_call_graph
 from r65.compiler.analysis.trait_chain_coalesce import (
     analyze_trait_dispatch_chains,
     _chain_self_root,
-    _function_preserves_y,
 )
 
 
@@ -980,130 +979,9 @@ def _trait_info_near(trait='T', method='m', impls=None):
     }
 
 
-class TestFunctionPreservesY:
-    """v2(B): tests for _function_preserves_y predicate."""
-
-    def _empty_call_graph(self, prog):
-        return build_call_graph(prog)
-
-    def test_simple_leaf_preserves_y(self):
-        """A leaf function with no Y writes preserves Y."""
-        f = _make_func('leaf', {0: _make_block(0, [Return()])})
-        prog = MIRProgram(functions=[f])
-        cg = self._empty_call_graph(prog)
-        assert _function_preserves_y('leaf', cg, {'leaf': f}, set())
-
-    def test_y_write_does_not_preserve(self):
-        """A function with a Move-to-Y does not preserve Y."""
-        # Move(dest=HW_Y, source=...) writes Y.
-        mv = Move(
-            dest=HardwareRegister('Y'),
-            source=Immediate(value=0x1234),
-            type_info=BasicTypeInfo('u16'),
-        )
-        f = _make_func('writes_y', {0: _make_block(0, [mv, Return()])})
-        prog = MIRProgram(functions=[f])
-        cg = self._empty_call_graph(prog)
-        assert not _function_preserves_y(
-            'writes_y', cg, {'writes_y': f}, set()
-        )
-
-    def test_y_hint_vreg_does_not_preserve(self):
-        """A function defining a vreg with register_hint='Y' does not
-        preserve Y (loop register promotion would clobber Y)."""
-        v = VirtualRegister(
-            id=300, type_info=BasicTypeInfo('u16'),
-            register_hint='Y',
-        )
-        mv = Move(
-            dest=v,
-            source=Immediate(value=0),
-            type_info=BasicTypeInfo('u16'),
-        )
-        f = _make_func('y_hint', {0: _make_block(0, [mv, Return()])})
-        prog = MIRProgram(functions=[f])
-        cg = self._empty_call_graph(prog)
-        assert not _function_preserves_y(
-            'y_hint', cg, {'y_hint': f}, set()
-        )
-
-    def test_inline_asm_does_not_preserve(self):
-        """A function with inline asm does not preserve Y (we don't
-        analyze asm)."""
-        asm = InlineAsm(instructions=['NOP'])
-        f = _make_func('asm', {0: _make_block(0, [asm, Return()])})
-        prog = MIRProgram(functions=[f])
-        cg = self._empty_call_graph(prog)
-        assert not _function_preserves_y('asm', cg, {'asm': f}, set())
-
-    def test_call_to_y_preserver_preserves(self):
-        """A function that only calls Y-preserving functions preserves Y."""
-        leaf = _make_func('leaf', {0: _make_block(0, [Return()])})
-        callsite = Call(function='leaf', args=[], returns=[])
-        caller = _make_func('caller', {0: _make_block(0, [callsite, Return()])})
-        prog = MIRProgram(functions=[caller, leaf])
-        cg = self._empty_call_graph(prog)
-        func_map = {'caller': caller, 'leaf': leaf}
-        assert _function_preserves_y('caller', cg, func_map, set())
-
-    def test_call_to_non_preserver_does_not_preserve(self):
-        """A function calling a Y-clobbering callee does not preserve Y."""
-        # Bad callee writes Y.
-        bad = _make_func('bad', {0: _make_block(0, [
-            Move(
-                dest=HardwareRegister('Y'),
-                source=Immediate(value=0),
-                type_info=BasicTypeInfo('u16'),
-            ),
-            Return(),
-        ])})
-        cs = Call(function='bad', args=[], returns=[])
-        caller = _make_func('caller', {0: _make_block(0, [cs, Return()])})
-        prog = MIRProgram(functions=[caller, bad])
-        cg = self._empty_call_graph(prog)
-        func_map = {'caller': caller, 'bad': bad}
-        assert not _function_preserves_y(
-            'caller', cg, func_map, set()
-        )
-
-    def test_recursion_does_not_preserve(self):
-        """A function in a recursive cycle is conservatively rejected."""
-        # 'a' calls 'b' calls 'a'.
-        cs_a = Call(function='b', args=[], returns=[])
-        cs_b = Call(function='a', args=[], returns=[])
-        a = _make_func('a', {0: _make_block(0, [cs_a, Return()])})
-        b = _make_func('b', {0: _make_block(0, [cs_b, Return()])})
-        prog = MIRProgram(functions=[a, b])
-        cg = self._empty_call_graph(prog)
-        # Manually identify cycle (caller does this in
-        # analyze_trait_dispatch_chains).
-        cyclic = {'a', 'b'}
-        func_map = {'a': a, 'b': b}
-        assert not _function_preserves_y('a', cg, func_map, cyclic)
-        assert not _function_preserves_y('b', cg, func_map, cyclic)
-
-    def test_trait_method_self_y_param_is_not_a_y_write(self):
-        """The trait-method entry-point Move(dest=self_y_vreg, source=HW_Y)
-        is treated as a no-op (Y already holds self at entry)."""
-        self_v = VirtualRegister(id=400, type_info=PointerTypeInfo(
-            is_far=False, pointee_type=BasicTypeInfo('Player'),
-        ))
-        entry_move = Move(
-            dest=self_v,
-            source=HardwareRegister('Y'),
-            type_info=self_v.type_info,
-        )
-        f = _make_func('m', {0: _make_block(0, [entry_move, Return()])})
-        f.is_trait_method = True
-        f.self_y_vreg = self_v
-        prog = MIRProgram(functions=[f])
-        cg = self._empty_call_graph(prog)
-        assert _function_preserves_y('m', cg, {'m': f}, set())
-
-
 class TestNearChainCoalescing:
-    """v2(B): near-self chain pass elides LDY reloads when impls and
-    gap instructions all preserve Y."""
+    """Near-self chains: same-self runs, whatever the impls and gaps do to
+    Y - codegen reads that off the code (tests/e2e/test_trait_dispatch_chain)."""
 
     def _build_near_program(self, caller_blocks, impl_blocks=None,
                             trait='T', method='m', impl_name='Impl1__m'):
@@ -1142,55 +1020,29 @@ class TestNearChainCoalescing:
         assert b.self_chain_role == ChainRole.MIDDLE
         assert c.self_chain_role == ChainRole.END
 
-    def test_near_chain_breaks_when_impl_clobbers_y(self):
-        """If the impl writes Y, the chain is rejected — both stay SOLO."""
+    def test_near_chain_forms_whatever_the_gap_writes(self):
+        """A gap that writes Y, or runs asm, still chains; each member
+        names the one before it and the blocks between."""
         s = _make_self_vreg()
         a = _make_near_dispatch(s)
         b = _make_near_dispatch(s)
-        # Impl that writes Y.
+        c = _make_near_dispatch(s)
         clobber = Move(
             dest=HardwareRegister('Y'),
             source=Immediate(value=0),
             type_info=BasicTypeInfo('u16'),
         )
-        bad_impl_blocks = {0: _make_block(0, [clobber, Return()])}
-        prog = self._build_near_program(
-            {0: _make_block(0, [a, b, Return()])},
-            impl_blocks=bad_impl_blocks,
-        )
-        _run_analysis(prog)
-        assert a.self_chain_role == ChainRole.SOLO
-        assert b.self_chain_role == ChainRole.SOLO
-
-    def test_near_chain_breaks_when_gap_writes_y(self):
-        """An instruction in the gap that writes Y rejects the chain."""
-        s = _make_self_vreg()
-        a = _make_near_dispatch(s)
-        b = _make_near_dispatch(s)
-        clobber = Move(
-            dest=HardwareRegister('Y'),
-            source=Immediate(value=0),
-            type_info=BasicTypeInfo('u16'),
-        )
-        prog = self._build_near_program(
-            {0: _make_block(0, [a, clobber, b, Return()])}
-        )
-        _run_analysis(prog)
-        assert a.self_chain_role == ChainRole.SOLO
-        assert b.self_chain_role == ChainRole.SOLO
-
-    def test_near_chain_breaks_on_inline_asm_in_gap(self):
-        """Inline asm in the gap rejects the chain (asm not analyzed)."""
-        s = _make_self_vreg()
-        a = _make_near_dispatch(s)
-        b = _make_near_dispatch(s)
         asm = InlineAsm(instructions=['NOP'])
-        prog = self._build_near_program(
-            {0: _make_block(0, [a, asm, b, Return()])}
-        )
+        prog = self._build_near_program({
+            0: _make_block(0, [a, clobber], succs=[1]),
+            1: _make_block(1, [b, asm, c, Return()], preds=[0]),
+        })
         _run_analysis(prog)
-        assert a.self_chain_role == ChainRole.SOLO
-        assert b.self_chain_role == ChainRole.SOLO
+        assert (a.self_chain_role, b.self_chain_role, c.self_chain_role) == (
+            ChainRole.START, ChainRole.MIDDLE, ChainRole.END)
+        assert a.self_y_after is None
+        assert (b.self_y_after, b.self_y_path) == (id(a), (0, 1))
+        assert (c.self_y_after, c.self_y_path) == (id(b), (1,))
 
     def test_near_chain_far_and_near_do_not_mix(self):
         """A far dispatch and a near dispatch on the same self do not
@@ -1230,130 +1082,20 @@ class TestNearChainCoalescing:
 
 
 # ---------------------------------------------------------------------------
-# v2 commit C: Y elision for far-self chains
+# Far-self chains name the member before each MIDDLE/END one too
 # ---------------------------------------------------------------------------
 
-class TestFarChainYElision:
-    """v2(C): far-self chains may additionally elide the Y reload for
-    MIDDLE/END members when impls + gap all preserve Y."""
-
-    def test_far_chain_y_preloaded_when_impls_preserve_y(self):
-        """A far chain with leaf impls that preserve Y → MIDDLE/END
-        get self_y_preloaded=True. START never gets the flag."""
+class TestFarChainYLink:
+    def test_far_chain_links_members(self):
+        """A DBR-coalesced far chain records, on MIDDLE/END, the member
+        before; a solo dispatch records nothing."""
         s = _make_self_vreg()
         a = _make_dispatch(s)
         b = _make_dispatch(s)
-        c = _make_dispatch(s)
-        # Default _empty_impl_func is a single-Return body — no Y
-        # writes, preserves Y.
-        prog = _build_program({0: _make_block(0, [a, b, c, Return()])})
+        solo = _make_dispatch(_make_self_vreg(vid=2))
+        prog = _build_program({0: _make_block(0, [a, b, solo, Return()])})
         _run_analysis(prog)
-        assert a.self_chain_role == ChainRole.START
-        assert b.self_chain_role == ChainRole.MIDDLE
-        assert c.self_chain_role == ChainRole.END
-        # START never gets the flag — it loads Y itself.
-        assert a.self_y_preloaded is False
-        assert b.self_y_preloaded is True
-        assert c.self_y_preloaded is True
-
-    def test_far_chain_y_not_preloaded_when_impl_clobbers_y(self):
-        """A far chain whose impl writes Y still gets DBR-bracket
-        coalescing (impls are DBR-independent) but NOT Y elision —
-        MIDDLE/END have self_y_preloaded=False."""
-        s = _make_self_vreg()
-        a = _make_dispatch(s)
-        b = _make_dispatch(s)
-
-        # Impl writes Y but is DBR-independent (no RAM access etc.).
-        clobber = Move(
-            dest=HardwareRegister('Y'),
-            source=Immediate(value=0),
-            type_info=BasicTypeInfo('u16'),
-        )
-        bad_impl_blocks = {0: _make_block(0, [clobber, Return()])}
-        bad_impl = _make_func('Impl1__m', bad_impl_blocks)
-        prog = MIRProgram(
-            functions=[
-                _make_func('caller', {0: _make_block(0, [a, b, Return()])}),
-                bad_impl,
-            ],
-            trait_dispatch_info=_trait_info(impls=['Impl1__m']),
-        )
-        _run_analysis(prog)
-        # DBR coalescing fires (impl is DBR-independent).
-        assert a.self_chain_role == ChainRole.START
-        assert b.self_chain_role == ChainRole.END
-        # Y elision does NOT fire (impl clobbers Y).
-        assert a.self_y_preloaded is False
-        assert b.self_y_preloaded is False
-
-    def test_far_chain_dbr_and_y_orthogonal(self):
-        """Two flags are independent: a chain with DBR-independent +
-        Y-preserving impls has both fire; a chain with DBR-independent +
-        Y-clobbering impls has only DBR fire."""
-        # Case 1: both fire.
-        s1 = _make_self_vreg(vid=10)
-        a1 = _make_dispatch(s1)
-        b1 = _make_dispatch(s1)
-        prog1 = _build_program({0: _make_block(0, [a1, b1, Return()])})
-        _run_analysis(prog1)
-        assert a1.self_chain_role == ChainRole.START  # DBR
-        assert b1.self_chain_role == ChainRole.END    # DBR
-        assert b1.self_y_preloaded is True            # Y elision
-
-        # Case 2: only DBR fires.
-        s2 = _make_self_vreg(vid=20)
-        a2 = _make_dispatch(s2)
-        b2 = _make_dispatch(s2)
-        clobber = Move(
-            dest=HardwareRegister('Y'),
-            source=Immediate(value=0),
-            type_info=BasicTypeInfo('u16'),
-        )
-        bad_impl = _make_func(
-            'Impl1__m', {0: _make_block(0, [clobber, Return()])}
-        )
-        prog2 = MIRProgram(
-            functions=[
-                _make_func('caller', {0: _make_block(0, [a2, b2, Return()])}),
-                bad_impl,
-            ],
-            trait_dispatch_info=_trait_info(impls=['Impl1__m']),
-        )
-        _run_analysis(prog2)
-        assert a2.self_chain_role == ChainRole.START  # DBR
-        assert b2.self_chain_role == ChainRole.END    # DBR
-        assert b2.self_y_preloaded is False           # Y elision off
-
-    def test_far_chain_y_not_preloaded_when_gap_clobbers_y(self):
-        """A gap instruction that writes Y disables Y elision but the
-        DBR coalescing decision is independent — DBR-independent gap
-        instructions still permit DBR coalescing."""
-        s = _make_self_vreg()
-        a = _make_dispatch(s)
-        b = _make_dispatch(s)
-        # Gap: a Move writing Y. This is DBR-independent (no memory
-        # access) but clobbers Y.
-        clobber = Move(
-            dest=HardwareRegister('Y'),
-            source=Immediate(value=0),
-            type_info=BasicTypeInfo('u16'),
-        )
-        prog = _build_program(
-            {0: _make_block(0, [a, clobber, b, Return()])}
-        )
-        _run_analysis(prog)
-        # DBR coalescing fires (gap is DBR-independent).
-        assert a.self_chain_role == ChainRole.START
-        assert b.self_chain_role == ChainRole.END
-        # Y elision does NOT fire (gap writes Y).
-        assert b.self_y_preloaded is False
-
-    def test_solo_dispatch_has_no_y_preloaded(self):
-        """Solo dispatches never carry self_y_preloaded."""
-        s = _make_self_vreg()
-        td = _make_dispatch(s)
-        prog = _build_program({0: _make_block(0, [td, Return()])})
-        _run_analysis(prog)
-        assert td.self_chain_role == ChainRole.SOLO
-        assert td.self_y_preloaded is False
+        assert (a.self_chain_role, b.self_chain_role) == (ChainRole.START, ChainRole.END)
+        assert (b.self_y_after, b.self_y_path) == (id(a), (0,))
+        assert solo.self_chain_role == ChainRole.SOLO
+        assert solo.self_y_after is None

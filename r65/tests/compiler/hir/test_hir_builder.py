@@ -436,6 +436,34 @@ fn preserve_xy() {
         assert "Y" in func.preserves_attr.registers
 
 
+class TestClobbersAttribute:
+    """Test #[clobbers(...)] attribute processing."""
+
+    def test_clobbers_registers(self):
+        """A and B are always clobbered, so only the rest are recorded."""
+        hir = build_hir("#[clobbers(A, X, B, DBR, X)]\nfn f() {}\n")
+        assert hir.declarations[0].clobbers_attr.registers == ['X', 'DBR']
+
+    def test_empty_list(self):
+        hir = build_hir("#[clobbers()]\nextern fn f();\n")
+        assert hir.declarations[0].clobbers_attr.registers == []
+
+    @pytest.mark.parametrize("reg", ["STATUS", "PBR", "S", "Q"])
+    def test_rejects_register(self, reg):
+        with pytest.raises(HIRError, match="#\\[clobbers\\]"):
+            build_hir(f"#[clobbers({reg})]\nfn f() {{}}\n")
+
+    def test_rejects_named_argument(self):
+        with pytest.raises(HIRError, match="named arguments"):
+            build_hir("#[clobbers(reg=X)]\nfn f() {}\n")
+
+    def test_extern_rejects_preserves(self):
+        """An extern has no body to save and restore in; #[clobbers] is how
+        it describes its registers."""
+        with pytest.raises(HIRError, match="cannot be declared `#\\[preserves"):
+            build_hir("#[preserves(X)]\nextern fn f();\n")
+
+
 class TestInterruptAttribute:
     """Test #[interrupt(...)] attribute processing."""
 

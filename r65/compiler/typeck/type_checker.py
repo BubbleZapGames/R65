@@ -31,7 +31,8 @@ from r65.compiler.typeck.processor_mode import ProcessorMode, ModeState, XModeSt
 from r65.compiler.typeck.type_utils import (
     TypeRelations, TypeUtils, soa_static_of, value_fits_type, widen_implicitly)
 from r65.compiler.typeck.operator_validator import OperatorValidator
-from r65.compiler.typeck.preservation_checker import PreservationChecker
+from r65.compiler.typeck.preservation_checker import (
+    PreservationChecker, check_clobbers, check_clobbers_not_address_taken)
 from r65.compiler.typeck.register_capabilities import (
     is_index_register,
     can_transfer_directly,
@@ -675,6 +676,7 @@ class TypeChecker:
         # Type check every function body, impl methods included
         for func in self.program.all_functions():
             self.check_function(func)
+        check_clobbers_not_address_taken(self.program)
 
     def check_function(self, func: HIRFunctionDecl):
         """Type check a single function."""
@@ -719,6 +721,8 @@ class TypeChecker:
             entry_mode = ProcessorMode.default()
 
         self.current_mode = entry_mode
+
+        check_clobbers(func)
 
         if func.body is None:
             return  # External function

@@ -57,8 +57,8 @@ def test_extern_fn_with_register_params_and_return():
     assert fn.return_type.name == 'u8'
 
 
-def test_extern_fn_with_preserves_attribute():
-    """`#[preserves(...)]` attaches to extern fns like any other function."""
+def test_extern_fn_parses_preserves_attribute():
+    """The parser keeps `#[preserves(...)]` on an extern fn; HIR rejects it."""
     src = "#[preserves(X, Y)] extern fn pure_helper();"
     prog = parse(src)
     fn = prog.items[0]

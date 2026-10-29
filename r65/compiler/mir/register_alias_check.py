@@ -31,8 +31,8 @@ from typing import Dict, Optional
 from r65.compiler.errors import MIRLoweringError
 from r65.compiler.mir.nodes import (
     MIRFunction, HardwareRegister, VirtualRegister, Immediate,
-    CLOBBERS_ALL, fixed_clobbers, Pull, Push,
-    StatusFlagRead, Store, StoreIndirect, LoadIndirect, Compare, CompareIndirect, BitTest,
+    CLOBBERS_ALL, fixed_clobbers, index_clobbers, Pull, Push,
+    StatusFlagRead, Store, StoreIndirect, Compare, CompareIndirect, BitTest,
     CondBranch, Move, BinaryOp, UnaryOp, ModifyMemory, SetMode,
     OperandRole, iter_operands,
 )
@@ -78,14 +78,8 @@ def _implicit_clobbers(instr, reg: str) -> bool:
     if isinstance(instr, Pull):
         return _hw(instr.register, reg)
 
-    if reg == 'Y':
-        # A pointer read or write puts its index or field offset in Y,
-        # unless the index is already there (set by a Move the MIR shows).
-        if isinstance(instr, (LoadIndirect, StoreIndirect)):
-            return not (instr.index_register == 'Y' and not getattr(instr, 'offset', 0))
-        return False
-    if reg == 'X':
-        return False
+    if reg in ('X', 'Y'):
+        return reg in index_clobbers(instr)
 
     # A.
     if isinstance(instr, (Push, SetMode, ModifyMemory)):

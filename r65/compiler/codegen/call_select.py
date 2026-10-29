@@ -15,7 +15,7 @@ once at the start of the region and restore once at the end, reducing
 redundant push/pull operations.
 """
 
-from typing import List, Set, Dict, NamedTuple, Optional, TYPE_CHECKING
+from typing import List, Set, Dict, FrozenSet, NamedTuple, Optional, TYPE_CHECKING
 from r65.compiler.mir.nodes import (
     Call, CallBase, MemoryLocation, TraitDispatch, VirtualRegister, ArgumentMechanism,
     Immediate as MIRImmediate, ChainRole, iter_operands,
@@ -34,6 +34,7 @@ from r65.compiler.codegen.errors import unknown_value
 from r65.compiler.codegen.base_selector import BaseSelector
 from r65.compiler.codegen.type_utils import arg_param_size, scalar_width
 from r65.compiler.codegen.arg_order import arg_sort_key
+from r65.compiler.codegen.clobber_summary import code_writes
 from r65.compiler.mir.call_effects import INDEX_REGS, CallEffects, call_effects
 
 
@@ -164,6 +165,10 @@ class CallInstructionSelector(BaseSelector):
         self._a_vregs: List[VirtualRegister] = []
         # call_effects per call of the current function, by id(instr)
         self._effects: Dict[int, CallEffects] = {}
+        # Where each block's code starts, and where each dispatch had put
+        # self in Y, by node index (_self_still_in_y)
+        self._block_starts: Dict[int, int] = {}
+        self._self_in_y: Dict[int, int] = {}
 
     def initialize_regions_for_function(self):
         """
@@ -172,6 +177,8 @@ class CallInstructionSelector(BaseSelector):
         Should be called once per function before processing any blocks.
         """
         self._effects = {}
+        self._block_starts = {}
+        self._self_in_y = {}
         reg_alloc = self.parent.reg_alloc
         if not reg_alloc or not reg_alloc.instr_liveness:
             self._function_regions = None
@@ -199,6 +206,7 @@ class CallInstructionSelector(BaseSelector):
         Args:
             block_id: The block ID being processed
         """
+        self._block_starts[block_id] = len(self.parent.emitter.nodes)
         if self._function_regions is None:
             # No pre-computed regions, will fall back to per-call spilling
             self.region_state = ActiveRegionState()
@@ -213,7 +221,7 @@ class CallInstructionSelector(BaseSelector):
         callee's clobber summary when it has been generated."""
         effects = self._effects.get(id(instr))
         if effects is None:
-            summaries = getattr(self.parent.func_gen, 'index_writes', None)
+            summaries = getattr(self.parent.func_gen, 'register_summaries', None)
             effects = self._effects[id(instr)] = call_effects(instr, summaries)
         return effects
 
@@ -222,16 +230,34 @@ class CallInstructionSelector(BaseSelector):
         `#[preserves(...)]` plus the index registers its code never writes."""
         return set(self.effects(instr).preserved)
 
+    def _clobbered_saves(self, instr) -> List[str]:
+        """The D/DBR this call saves around itself, from the callee's
+        `#[clobbers(...)]`: none for a callee that never returns, and no DBR
+        when the caller's databank=caller bracket restores it already."""
+        from r65.compiler.hir.attributes import DataBankMode
+        from r65.compiler.hir.types import NeverTypeInfo
+        saves = self.effects(instr).caller_saves
+        if not saves or isinstance(instr.callee_return_type, NeverTypeInfo):
+            return []
+        if (instr.is_far and instr.bank_attr and instr.mode_attr
+                and instr.mode_attr.databank == DataBankMode.CALLER):
+            saves = saves - {'DBR'}
+        if saves and getattr(instr, 'pascal_result_bytes', 0) > 0:
+            raise InstructionSelectionError(
+                f"call to '{instr.function}', which clobbers "
+                f"{', '.join(sorted(saves))}, cannot return a value under --abi pascal",
+                source_loc=self.parent._current_source_loc)
+        return [reg for reg in ('D', 'DBR') if reg in saves]
+
     def _check_inferred_preserves(self, instr, start: int, inferred: Set[str]):
-        """A call kept an index register unsaved on its callee's summary: the
-        code emitted around the JSR must not write it either - except to
-        land the call's own result there."""
+        """A call kept an index register unsaved on its callee's summary (or
+        an extern's declaration): the code emitted around the JSR must not
+        write it either - except to land the call's own result there."""
         from r65.compiler.codegen.asm_nodes import Address, Instruction
-        from r65.compiler.codegen.clobber_summary import index_writes
         rest = [n for n in self.parent.emitter.nodes[start:]
                 if not (isinstance(n, Instruction) and n.opcode in (Opcode.JSR, Opcode.JSL)
                         and n.operand == Address(instr.function))]
-        clobbered = ((index_writes(rest, {}, frozenset()) & inferred)
+        clobbered = ((code_writes(rest) & inferred)
                      - self._call_result_registers(instr))
         if clobbered:
             raise InstructionSelectionError(
@@ -311,7 +337,11 @@ class CallInstructionSelector(BaseSelector):
 
         call_start = len(self.parent.emitter.nodes)
         effects = self.effects(instr)
+        # The index registers kept on the callee's word alone - its summary,
+        # or an extern's #[clobbers(...)] - which nothing here saves
         inferred = effects.inferred - effects.declared
+        if instr.callee_is_extern:
+            inferred |= effects.declared & INDEX_REGS
 
         # Step 0: Compute hardware register spills needed
         # Spill hw registers that are live across this call and not preserved by callee
@@ -333,6 +363,11 @@ class CallInstructionSelector(BaseSelector):
         # Step 0.7b: SET_DBR: save ptr-bank DBR and set DBR to the data bank for callee
         if needs_dbr_management:
             self._emit_dbr_save_before_call()
+
+        # Step 0.8: Save the D/DBR the callee's #[clobbers(...)] lists
+        caller_saves = self._clobbered_saves(instr)
+        for reg in caller_saves:
+            self._emit_push(reg, f"Save {reg} (callee clobbers it)")
 
         # Step 1: Set up arguments
         stack_bytes_pushed = self._emit_argument_setup(instr)
@@ -362,6 +397,18 @@ class CallInstructionSelector(BaseSelector):
         # Step 4: Restore DBR if caller-managed
         if needs_dbr_restore:
             self._emit_pull('DBR', "Restore data bank (caller)")
+
+        # Step 4.5: Restore the saved D/DBR before collecting the results,
+        # whose stores may go through either. The pushed arguments are above
+        # them, so those come off first, into no register holding a result.
+        if caller_saves:
+            if stack_bytes_pushed > 0 and self.parent.abi_model.kind != ABIKind.PASCAL:
+                self._emit_caller_arg_cleanup(
+                    stack_bytes_pushed,
+                    set(effects.results) | (self.callee_preserves(instr) & INDEX_REGS))
+                stack_bytes_pushed = 0
+            for reg in reversed(caller_saves):
+                self._emit_pull(reg, f"Restore {reg} (callee clobbers it)")
 
         # Step 5: Collect return values (in callee's exit mode)
         if pascal_result_bytes > 0:
@@ -448,32 +495,12 @@ class CallInstructionSelector(BaseSelector):
         # dispatches pull PLB. MIDDLE dispatches do neither — DBR is held
         # at self's bank across the whole run. See
         # analysis/trait_chain_coalesce.analyze_trait_dispatch_chains.
-        #
-        # For NEAR-self chains, the role determines LDY emission rather
-        # than the DBR bracket. SOLO/START emit LDY; MIDDLE/END skip the
-        # LDY because the previous dispatch left Y holding the same self
-        # pointer (predicate: every impl + every gap instruction
-        # preserves Y).
-        # For FAR-self chains, MIDDLE/END members may additionally skip
-        # the Y reload when ``self_y_preloaded`` is set — the chain
-        # passed an independent Y-preservation predicate. This is
-        # orthogonal to the DBR bracket: a chain may have DBR coalescing
-        # only, Y elision only, or both.
+        # A MIDDLE/END member of either kind skips its Y load when Y still
+        # holds self from the member before (_self_still_in_y).
         role = getattr(instr, 'self_chain_role', ChainRole.SOLO)
         emit_phb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_dbr_set = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_plb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.END)
-        # Near-self Y reload: required for SOLO/START, skippable for
-        # MIDDLE/END.
-        emit_near_y_load = (not instr.self_is_far) and role in (
-            ChainRole.SOLO, ChainRole.START
-        )
-        # Far-self Y reload: required unless the chain pass set
-        # ``self_y_preloaded`` AND this is a MIDDLE/END member.
-        far_y_preloaded = bool(getattr(instr, 'self_y_preloaded', False))
-        emit_far_y_load = instr.self_is_far and not (
-            far_y_preloaded and role in (ChainRole.MIDDLE, ChainRole.END)
-        )
 
         if emit_phb:
             self._emit_push('DBR', "Save caller's DBR for far self dispatch")
@@ -492,11 +519,11 @@ class CallInstructionSelector(BaseSelector):
             if instr.self_is_far:
                 if emit_dbr_set:
                     self._set_dbr_from_far_self(self_y_arg, self_y_stack_bytes)
-                if emit_far_y_load:
+                if not self._self_still_in_y(instr):
                     self._load_y_addr_from_far_self(self_y_arg, self_y_stack_bytes)
-            else:
-                if emit_near_y_load:
-                    self.load_y_with_self(self_y_arg, self_y_stack_bytes)
+            elif not self._self_still_in_y(instr):
+                self.load_y_with_self(self_y_arg, self_y_stack_bytes)
+            self._self_in_y[id(instr)] = len(self.parent.emitter.nodes)
 
         # Emit the call to the dispatch wrapper
         if instr.is_far:
@@ -521,6 +548,41 @@ class CallInstructionSelector(BaseSelector):
         # Reload spilled registers
         reloads = self._compute_hw_reloads(instr)
         self._emit_hw_reloads(reloads)
+
+    def _self_still_in_y(self, instr: TraitDispatch) -> bool:
+        """Whether Y still holds self from the chain member before *instr*.
+
+        Read off the code emitted since that member put self in Y - its
+        dispatch, by the implementors' summaries, and everything after -
+        which is all the code that ran in between if every block on the
+        path between the two (`self_y_path`) was emitted inside that run.
+        """
+        start = self._self_in_y.get(instr.self_y_after)
+        summaries = self._dispatch_summaries()
+        if start is None or summaries is None:
+            return False
+        now = len(self.parent.emitter.nodes)
+        if not all(start < self._block_starts.get(b, -1) <= now
+                   for b in instr.self_y_path[1:]):
+            return False
+        return 'Y' not in code_writes(self.parent.emitter.nodes[start:now], summaries)
+
+    def _dispatch_summaries(self) -> Optional[Dict[str, FrozenSet[str]]]:
+        """The clobber summaries, with each dispatch wrapper's: what the
+        wrapper writes and every implementor it may reach does. None at
+        -O0, where there are none."""
+        func_gen = self.parent.func_gen
+        summaries = getattr(func_gen, 'register_summaries', None)
+        graph = getattr(func_gen, 'call_graph', None)
+        if not summaries or graph is None:
+            return None
+        from r65.compiler.codegen.codegen import DISPATCH_WRAPPER_WRITES
+        summaries = dict(summaries)
+        for (trait, method), impls in graph.trait_impls.items():
+            if impls and all(i in summaries for i in impls):
+                summaries[f"{trait}__{method}__dispatch"] = DISPATCH_WRAPPER_WRITES.union(
+                    *(summaries[i] for i in impls))
+        return summaries
 
     def _emit_trait_dispatch_args(self, instr: TraitDispatch) -> int:
         """Emit trait dispatch arguments. Delegates to ABIModel.emit_trait_dispatch_args."""
@@ -1155,12 +1217,9 @@ class CallInstructionSelector(BaseSelector):
         counts: it is a swap, so even an A-resident source is destroyed when
         the old B lands in A.
         """
-        from r65.compiler.codegen.emitter import written_registers
-
         with self.parent.trial_emission() as trial:
             self.emit_argument_setup(arg, arg_loc)
-            written = written_registers(trial.nodes)
-        return written is None or 'A' in written
+            return 'A' in code_writes(trial.nodes)
 
     def _emit_b_register_argument(self, arg, arg_loc):
         """Emit B register argument (special handling)."""

@@ -665,6 +665,31 @@ class TestNearSelfChainCoalescing:
             f"got LDY={ldy} TAY={tay} TXY={txy}\n{asm}"
         )
 
+    def test_y_reloaded_when_an_impl_or_the_gap_writes_y(self):
+        """Codegen reads whether Y still holds self off the code between
+        two members: an impl that writes Y (its clobber summary), or a gap
+        that does, means the second member loads Y again."""
+        def y_loads(impl_body: str, gap: str) -> int:
+            asm = _compile_snes(_PREAMBLE + f'''
+                struct P {{ x: u8 }}
+                trait HasX {{ fn get_x(*self) -> u8; }}
+                impl HasX for P {{ fn get_x(*self) -> u8 {{ {impl_body} return self.x; }} }}
+                #[lowram]
+                static mut O: P = P {{ x: 42 }};
+                #[entry]
+                fn main() {{
+                    let p: *dyn HasX = &O;
+                    let a: u8 = p.get_x();
+                    {gap}
+                    RESULT = a + p.get_x();
+                }}
+            ''')
+            return sum(_count_in_function(asm, 'main', m) for m in ('LDY', 'TAY', 'TXY'))
+
+        assert y_loads('', '') == 1
+        assert y_loads('Y = 0;', '') == 2
+        assert y_loads('', 'Y = 7;') >= 2
+
     def test_near_chain_solo_unchanged(self):
         """Single near-self dispatch — chain pass shouldn't fire,
         codegen unchanged."""

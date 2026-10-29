@@ -50,7 +50,7 @@ from r65.compiler.mir.nodes import (
     CLOBBERS_ALL, BinaryOp, Compare, HardwareRegister, Immediate, Load,
     CompareIndirect, LoadIndirect, MemoryLocation, MIRProgram, Move, OperandRole, Store,
     StoreIndirect, TypeConvert, UnaryOp, VirtualRegister, count_vreg_reads,
-    index_clobbers, iter_memory_operands, iter_operands, map_memory_operands,
+    index_clobbers, index_writes, iter_memory_operands, iter_operands, map_memory_operands,
 )
 
 # Statics addressed absolute (or direct page): the only ones Y can index.
@@ -126,15 +126,8 @@ class _ValueKeys:
 
 
 def writes_x(instr) -> bool:
-    """Whether *instr* changes X."""
-    if type(instr) in CLOBBERS_ALL or 'X' in index_clobbers(instr):
-        return True
-    for d in liveness_defs(instr):
-        if _is_reg(d, 'X'):
-            return True
-        if type(d) is VirtualRegister and d.register_hint == 'X':
-            return True
-    return False
+    """Whether *instr* changes X, a vreg hinted there counting as in X."""
+    return 'X' in index_writes(instr, pin=lambda v: v.register_hint)
 
 
 def x_segments(instrs: List) -> List[_Segment]:

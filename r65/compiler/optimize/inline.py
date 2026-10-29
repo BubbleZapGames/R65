@@ -406,6 +406,11 @@ class InlinabilityChecker:
         if func.preserves_attr is not None:
             return False
 
+        # A #[clobbers(...)] D or DBR is saved and restored by the call; an
+        # inlined body would leave it changed in the caller.
+        if func.clobbers_attr is not None and {'D', 'DBR'} & set(func.clobbers_attr.registers):
+            return False
+
         return True
 
     def _same_bank(self, caller: MIRFunction, callee: MIRFunction) -> bool:

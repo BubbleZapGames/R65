@@ -822,6 +822,8 @@ class Call(CallBase):
 
     # Callee's preserved registers (for caller-save optimization)
     preserves_attr: Optional[Any] = None  # PreservesAttribute from callee
+    clobbers_attr: Optional[Any] = None   # ClobbersAttribute from callee
+    callee_is_extern: bool = False        # `extern fn`: #[clobbers] is its whole contract
 
     # Pascal ABI: result space bytes caller must push (0 for void)
     pascal_result_bytes: int = 0
@@ -853,12 +855,12 @@ class TraitDispatch(CallBase):
     self_chain_role: 'ChainRole' = field(
         default_factory=lambda: ChainRole.SOLO
     )
-    # For far-self chains, set on MIDDLE/END members when every
-    # method's impls and every gap instruction preserve Y at exit. The
-    # codegen then skips the Y reload for those members. Independent of
-    # ``self_chain_role`` — DBR-bracket coalescing and Y elision are two
-    # separate flags driven by independent predicates.
-    self_y_preloaded: bool = False
+    # On a MIDDLE/END member: the id() of the member before it, and the
+    # blocks from that member's to this one's, in path order. Y may still
+    # hold self from that member's dispatch; codegen skips the Y load when
+    # the code emitted in between bears that out (call_select).
+    self_y_after: Optional[int] = None
+    self_y_path: Tuple[int, ...] = ()
 
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)
@@ -1208,21 +1210,62 @@ def fixed_clobbers(instr) -> FrozenSet[str]:
     return frozenset()
 
 
-def index_clobbers(instr) -> FrozenSet[str]:
-    """The index registers *instr*'s codegen overwrites.
+def index_clobbers(instr, pin=None) -> FrozenSet[str]:
+    """The index registers *instr*'s codegen overwrites, beyond the
+    registers it names as written.
 
     Beyond `fixed_clobbers`, an indirect access with no index register loads
     Y with its own offset (`LDY #offset` before `(zp),Y` / `[zp],Y`), so a
     value kept in Y does not survive it - unless that value is the access's
-    own pointer, which is read as `abs,Y` instead (the caller's to judge).
-    `index_register` marks the other shape, `PTR[i]`, where the index the
-    access wants in Y *is* a value the allocator places there.
+    own pointer, which is read as `abs,Y` instead: a `HardwareRegister('Y')`,
+    or a vreg *pin* places there. `index_register` marks the other shape,
+    `PTR[i]`, where the index the access wants in Y *is* a value the
+    allocator places there.
     """
     regs = fixed_clobbers(instr) & _XY
     if (isinstance(instr, (LoadIndirect, StoreIndirect, CompareIndirect))
-            and instr.index_register is None):
+            and instr.index_register is None
+            and register_of(instr.pointer, pin) != 'Y'):
         regs = regs | _Y
     return regs
+
+
+def index_writes(instr, pin=None, ignore: Optional[int] = None) -> FrozenSet[str]:
+    """The index registers running *instr* may change.
+
+    Both for a call or `asm!` (CLOBBERS_ALL; what a call keeps is
+    mir/call_effects' to say, for the passes that trust it), its codegen's
+    own writes (`index_clobbers`), and each register it writes a value into:
+    one it names, or a vreg *pin* places in it (the allocator's placement, a
+    loop-promotion hint). A Move from the register into itself writes
+    nothing, nor does a def of the vreg *ignore* - the value whose register
+    is being asked about.
+    """
+    if isinstance(instr, CLOBBERS_ALL):
+        return _XY
+    regs = set(index_clobbers(instr, pin))
+    if isinstance(instr, Pull):
+        written = [instr.register]
+    else:
+        written = [v for _, v in iter_operands(instr, role=OperandRole.WRITE)]
+    kept = register_of(instr.source, pin) if isinstance(instr, Move) else None
+    for v in written:
+        if isinstance(v, VirtualRegister) and v.id == ignore:
+            continue
+        reg = register_of(v, pin)
+        if reg in _XY and reg != kept:
+            regs.add(reg)
+    return frozenset(regs)
+
+
+def register_of(value, pin=None) -> Optional[str]:
+    """The register *value* is in: a `HardwareRegister`'s own, or where *pin*
+    (vreg -> register name or None) places a vreg."""
+    if isinstance(value, HardwareRegister):
+        return value.name
+    if isinstance(value, VirtualRegister) and pin is not None:
+        return pin(value)
+    return None
 
 
 _A = frozenset('A')
@@ -1280,6 +1323,7 @@ class MIRFunction:
     # Metadata from HIR (preserved for code generation)
     mode_attr: Optional[Any] = None         # ModeAttribute (databank only)
     preserves_attr: Optional[Any] = None    # PreservesAttribute
+    clobbers_attr: Optional[Any] = None     # ClobbersAttribute
     bank_attr: Optional[Any] = None         # BankAttribute
     interrupt_attr: Optional[Any] = None    # InterruptAttribute
     interrupt_modified_regs: Optional[set] = None  # Set of hw reg names modified in handler body

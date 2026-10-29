@@ -112,8 +112,9 @@ extern static mut SOUND_RAM: [u8; 256];
 
 Rules:
 - `extern fn` is body-less and ends in `;`. A body block (`{ }`) is a parse error.
-- Defaults to all-clobbered. Add `#[preserves(X, Y)]` to assert what the asm
-  callee preserves — the compiler trusts the annotation.
+- `#[clobbers(...)]` lists the registers the asm callee leaves changed, and the
+  compiler trusts it. Without the attribute, an extern is assumed to keep X and
+  Y (A and B are always clobbered). `#[preserves]` is an error on an `extern fn`.
 - `extern fn` lowers to `JSL symbol` (far, 24-bit), so the asm routine must end
   in `RTL`; `extern near fn` lowers to `JSR symbol` (current bank) for a
   routine that ends in `RTS`.

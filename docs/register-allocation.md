@@ -553,13 +553,15 @@ record per call:
 | `results` | registers the callee returns in, in order (A, then B or X, then Y) |
 | `arg_regs` | registers arguments are passed in (Y for a `self` pointer) |
 | `has_stack_args` | whether any argument is pushed |
-| `declared` | the callee's `#[preserves(...)]` |
-| `inferred` | index registers the callee's code, and its callees', never writes (`codegen/clobber_summary.py`) |
+| `declared` | the callee's `#[preserves(...)]`; for an `extern fn`, the index registers its `#[clobbers(...)]` does not list |
+| `inferred` | index registers the callee's code, and its callees', never writes (`codegen/clobber_summary.py`), with any `#[clobbers(...)]` added |
+| `caller_saves` | the D/DBR the callee's `#[clobbers(...)]` lists, which the call saves around itself |
 
 `inferred` is empty for a call with stack arguments (parking A across their
 setup and pulling them off afterwards both use X or Y), for a register an
 argument goes to, and for anything but a direct call to a generated
-function: a trait dispatch, a function pointer, a builtin or an `extern fn`.
+function: a trait dispatch, a function pointer, a builtin or an `extern fn`
+(an extern's contract is in `declared` instead).
 
 Each consumer reads the view it can afford to trust:
 
@@ -573,6 +575,15 @@ Each consumer reads the view it can afford to trust:
   promotion, X reuse in the builder) treat every call as clobbering
   everything (`CLOBBERS_ALL` in `mir/nodes.py`), even a declared
   `#[preserves]`.
+
+What any other MIR node does to X and Y is `index_writes` in
+`mir/nodes.py` (its implicit part, `index_clobbers`), the one rule the
+alias check, slot allocation, the builder's X reuse, index streams,
+constant-index folding and loop promotion share. What emitted code
+writes is `clobber_summary.code_writes`, the one scanner behind the call
+summaries, interrupt-handler saves, a trait chain's Y reloads and the
+argument-setup trial; it takes each instruction's writes from
+`opcodes.registers_written`, which the emitter's own tracking reads too.
 
 The register a result is *collected* into is not part of the record. A return
 value the allocator placed in X arrives there by `TAX` after the call, which

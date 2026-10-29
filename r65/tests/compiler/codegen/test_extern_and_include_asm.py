@@ -158,33 +158,29 @@ def test_extern_static_mut_write(tmp_with_asm):
     assert "SCRATCH" in main_body
 
 
-def test_extern_fn_default_clobbers_all_no_preserves(tmp_with_asm):
-    """Without #[preserves], the compiler must not assume callee saves X/Y.
-
-    Easiest observable signature: the caller has to (re)load anything live
-    across the extern call. We check this by ensuring no #[preserves(...)]
-    metadata leaks into the call lowering (the call site has no preserves_attr
-    bookkeeping — only spills based on the default all-clobbered assumption).
-    """
+def test_extern_fn_keeps_index_registers_unless_it_clobbers_them(tmp_with_asm):
+    """An extern's #[clobbers(...)] is its whole contract: X live across a
+    call to a bare extern is not saved, and is once the extern lists it."""
     d, src_path = tmp_with_asm
-    src = (
-        '#[snesrom(name="T", lorom)]\n'
-        '#[stack(0x0100, 0x01FF)]\n'
-        'extern near fn add_helper(a @ A: u8) -> u8;\n'
-        'include_asm!("helpers.s");\n'
-        'fn main() {\n'
-        '    X = 0x42;\n'
-        '    A = add_helper(0);\n'
-        '    // X used after — if extern preserved X by default,\n'
-        '    // codegen could elide the reload; with all-clobbered,\n'
-        '    // we expect a fresh use of X with no proof of preservation.\n'
-        '    Y = X;\n'
-        '}\n'
-    )
-    asm = _compile(src, src_path)
-    # Smoke-level check: the call is emitted; X handling is the compiler's
-    # to prove correct. The presence of the call is enough at this layer.
-    assert "JSR add_helper" in asm
+
+    def main_body(attr):
+        asm = _compile(
+            '#[snesrom(name="T", lorom)]\n'
+            '#[stack(0x0100, 0x01FF)]\n'
+            f'{attr}extern near fn add_helper(a @ A: u8) -> u8;\n'
+            'include_asm!("helpers.s");\n'
+            'fn main() {\n'
+            '    X = 0x42;\n'
+            '    A = add_helper(0);\n'
+            '    Y = X;\n'
+            '}\n',
+            src_path,
+        )
+        return asm[asm.index("\nmain:"):]
+
+    assert "JSR add_helper" in main_body('')
+    assert "PHX" not in main_body('')
+    assert "PHX" in main_body('#[clobbers(X)]\n')
 
 
 def test_extern_far_static_call_in_explicit_bank(tmp_with_asm):

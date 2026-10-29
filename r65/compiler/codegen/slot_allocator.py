@@ -21,7 +21,7 @@ from r65.compiler.mir.nodes import (
     CallBase,
     VirtualRegister, MIRFunction, Move, Return, HardwareRegister, Call,
     Store, Load, BinaryOp, UnaryOp, TypeConvert, Compare, CompareIndirect, BitTest, Rotate,
-    ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm, fixed_clobbers,
+    ToBool, LoadIndirect, StoreIndirect, StatusFlagRead, InlineAsm, fixed_clobbers, index_writes,
     TraitDispatch, BankByte, Immediate, CondBranch, map_operands,
 )
 from r65.compiler.mir.liveness import LivenessAnalyzer
@@ -1492,59 +1492,20 @@ class StackSlotAllocator:
         return False
 
     def _clobbers_xy(self, instr: Any, hw_reg: str, vreg_id: int) -> bool:
+        """Whether *instr* changes X or Y (*hw_reg*) while *vreg_id* is in it.
+
+        `index_writes`, with *vreg_id* placed there and every vreg pinned
+        to a register (a loop-promoted counter in `pre_allocated_hw`) in its
+        own: a Move of the vreg into its own register writes nothing, and a
+        pointer access through it reads `abs,Y`. Calls, `asm!` and block
+        moves were judged by the caller.
         """
-        Check if an instruction clobbers X or Y register.
+        pinned = self.pre_allocated_hw
 
-        X/Y are only modified by:
-        - Move to X/Y (LDX, LDY, TAX, TAY, TXY, TYX)
-        - BinaryOp with dest=HardwareRegister X/Y (INX, DEX, INY, DEY)
-        - LoadIndirect/StoreIndirect (`LDY #offset` unless Y is already the
-          index at offset 0)
-        - Calls that don't preserve X/Y (handled in caller)
-        - A def of another vreg pinned to that register (a loop-promoted
-          counter in `pre_allocated_hw`): its value is written there
-        """
-        for d in self.liveness_analyzer._get_defs(instr):
-            if (type(d) is VirtualRegister and d.id != vreg_id
-                    and self.pre_allocated_hw.get(d.id) == hw_reg):
-                return True
+        def pin(v):
+            return hw_reg if v.id == vreg_id else pinned.get(v.id)
 
-        instr_type = type(instr)
-
-        if instr_type is Move:
-            if type(instr.dest) is HardwareRegister and instr.dest.name == hw_reg:
-                # Move to our register — unless source is our vreg (no-op)
-                if type(instr.source) is VirtualRegister and instr.source.id == vreg_id:
-                    return False  # Value already in register
-                return True
-            return False
-
-        if instr_type is BinaryOp:
-            # INX/DEX/INY/DEY patterns: BinaryOp dest=HardwareRegister
-            if type(instr.dest) is HardwareRegister and instr.dest.name == hw_reg:
-                return True
-            return False
-
-        # LoadIndirect / StoreIndirect: codegen sets Y to the field offset
-        # via `LDY #offset` (memory_select.py) whenever index_register is not
-        # already 'Y' AND we need an indexed access. When index_register == 'Y'
-        # and offset == 0, the Y already holds the right value (loaded by a
-        # prior Move) and no LDY is emitted — Y survives.
-        # X is not used for [dp],X or (dp),X addressing on the 65816, so X is
-        # never clobbered by these.
-        if instr_type is LoadIndirect or instr_type is StoreIndirect:
-            if hw_reg == 'Y':
-                idx_reg = getattr(instr, 'index_register', None)
-                offset = getattr(instr, 'offset', 0)
-                # Codegen emits LDY when either Y isn't already the index
-                # or there's a non-zero field offset to load into Y.
-                if idx_reg != 'Y' or offset != 0:
-                    return True
-            return False
-
-        # Other instructions don't modify X/Y
-        # (they may use X/Y for indexing but don't modify them)
-        return False
+        return hw_reg in index_writes(instr, pin, ignore=vreg_id)
 
     def _collect_virtual_registers(self, exclude: Set[VirtualRegister] = None) -> List[VirtualRegister]:
         """Collect all virtual registers, optionally excluding some."""

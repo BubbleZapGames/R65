@@ -543,6 +543,8 @@ class CallLowerer:
             callee_exit_m_mode=func_decl.exit_m_mode,
             callee_return_type=func_decl.return_type,
             preserves_attr=func_decl.preserves_attr,
+            clobbers_attr=func_decl.clobbers_attr,
+            callee_is_extern=func_decl.is_extern,
             pascal_result_bytes=pascal_result_bytes,
         ))
 

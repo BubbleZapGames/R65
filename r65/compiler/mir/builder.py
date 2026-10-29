@@ -24,7 +24,7 @@ from r65.compiler.mir.nodes import (
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
     Load, Store, Move, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
     MemoryFill, BlockCopy, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX, ROMDataRef,
-    InlineAsm, TERMINATOR_TYPES,
+    InlineAsm, TERMINATOR_TYPES, index_writes,
 )
 
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -279,6 +279,7 @@ class MIRBuilder:
             exit_block_ids=[],
             mode_attr=hir_func.mode_attr,
             preserves_attr=hir_func.preserves_attr,
+            clobbers_attr=hir_func.clobbers_attr,
             bank_attr=hir_func.bank_attr,
             interrupt_attr=hir_func.interrupt_attr,
             inline_attr=hir_func.inline_attr,
@@ -2493,31 +2494,13 @@ class MIRBuilder:
         if instruction.source_loc is None and self._current_source_loc is not None:
             instruction.source_loc = self._current_source_loc
 
-        if self._x_index_cache is not None and self._instr_clobbers_x(instruction):
+        # Indexed Load/Store (index_register='X') only read X, which is what
+        # the reuse cache relies on; anything that may change X ends it.
+        if self._x_index_cache is not None and 'X' in index_writes(instruction):
             self._x_index_cache = None
 
         if self.current_block is not None:
             self.current_block.instructions.append(instruction)
-
-    # Which nodes write X is `fixed_clobbers` / CLOBBERS_ALL in mir/nodes.py,
-    # shared with the alias check and loop promotion. Missing one there means
-    # a stale X is reused and an indexed access lands at the wrong address.
-    @staticmethod
-    def _instr_clobbers_x(instr) -> bool:
-        """True if `instr` may change the X register.
-
-        Indexed Load/Store (index_register='X') only READ X, so they do not
-        count — that is exactly what the reuse cache relies on.
-        """
-        from r65.compiler.mir.nodes import (
-            CLOBBERS_ALL, fixed_clobbers, HardwareRegister,
-        )
-        if isinstance(instr, CLOBBERS_ALL) or 'X' in fixed_clobbers(instr):
-            return True
-        dest = getattr(instr, 'dest', None)
-        if isinstance(dest, HardwareRegister) and dest.name == 'X':
-            return True
-        return False
 
     def x_index_reuse_key(self, reuse_base_key, index_hir):
         """Reuse key for `array[index]` if it is safe to keep X live across

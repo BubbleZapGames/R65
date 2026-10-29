@@ -21,7 +21,7 @@ from r65.compiler.errors import InternalCompilerError
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, addressing_mode, BRANCH_OPCODES, MEMORY_WRITE_OPCODES,
     ACCUMULATOR_OPCODES, NZ_PRESERVING_MNEMONICS, nz_register, registers_written,
-    rep_sep_preserves_nz, REGISTER_WRITES,
+    rep_sep_preserves_nz,
 )
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Comment, Directive, ModeChange, BlankLine,
@@ -295,41 +295,6 @@ def _format_long_value(value: int | str) -> str:
     return f"${value:06X}"
 
 
-# =============================================================================
-# Emitted-code effects
-# =============================================================================
-
-# Control leaves the emitted code: whatever runs there may write anything.
-_LEAVES = frozenset({'JSR', 'JSL', 'BRK', 'COP', 'WDM'})
-
-
-def written_registers(nodes) -> 'set | None':
-    """The registers among A, X, Y, D, DBR the emitted nodes write.
-
-    None means all of them (the code calls out). Raw text is read by its
-    first word, so directives and labels write nothing.
-    """
-    written = set()
-    for node in nodes:
-        if isinstance(node, Instruction):
-            mn = mnemonic(node.opcode)
-            accumulator = addressing_mode(node.opcode) is None
-        elif isinstance(node, RawAsm):
-            parts = node.text.split(';', 1)[0].split(None, 1)
-            if not parts:
-                continue
-            mn = parts[0].upper()
-            accumulator = len(parts) == 1 or parts[1].strip().upper() == 'A'
-        else:
-            continue
-        if mn in _LEAVES:
-            return None
-        written |= REGISTER_WRITES.get(mn, frozenset())
-        if accumulator and Opcode.__members__.get(mn) in ACCUMULATOR_OPCODES:
-            written.add('A')
-    return written
-
-
 def _snapshot(obj) -> dict:
     """*obj*'s attributes, with its mutable containers copied."""
     names = (vars(obj) if hasattr(obj, '__dict__')
@@ -502,9 +467,10 @@ class AssemblyEmitter:
         self._update_xy_copy_tracking(opcode, operand)
         self._update_slot_tracking(opcode, operand)
 
-    def emit_raw(self, text: str, source_loc: 'SourceLocation | None' = None):
-        """Emit raw assembly text."""
-        self.nodes.append(RawAsm(text, source_loc))
+    def emit_raw(self, text: str, source_loc: 'SourceLocation | None' = None,
+                 user_asm: bool = False):
+        """Emit raw assembly text (*user_asm*: a line of `asm!`)."""
+        self.nodes.append(RawAsm(text, source_loc, user_asm=user_asm))
         self.nz_valid_for = None  # Unknown effect on flags
         self.x_equals_y = False   # ...and on registers
         self.forget_slots()
@@ -819,27 +785,22 @@ class AssemblyEmitter:
     # ========================================================================
 
     # Beyond what `registers_written` lists: control leaving for code that
-    # may write anything, and the width changes that truncate X and Y.
-    _MAY_WRITE_XY = frozenset({'JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP',
-                               'XCE', 'PLP'})
+    # may write anything.
+    _MAY_WRITE_XY = frozenset({'JSR', 'JSL', 'RTS', 'RTL', 'RTI', 'BRK', 'COP'})
 
     def _update_xy_copy_tracking(self, opcode: Opcode, operand):
         """Track whether X and Y hold the same value after *opcode*.
 
-        TYX/TXY make them equal; any write to either register ends it, as
-        does `SEP` with the X bit (x8 truncates both). Used to skip a TYX/TXY
-        that would copy a value X already has.
+        TYX/TXY make them equal; any write to either register ends it (a
+        width change to x8 included). Used to skip a TYX/TXY that would copy
+        a value X already has.
         """
         if opcode in (Opcode.TYX, Opcode.TXY):
             self.x_equals_y = True
             return
-        mn = mnemonic(opcode)
-        if registers_written(opcode) & {'X', 'Y'} or mn in self._MAY_WRITE_XY:
+        if (registers_written(opcode, operand) & {'X', 'Y'}
+                or mnemonic(opcode) in self._MAY_WRITE_XY):
             self.x_equals_y = False
-        elif mn == 'SEP':
-            value = getattr(operand, 'value', None)
-            if not isinstance(value, int) or value & 0x10:
-                self.x_equals_y = False
 
     # ------------------------------------------------------------------
     # Stack-slot contents of A and X
@@ -935,13 +896,9 @@ class AssemblyEmitter:
             self.x_slot = self.a_slot if self._current_index_mode == 16 else None
         elif 'A' in registers_written(opcode):
             self.a_slot = None
-        elif mn == 'SEP':
-            value = getattr(operand, 'value', None)
-            if not isinstance(value, int) or value & 0x10:
-                self.x_slot = None   # x8 truncates X
 
-        # X written by anything but TAX.
-        if (('X' in registers_written(opcode) and opcode != Opcode.TAX)
+        # X written by anything but TAX (x8 truncating it included).
+        if (('X' in registers_written(opcode, operand) and opcode != Opcode.TAX)
                 or mn in self._MAY_WRITE_XY):
             self.x_slot = None
 

@@ -5,7 +5,7 @@ Function code generation: MIR functions → assembly.
 Generates complete function bodies with headers, labels, and instructions.
 """
 
-from typing import List, Set
+from typing import Dict, FrozenSet, List, Set
 from r65.compiler.mir.nodes import (
     CallBase,
     MIRFunction, Return, VirtualRegister,
@@ -14,7 +14,8 @@ from r65.compiler.mir.nodes import (
     MemoryFill, BlockCopy, InlineAsm, iter_operands, ModifyMemory,
     CompareIndirect,
 )
-from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node, written_registers
+from r65.compiler.codegen.clobber_summary import WRITABLE, code_writes
+from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
@@ -60,6 +61,11 @@ class FunctionCodeGenerator:
         """
         self.emitter = emitter
         self.mem_alloc = memory_allocator
+        # What each generated function's code writes (clobber_summary), and
+        # every function label; filled in as functions are generated.
+        self.register_summaries: Dict[str, FrozenSet[str]] = {}
+        self.function_labels: FrozenSet[str] = frozenset()
+        self.call_graph = None   # analysis/call_graph, trait implementors included
 
     # ========================================================================
     # Emission Helpers
@@ -749,17 +755,14 @@ class FunctionCodeGenerator:
         # would corrupt saved registers if done before the pushes.
         # Order: register saves -> scratch saves -> frame allocation -> mode setup -> body
         if mir_func.interrupt_attr:
-            modified_regs = self._analyze_interrupt_modified_regs(mir_func)
+            self._mark_dead_volatile_loads(mir_func)
             # Track if we have scratches — D must be saved/restored if so
             # (scratch save resets D=0, which clobbers interrupted code's D)
             self._interrupt_has_scratches = bool(
                 reg_alloc.scratch_pool and reg_alloc.scratch_pool.scratches)
-            # The pool is put back with PLA/STA (and an unpaired byte saved with
-            # LDA/PHA), so A changes even when the body never touches it — a
-            # body of nothing but `INC counter` would hand the interrupted
-            # code a scrambled A.
-            if self._interrupt_has_scratches and modified_regs is not None:
-                modified_regs = set(modified_regs) | {'A'}
+            # Everything, until the emitted body says what it writes
+            # (_reconcile_interrupt_saves).
+            modified_regs = set(WRITABLE)
             mir_func.interrupt_modified_regs = modified_regs
             mir_func.interrupt_restore_runs = []
             start = len(self.emitter.nodes)
@@ -1056,27 +1059,18 @@ class FunctionCodeGenerator:
             self._emit_instr(Opcode.LDX_IMMEDIATE, Immediate(stack_top), "Stack top")
             self._emit_instr(Opcode.TXS, comment="Set stack pointer")
 
-    def _analyze_interrupt_modified_regs(self, mir_func: MIRFunction) -> set:
-        """
-        Analyze which hardware registers are modified by an interrupt handler body.
+    def _mark_dead_volatile_loads(self, mir_func: MIRFunction):
+        """Mark the interrupt handler's volatile reads whose value is never
+        used (`mir_func.dead_volatile_loads`), so they are emitted as `BIT`,
+        which reads the register without writing A.
 
-        Scans all MIR instructions to determine which of A, X, Y, D, DBR are
-        written. Returns a set of register names that need saving.
-
-        A is included in the analysis so that handlers which don't modify A
-        can skip the REP/PHA/PLA save/restore sequence. PHP/PLP is always
-        skipped because RTI restores P from the CPU-pushed stack frame.
-
-        Calls, TraitDispatch, and asm! blocks conservatively clobber everything.
+        The scan stops at the first call, `asm!` or block move or fill.
         """
         from r65.compiler.mir.nodes import (
-            Move, Load, Store, StoreIndirect,
+            Load, Store, StoreIndirect,
             HardwareRegister, VirtualRegister,
             InlineAsm, MemoryFill, BlockCopy,
         )
-
-        modified = set()  # subset of {'A', 'X', 'Y', 'D', 'DBR'}
-        ALL_REGS = {'A', 'X', 'Y', 'D', 'DBR'}
 
         # Collect all vreg IDs that are actually USED (appear as source/operand)
         used_vregs = set()
@@ -1099,67 +1093,27 @@ class FunctionCodeGenerator:
                 if isinstance(instr, StoreIndirect) and isinstance(instr.source, VirtualRegister):
                     used_vregs.add(instr.source.id)
 
+        def mark(instr):
+            if not hasattr(mir_func, 'dead_volatile_loads'):
+                mir_func.dead_volatile_loads = set()
+            mir_func.dead_volatile_loads.add(id(instr))
+
         for block in mir_func.blocks.values():
             for instr in block.instructions:
-                if modified == ALL_REGS:
-                    return modified
-
-                # Calls/TraitDispatch/InlineAsm clobber everything
-                if isinstance(instr, CallBase):
-                    return ALL_REGS
-                if isinstance(instr, InlineAsm):
-                    return ALL_REGS
-
-                # MemoryFill/BlockCopy expand to MVN/MVP code over A, X, Y
-                if isinstance(instr, (MemoryFill, BlockCopy)):
-                    return ALL_REGS
-
-                # Check explicit hardware register definitions
-                dest = getattr(instr, 'dest', None)
-                if isinstance(dest, HardwareRegister) and dest.name in ALL_REGS:
-                    # Check if this is a dead volatile read to A (side-effect only).
-                    # Load A = [volatile_hw_addr] where A is never read after → use BIT.
-                    if (dest.name == 'A' and isinstance(instr, Load) and
-                            instr.source.is_volatile):
-                        # Check if A is used after this instruction in the block
-                        a_is_used = False
-                        block_instrs = block.instructions
-                        instr_idx = block_instrs.index(instr)
-                        for later in block_instrs[instr_idx + 1:]:
-                            # Check if later instruction reads A
-                            src = getattr(later, 'source', None)
-                            if isinstance(src, HardwareRegister) and src.name == 'A':
-                                a_is_used = True
-                                break
-                            left = getattr(later, 'left', None)
-                            if isinstance(left, HardwareRegister) and left.name == 'A':
-                                a_is_used = True
-                                break
-                        if not a_is_used:
-                            # Mark for BIT substitution
-                            if not hasattr(mir_func, 'dead_volatile_loads'):
-                                mir_func.dead_volatile_loads = set()
-                            mir_func.dead_volatile_loads.add(id(instr))
-                            continue  # Don't count as modifying A
-                    modified.add(dest.name)
-
-                # VirtualRegister dests: check if the vreg is actually used.
-                # Dead volatile loads (side-effect reads) define a vreg that's
-                # never consumed — these can use BIT instead of LDA, avoiding
-                # A modification.
-                if isinstance(dest, VirtualRegister):
-                    if dest.id not in used_vregs:
-                        if isinstance(instr, Load) and instr.source.is_volatile:
-                            if not hasattr(mir_func, 'dead_volatile_loads'):
-                                mir_func.dead_volatile_loads = set()
-                            mir_func.dead_volatile_loads.add(id(instr))
-                            continue  # Don't count as modifying A
-                    if dest.register_hint in ('X', 'Y'):
-                        modified.add(dest.register_hint)
-                    else:
-                        modified.add('A')
-
-        return modified
+                if isinstance(instr, (CallBase, InlineAsm, MemoryFill, BlockCopy)):
+                    return
+                if not (isinstance(instr, Load) and instr.source.is_volatile):
+                    continue
+                dest = instr.dest
+                if isinstance(dest, HardwareRegister) and dest.name == 'A':
+                    # A dead read into A: nothing later in the block reads A.
+                    later = block.instructions[block.instructions.index(instr) + 1:]
+                    if not any(isinstance(getattr(l, f, None), HardwareRegister)
+                               and getattr(l, f).name == 'A'
+                               for l in later for f in ('source', 'left')):
+                        mark(instr)
+                elif isinstance(dest, VirtualRegister) and dest.id not in used_vregs:
+                    mark(instr)
 
     def _emit_interrupt_register_saves(self, modified_regs: set = None):
         """
@@ -1229,14 +1183,16 @@ class FunctionCodeGenerator:
         self.emitter.emit_accu_mode(8)
 
     def _reconcile_interrupt_saves(self, mir_func: MIRFunction, instr_selector):
-        """Save every register the emitted handler actually writes.
+        """Save exactly the registers the emitted handler writes.
 
-        The saved set comes from a MIR scan made before the body is emitted,
-        and some MIR nodes reach a register only through their lowering — a
-        `Store` of a constant loads it into A, so `V = 2` wrote A unsaved.
-        Here the emitted body is the authority: any register it writes
-        outside the saved set is added, and the prologue's save run and each
-        RTI's restore run are rebuilt for the larger set.
+        The prologue's save run and each RTI's restore run are emitted for
+        every register, before the body exists. Here the emitted body is the
+        authority (clobber_summary.code_writes, a call taking its callee's
+        summary), and the runs are rebuilt for what it writes. The scratch
+        pool is put back with PLA/STA (and an unpaired byte saved with
+        LDA/PHA), so A changes even when the body never touches it - a body
+        of nothing but `INC counter` would hand the interrupted code a
+        scrambled A.
         """
         saved = mir_func.interrupt_modified_regs
         if saved is None or not mir_func.interrupt_save_run:
@@ -1247,12 +1203,11 @@ class FunctionCodeGenerator:
         # The restore runs only pull what was saved; leave them out.
         in_restores = {id(n) for run in mir_func.interrupt_restore_runs for n in run}
         body = [n for n in nodes[start + len(save_run):] if id(n) not in in_restores]
-        written = written_registers(body)
-        if written is None:
-            written = {'A', 'X', 'Y', 'D', 'DBR'}
-        if written <= saved:
+        new_saved = set(code_writes(body, self.register_summaries, self.function_labels))
+        if self._interrupt_has_scratches:
+            new_saved.add('A')
+        if new_saved == saved:
             return
-        new_saved = saved | written
         mir_func.interrupt_modified_regs = new_saved
 
         accu_mode = self.emitter.get_accu_mode()

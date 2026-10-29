@@ -164,6 +164,7 @@ class HIRFunctionDecl(HIRDeclaration):
     # Processed attributes
     mode_attr: Optional[Any] = None  # Will be ModeAttribute (databank only)
     preserves_attr: Optional[Any] = None  # Will be PreservesAttribute
+    clobbers_attr: Optional[Any] = None  # Will be ClobbersAttribute
     bank_attr: Optional[Any] = None  # Will be BankAttribute
     interrupt_attr: Optional[Any] = None  # Will be InterruptAttribute
     inline_attr: Optional[Any] = None  # Will be InlineAttribute

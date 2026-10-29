@@ -11,7 +11,11 @@ they may assume:
   (clobber_summary). The summaries exist only during codegen, which generates
   callees first.
 - `declared` is `#[preserves(...)]` alone, for analyses that run before the
-  callee's code exists.
+  callee's code exists - and, for an `extern fn`, the index registers its
+  `#[clobbers(...)]` does not list (none listed: both kept). An extern's code
+  is never seen, so its declaration is the whole contract.
+- `caller_saves` is the D and DBR a callee's `#[clobbers(...)]` lists: they
+  are callee-saved by convention, so listing one makes the call save it.
 - The MIR passes (alias check, index streams, loop promotion, X reuse) assume
   a call clobbers everything (`CLOBBERS_ALL`).
 
@@ -26,6 +30,7 @@ from typing import FrozenSet, Mapping, Optional, Tuple
 from r65.compiler.mir.nodes import ArgumentMechanism, Call, CallBase
 
 INDEX_REGS: FrozenSet[str] = frozenset({'X', 'Y'})
+CALLER_SAVED_BY_CLOBBERS: FrozenSet[str] = frozenset({'D', 'DBR'})
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,7 @@ class CallEffects:
     has_stack_args: bool
     declared: FrozenSet[str]      # #[preserves(...)]
     inferred: FrozenSet[str]      # index registers the callee's code never writes
+    caller_saves: FrozenSet[str]  # D/DBR the callee's #[clobbers(...)] lists
     entry_mode: Optional[object]  # ModeState the callee expects, if known
     exit_mode: Optional[object]
 
@@ -88,6 +94,10 @@ def call_effects(instr: CallBase,
 
     attr = getattr(instr, 'preserves_attr', None)
     declared = frozenset(attr.registers) if attr else frozenset()
+    clobbers_attr = getattr(instr, 'clobbers_attr', None)
+    clobbers = frozenset(clobbers_attr.registers) if clobbers_attr else frozenset()
+    if getattr(instr, 'callee_is_extern', False):
+        declared |= INDEX_REGS - clobbers - arg_regs
 
     inferred = frozenset()
     if (summaries and type(instr) is Call and isinstance(instr.function, str)
@@ -102,6 +112,7 @@ def call_effects(instr: CallBase,
         has_stack_args=has_stack_args,
         declared=declared,
         inferred=inferred,
+        caller_saves=clobbers & CALLER_SAVED_BY_CLOBBERS,
         entry_mode=getattr(instr, 'callee_entry_m_mode', None),
         exit_mode=getattr(instr, 'callee_exit_m_mode', None),
     )

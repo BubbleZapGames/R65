@@ -19,7 +19,7 @@ When adding to this file:
 
 The chain-coalescing pass landed in stages: v1 (far-self DBR bracket elision, straight-line paths), v1.5 (cross-method on same trait), v1.6 (cross-trait via cast-transparency), v2 (CFG diamonds, near-self chaining, Y-reload elision).
 
-The pass lives in `r65/compiler/analysis/far_ptr_strategy.py` (entry: `analyze_trait_dispatch_chains`). Codegen consults `TraitDispatch.self_chain_role` and `TraitDispatch.self_y_preloaded` in `r65/compiler/codegen/call_select.py::emit_trait_dispatch`. Soundness predicates are `_function_is_dbr_independent` and `_function_preserves_y`, both memoized on `MIRFunction` and recursive via the trait-resolved call graph.
+The pass lives in `r65/compiler/analysis/trait_chain_coalesce.py` (entry: `analyze_trait_dispatch_chains`). Codegen consults `TraitDispatch.self_chain_role` for the DBR bracket and decides each Y reload from the code it emitted (`call_select._self_still_in_y`). The DBR soundness predicate is `_function_is_dbr_independent`, memoized on `MIRFunction` and recursive via the trait-resolved call graph.
 
 ### Loop-aware chaining (back-edges)
 
@@ -44,16 +44,6 @@ Each arm in a diamond bridger is required to be a single straight-line block. An
 **Why deferred**: composing the diamond bridger recursively is mostly a code-organization problem. The motivating workloads don't have deeply nested control flow on hot dispatch paths.
 
 **Approach if revisited**: extract the "is this region single-entry, single-exit, and chain-preserving?" check into a helper that recurses on inner diamonds. The outer `_try_bridge_diamond` then uses this helper instead of the current single-block-arm check.
-
-### Post-allocation Y-preservation analysis
-
-`_function_preserves_y` runs *before* register allocation, so it relies on `register_hint='Y'`, `self_y_vreg`, and explicit HW Y operands to detect Y writes. A vreg without `register_hint='Y'` that the allocator happens to put in Y would not be flagged — meaning the predicate could mark a function Y-preserving when the allocator's eventual placement makes that false.
-
-In practice this is rare (`register_hint='Y'` is the only mechanism the loop register promoter uses to request Y, and trait method impls pre-allocate `self_y_vreg` to HW Y), but the gap is real.
-
-**Why deferred**: tighter analysis would require running the chain pass *after* register allocation, which is structurally inverted from how it's wired today.
-
-**Approach if revisited**: either (a) run a second chain-coalescing pass post-alloc that revokes optimistic Y-preserved decisions when the allocator made them unsafe, or (b) move the entire chain pass after allocation. (a) is less invasive; (b) is cleaner but a larger refactor.
 
 ### Tail-call conversion of trait dispatches
 

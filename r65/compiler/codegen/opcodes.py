@@ -641,10 +641,27 @@ REGISTER_WRITES: dict[str, frozenset] = {
 }
 
 
-def registers_written(op: Opcode) -> frozenset:
-    """The registers among A, X, Y, D and DBR that *op* writes."""
-    regs = REGISTER_WRITES.get(mnemonic(op), frozenset())
-    return regs | {'A'} if op in ACCUMULATOR_OPCODES else regs
+_XY = frozenset({'X', 'Y'})
+
+
+def registers_written(op: Opcode, operand=None) -> frozenset:
+    """The registers among A, X, Y, D and DBR that *op* writes.
+
+    X and Y include the width changes that truncate them: a SEP whose mask
+    sets the X bit (or may - an *operand* that is not a known immediate),
+    and XCE. A PLP pulls the P its PHP pushed, at the same index width.
+    """
+    mn = mnemonic(op)
+    regs = REGISTER_WRITES.get(mn, frozenset())
+    if op in ACCUMULATOR_OPCODES:
+        regs = regs | {'A'}
+    if mn == 'XCE':
+        regs = regs | _XY
+    elif mn == 'SEP':
+        mask = getattr(operand, 'value', None)
+        if not isinstance(mask, int) or mask & 0x10:   # X_FLAG
+            regs = regs | _XY
+    return regs
 
 
 MODIFIES_A_OPCODES = frozenset(op for op in Opcode if 'A' in registers_written(op))

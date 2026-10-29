@@ -3,7 +3,7 @@
 The 65816 registers a program names, and what each one is.
 
 The one table the frontend (macro fragments), HIR (the register symbols,
-bindings, `#[preserves]`) and typeck read, so a register's rules are written
+bindings, `#[preserves]`, `#[clobbers]`) and typeck read, so a register's rules are written
 once.
 """
 
@@ -17,19 +17,21 @@ class Register:
     writable: bool = True
     bindable: bool = True     # a parameter or let may be bound to it (`x @ A`)
     preservable: bool = False  # `#[preserves]` may save and restore it
+    clobberable: bool = False  # `#[clobbers]` may name it
 
 
 REGISTERS = {r.name: r for r in (
-    Register('A', ('u8', 'i8', 'u16', 'i16'), preservable=True),
-    Register('B', ('u8', 'i8')),            # A's high byte, m8 only
-    Register('X', ('u16', 'i16'), preservable=True),
-    Register('Y', ('u16', 'i16'), preservable=True),
+    Register('A', ('u8', 'i8', 'u16', 'i16'), preservable=True, clobberable=True),
+    Register('B', ('u8', 'i8'), clobberable=True),  # A's high byte, m8 only
+    Register('X', ('u16', 'i16'), preservable=True, clobberable=True),
+    Register('Y', ('u16', 'i16'), preservable=True, clobberable=True),
     Register('STATUS', ('u8',), bindable=False, preservable=True),
-    Register('D', ('u16',), preservable=True),
-    Register('DBR', ('u8',), preservable=True),
+    Register('D', ('u16',), preservable=True, clobberable=True),
+    Register('DBR', ('u8',), preservable=True, clobberable=True),
     Register('PBR', ('u8',), writable=False),
     Register('S', ('u16',)),                 # the saves live on the stack
 )}
 
 REGISTER_NAMES = frozenset(REGISTERS)
 PRESERVABLE_REGISTERS = tuple(r.name for r in REGISTERS.values() if r.preservable)
+CLOBBERABLE_REGISTERS = tuple(r.name for r in REGISTERS.values() if r.clobberable)

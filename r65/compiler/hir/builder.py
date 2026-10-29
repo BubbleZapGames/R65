@@ -825,10 +825,14 @@ class HIRBuilder:
         )
         attrs = self._extract_attributes(processed_attrs)
         mode_attr = attrs['mode']
-        preserves_attr = attrs['preserves']
         interrupt_attr = attrs['interrupt']
         is_entry = attrs['is_entry']
 
+        if attrs['preserves'] is not None:
+            raise HIRError(
+                f"extern fn '{func.name}' cannot be declared `#[preserves(...)]`",
+                source_loc=func.source_loc,
+            )
         if interrupt_attr is not None:
             raise HIRError(
                 f"extern fn '{func.name}' cannot be declared `#[interrupt(...)]`",
@@ -867,7 +871,7 @@ class HIRBuilder:
             return_type=ret_type,
             body=None,
             mode_attr=mode_attr,
-            preserves_attr=preserves_attr,
+            clobbers_attr=attrs['clobbers'],
             bank_attr=bank_attr,
             interrupt_attr=None,
             inline_attr=None,
@@ -948,6 +952,7 @@ class HIRBuilder:
             body=hir_body,
             mode_attr=mode_attr,
             preserves_attr=preserves_attr,
+            clobbers_attr=attrs['clobbers'],
             bank_attr=bank_attr,
             interrupt_attr=interrupt_attr,
             inline_attr=inline_attr,
@@ -3481,6 +3486,7 @@ class HIRBuilder:
             body=hir_body,
             mode_attr=mode_attr,
             preserves_attr=preserves_attr,
+            clobbers_attr=attrs['clobbers'],
             bank_attr=bank_attr,
             interrupt_attr=interrupt_attr,
             inline_attr=inline_attr,
@@ -4134,11 +4140,12 @@ class HIRBuilder:
             processed_attrs: List of processed attributes
 
         Returns:
-            Dictionary with keys: mode, preserves, interrupt, inline, is_entry, is_used, allow
+            Dictionary with keys: mode, preserves, clobbers, interrupt, inline, is_entry, is_used, allow
         """
         result = {
             'mode': None,
             'preserves': None,
+            'clobbers': None,
             'interrupt': None,
             'inline': None,
             'is_entry': False,
@@ -4151,6 +4158,8 @@ class HIRBuilder:
                 result['mode'] = attr
             elif isinstance(attr, PreservesAttribute):
                 result['preserves'] = attr
+            elif isinstance(attr, ClobbersAttribute):
+                result['clobbers'] = attr
             elif isinstance(attr, InterruptAttribute):
                 result['interrupt'] = attr
             elif isinstance(attr, InlineAttribute):

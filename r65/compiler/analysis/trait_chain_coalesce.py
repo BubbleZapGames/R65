@@ -12,15 +12,18 @@ The pass detects two kinds of chains:
   - far-self chains: coalesce the DBR bracket. Soundness predicate is
     DBR-independence — every gap instruction and every method impl in
     the chain must execute correctly under the chain's DBR.
-  - near-self chains: coalesce the LDY reload. Soundness predicate is
-    Y-preservation — every gap instruction and every method impl must
-    leave Y unchanged.
+  - near-self chains: coalesce the LDY reload.
 
 Walks straight-line CFG paths, with a strict if/else diamond bridge
-extension. Soundness is verified using the trait-impl-resolved CallGraph
-(see analysis/call_graph.py): every impl in the trait's jump table must
-satisfy the chain predicate, and every instruction in the gap between
-chained dispatches must too.
+extension. DBR-independence is verified using the trait-impl-resolved
+CallGraph (see analysis/call_graph.py): every impl in the trait's jump
+table must satisfy it, and every instruction in the gap between chained
+dispatches must too.
+
+Whether Y still holds self at a MIDDLE/END member is not decided here:
+each such member records the member before it and the blocks between
+(`self_y_after`, `self_y_path`), and codegen reads the code it emitted
+there, calls by their clobber summaries (call_select).
 
 Cast-transparency: two dispatches share a self if walking back through
 trivial trait-pointer-to-trait-pointer casts (Move and same-size, same-
@@ -32,7 +35,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from r65.compiler.mir.nodes import (
-    ChainRole, MIRFunction, HardwareRegister, OperandRole, iter_operands,
+    ChainRole, MIRFunction, OperandRole, iter_operands,
     Load, LoadIndirect, StoreIndirect, CompareIndirect,
     Call, CallBase, TraitDispatch, VirtualRegister,
     Move, TypeConvert, BinaryOp, UnaryOp, InlineAsm, iter_memory_operands,
@@ -265,14 +268,13 @@ def _try_bridge_diamond(func, head_block, visited_blocks, path,
 def _coalesce_chains_along_path(func, path, call_graph, func_map,
                                 cyclic_funcs, kind):
     """Walk a path in order; identify same-self runs of TraitDispatch and
-    assign ChainRole (and, for far chains, ``self_y_preloaded``).
+    assign ChainRole, and on each MIDDLE/END member the member before it
+    and the blocks between (``self_y_after``, ``self_y_path``).
 
     For ``kind=FAR``: DBR-bracket coalescing using the DBR-independence
-    predicate. Additionally sets ``self_y_preloaded`` on MIDDLE/END
-    members when every (trait, method) impl also preserves Y at exit.
+    predicate.
 
-    For ``kind=NEAR``: LDY-reload coalescing using the Y-preservation
-    predicate. ChainRole alone controls Y emission (no DBR work).
+    For ``kind=NEAR``: LDY-reload coalescing; the role does no DBR work.
 
     A run extends as long as every member shares the same chain root
     self vreg as the chain head and is the right kind of dispatch.
@@ -348,18 +350,6 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
 
         # Assign roles
         if len(run_indices) >= 2:
-            # For FAR chains, additionally compute the Y-elision flag.
-            # DBR-bracket coalescing (set below by role) and Y elision are
-            # orthogonal — each FAR chain may have both, only DBR
-            # coalescing, or neither. NEAR chains use ChainRole alone for
-            # Y-elision; the FAR-only flag doesn't apply.
-            y_preloaded = False
-            if kind is FAR:
-                y_preloaded = _far_chain_can_elide_y(
-                    flat, run_indices, call_graph, func_map,
-                    cyclic_funcs, func,
-                )
-
             for k, run_idx in enumerate(run_indices):
                 td = flat[run_idx][2]
                 if k == 0:
@@ -368,11 +358,13 @@ def _coalesce_chains_along_path(func, path, call_graph, func_map,
                     td.self_chain_role = ChainRole.END
                 else:
                     td.self_chain_role = ChainRole.MIDDLE
-                # MIDDLE/END skip the Y reload only when the chain
-                # passes the Y predicate. START always loads Y (no
-                # prior dispatch put the address there).
-                if y_preloaded and k > 0:
-                    td.self_y_preloaded = True
+                if k > 0:
+                    # START always loads Y: no prior dispatch put self there.
+                    prev_idx = run_indices[k - 1]
+                    td.self_y_after = id(flat[prev_idx][2])
+                    td.self_y_path = tuple(
+                        path[b].block_id
+                        for b in range(flat[prev_idx][0], flat[run_idx][0] + 1))
             i = run_indices[-1] + 1
         else:
             # Single dispatch — leave as SOLO (default)
@@ -775,182 +767,16 @@ def _trait_method_impls_all_independent(td, call_graph, func_map, cyclic_funcs):
     return True
 
 
-# ============================================================================
-# Y-preservation predicate (used by chain coalescing)
-# ============================================================================
-#
-# A function "preserves Y" iff Y at every exit holds the same value as
-# at entry. The chain pass uses this to elide LDY reloads in both
-# near-self and far-self chains.
-#
-# Pre-codegen we don't have register allocation results, so we use a
-# conservative MIR-level approximation:
-#
-#   - For a trait-method impl using the DBR:Y leaf path (self_y_vreg
-#     present, no D=S, no far-ptr-stack-params), the trait-method
-#     ABI guarantees Y holds self throughout the body. Field accesses
-#     read via $offset,Y (Y-USE only). Such methods preserve Y iff
-#     no other instruction writes Y or calls a non-Y-preserving
-#     function.
-#
-#   - For other functions, we conservatively reject any:
-#       * Move / TypeConvert / Load / LoadIndirect with HW-Y dest
-#       * vreg with register_hint == 'Y' (loop register promotion
-#         intends to allocate it to Y)
-#       * Call to a non-Y-preserving function
-#       * TraitDispatch (we don't model whether the dispatch wrapper
-#         preserves Y — conservatively reject)
-#       * InlineAsm (we don't analyze asm)
-#       * Recursive cycle (without fixpoint we can't tell)
-#
-# Memoized on `MIRFunction._chain_preserves_y`.
-
-_PRESERVES_Y_ATTR = '_chain_preserves_y'
+def _trait_method_impls_known(td, call_graph, func_map, cyclic_funcs):
+    """True if the implementors of (td.trait_name, td.method_name) are
+    known. Whether they leave Y alone is codegen's to read off their code."""
+    return bool(call_graph.resolve_trait_method(td.trait_name, td.method_name))
 
 
-def _vreg_targets_y(vreg):
-    """True if a vreg is intended for Y allocation (register_hint='Y')."""
-    if not isinstance(vreg, VirtualRegister):
-        return False
-    return getattr(vreg, 'register_hint', None) == 'Y'
-
-
-def _instr_writes_y(instr, func):
-    """True if an instruction writes the Y register.
-
-    The MIR shapes that produce a Y write:
-      - dest is HardwareRegister('Y')
-      - dest is the function's self_y_vreg (pre-allocated to Y)
-      - dest is a vreg with register_hint='Y' (loop promotion target)
-      - returns list contains a HW Y or Y-hinted vreg
-
-    The trait-method entry-point Move(dest=self_y_vreg, source=HW_Y)
-    is a no-op at codegen time (move_select.py treats it as such),
-    but conceptually Y already holds self at function entry — so
-    treating it as a Y-write would incorrectly flag every trait
-    method as Y-clobbering. We therefore EXCLUDE that specific
-    instruction shape from the writes-Y check.
-    """
-    self_y_id = func.self_y_vreg.id if func.self_y_vreg else None
-
-    dest = getattr(instr, 'dest', None)
-    if isinstance(dest, HardwareRegister) and dest.name == 'Y':
-        return True
-    if isinstance(dest, VirtualRegister):
-        # The trait-method self_y_vreg is pre-allocated to Y but the
-        # entry-point Move(dest=self_y_vreg, source=HW_Y) is a no-op
-        # — Y already holds self. Subsequent writes to self_y_vreg
-        # WOULD clobber Y, but the parameter binding is the only
-        # such write in well-formed MIR, so excluding it is safe.
-        if self_y_id is not None and dest.id == self_y_id:
-            return False
-        if _vreg_targets_y(dest):
-            return True
-
-    returns = instr.returns if isinstance(instr, CallBase) else ()
-    for r in returns:
-        if isinstance(r, HardwareRegister) and r.name == 'Y':
-            return True
-        if isinstance(r, VirtualRegister) and _vreg_targets_y(r):
-            return True
-
-    return False
-
-
-def _instr_preserves_y(instr, call_graph, func_map, cyclic_funcs, func=None):
-    """True if `instr` is safe to execute in the gap of a Y-preserving
-    chain — Y is unchanged after `instr` runs.
-
-    Disqualifiers:
-      - any write to Y (see ``_instr_writes_y``)
-      - call to a non-Y-preserving function
-      - nested TraitDispatch (unconditionally clobbers Y in the
-        dispatch wrapper / impl)
-      - inline assembly (we don't analyze asm)
-    """
-    if isinstance(instr, InlineAsm):
-        return False
-
-    if isinstance(instr, TraitDispatch):
-        # Nested dispatches always reload Y for their own self.
-        return False
-
-    if isinstance(instr, Call):
-        if isinstance(instr.function, str):
-            if not _function_preserves_y(
-                instr.function, call_graph, func_map, cyclic_funcs
-            ):
-                return False
-        else:
-            # Indirect call via fn pointer — broad, conservatively no.
-            return False
-        # Even if the callee preserves Y, check that this call's
-        # returns list doesn't write Y.
-        if func is not None and _instr_writes_y(instr, func):
-            return False
-        return True
-
-    if func is not None and _instr_writes_y(instr, func):
-        return False
-    return True
-
-
-def _function_preserves_y(func_name, call_graph, func_map, cyclic_funcs):
-    """True if ``func_name``'s body preserves Y at every exit. Memoized."""
-    return _function_satisfies(
-        func_name, attr=_PRESERVES_Y_ATTR,
-        instr_ok=_instr_preserves_y,
-        call_graph=call_graph, func_map=func_map, cyclic_funcs=cyclic_funcs,
-    )
-
-
-def _trait_method_impls_all_preserve_y(td, call_graph, func_map, cyclic_funcs):
-    """True if every implementor of (td.trait_name, td.method_name)
-    preserves Y at exit. False if the impl set is empty/unknown.
-    """
-    impls = call_graph.resolve_trait_method(td.trait_name, td.method_name)
-    if not impls:
-        return False
-    for impl_name in impls:
-        if not _function_preserves_y(
-            impl_name, call_graph, func_map, cyclic_funcs
-        ):
-            return False
-    return True
-
-
-def _far_chain_can_elide_y(flat, run_indices, call_graph, func_map,
-                           cyclic_funcs, func):
-    """For a far-self chain, return True if every chain member's method
-    impls and every inter-dispatch gap instruction preserve Y.
-
-    The DBR-independence checks (from the chain assignment loop above)
-    do NOT imply Y-preservation: a function may be DBR-independent but
-    still clobber Y (e.g. with ``Y = 0``). Conversely, a function may
-    preserve Y but not be DBR-independent (e.g. it does a non-LONG RAM
-    read that requires the caller's DBR). The two predicates are independent.
-    """
-    # Every method's impl set must preserve Y.
-    seen_methods: set = set()
-    for run_idx in run_indices:
-        td = flat[run_idx][2]
-        key = (td.trait_name, td.method_name)
-        if key in seen_methods:
-            continue
-        seen_methods.add(key)
-        if not _trait_method_impls_all_preserve_y(
-            td, call_graph, func_map, cyclic_funcs
-        ):
-            return False
-    # Every gap between consecutive members must preserve Y.
-    for k in range(len(run_indices) - 1):
-        prev_idx = run_indices[k]
-        next_idx = run_indices[k + 1]
-        if not _between_satisfies(
-            flat, prev_idx, next_idx, _instr_preserves_y,
-            call_graph, func_map, cyclic_funcs, func=func,
-        ):
-            return False
+def _any_instr(instr, call_graph, func_map, cyclic_funcs, func=None):
+    """A near chain's gap: anything but a redefinition of self, which
+    ``_between_satisfies`` rejects itself. What it does to Y is codegen's
+    to read off the code it emits."""
     return True
 
 
@@ -966,6 +792,6 @@ FAR = ChainKind(
 NEAR = ChainKind(
     name='near',
     is_chainable=_is_chainable_near_dispatch,
-    instr_ok=_instr_preserves_y,
-    impls_ok=_trait_method_impls_all_preserve_y,
+    instr_ok=_any_instr,
+    impls_ok=_trait_method_impls_known,
 )

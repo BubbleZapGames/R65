@@ -55,3 +55,13 @@ def test_recursion_and_inline_asm_are_unknown():
 def test_x_follows_the_same_rule():
     assert _saves("X = 0x1234; clean(); O = X;", "X") == 0
     assert _saves("X = 0x1234; xw(); O = X;", "X") == 1
+
+
+def test_interrupt_handler_saves_what_its_callee_writes():
+    asm = compile_string(GLOBALS.format(body="") + """
+#[interrupt(nmi)] fn nmi() { clean(); }
+#[interrupt(irq)] fn irq() { xw(); }
+""", cfg_options=["snes"])
+    handler = lambda name: asm.split(f"\n{name}:", 1)[1].split("RTI", 1)[0]
+    assert "PHX" not in handler("nmi") and "PHY" not in handler("nmi")
+    assert "PHX" in handler("irq") and "PHY" not in handler("irq")

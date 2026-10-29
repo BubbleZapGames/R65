@@ -24,6 +24,7 @@ from r65.compiler.hir.types import BasicTypeInfo
 from r65.compiler.hir.attributes import (
     InlineAttribute, InlineMode, InterruptAttribute, InterruptVector,
     BankAttribute, PreservesAttribute, ModeAttribute, DataBankMode,
+    ClobbersAttribute,
 )
 from r65.compiler.hir.nodes import HIRParameter, RegisterBinding
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
@@ -1240,6 +1241,19 @@ class TestCanInlineRejections:
                                                    registers=['X'])
         checker, _ = self._checker_for(callee)
         assert checker.can_inline(callee.name) is False
+
+    def test_clobbers_d_or_dbr_blocks_inlining(self):
+        """A clobbered D/DBR is saved around the call; inlined, the body
+        would leave it changed in the caller. X/Y alone inline freely."""
+        callee = create_simple_callee()
+        callee.clobbers_attr = ClobbersAttribute(name='clobbers', registers=['X', 'DBR'])
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is False
+
+        callee = create_simple_callee()
+        callee.clobbers_attr = ClobbersAttribute(name='clobbers', registers=['X'])
+        checker, _ = self._checker_for(callee)
+        assert checker.can_inline(callee.name) is True
 
     def test_bank_mismatch_blocks_inlining_at_call_site(self):
         """A #[bank(n)] callee called from a #[bank(m)] caller (m != n)

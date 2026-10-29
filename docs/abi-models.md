@@ -548,6 +548,61 @@ careful:
 ```
 
 **Valid registers**: `A`, `X`, `Y`, `STATUS`, `D`, `DBR`. **Invalid**: `B`, `PBR`, `S`.
+Not valid on an `extern fn`: it has no body to save and restore in.
+
+### Clobbers Attribute
+
+`#[clobbers(...)]` is the caller-save counterpart: the registers a function
+may leave changed, which its callers save if they need them.
+
+**X and Y** are caller-saved already, and at -O1 each function's summary
+(`codegen/clobber_summary.py`) says which of them its code, and its callees'
+code, can change. The list is added to that summary, so it never narrows
+what the code is seen to write. It stands in for what the summary cannot
+read:
+
+- `asm!` text. Without the attribute, a function containing `asm!` writes
+  both registers. With it, the text is skipped and the list speaks for it,
+  while the rest of the function's code is still read.
+- An `extern fn`, whose code is never seen. Its list is the whole contract at
+  every opt level: the index registers it does not list go into the call's
+  `declared` set, so a bare extern keeps X and Y, with no save around the
+  call. The extern is seeded into the summaries, so a caller's own summary
+  takes it.
+
+```rust
+#[clobbers(X)]
+extern fn sound_tick();   // Y live across a call stays put; X is saved
+```
+
+**D and DBR** are callee-saved by convention, so listing one moves the save
+to the caller. Every direct call saves it before the argument setup, inside
+the existing spill and D=S/SET_DBR brackets. It restores it right after the
+call, before the results are collected (their stores may go through D or
+DBR). Caller-cleaned stack arguments sit above the save, so they come off
+first, without touching a result register.
+
+```asm
+    PHB                ; Save DBR (callee clobbers it)
+    JSL leaves_dbr
+    PLB                ; Restore DBR (callee clobbers it)
+```
+
+The DBR save is skipped when a `databank=caller` bracket already restores
+it, and both are skipped for a `-> !` callee. A Pascal-ABI call that returns
+a value cannot clobber D/DBR, because its result is pulled from the stack
+over the save. Since only a direct call saves them, a D/DBR clobberer cannot:
+
+- be used as a value (`&f`, a jump table),
+- be a trait method (dispatch is not a direct call),
+- combine DBR with `#[mode(databank=inline)]`,
+- be inlined.
+
+A and B are always clobbered and are dropped from the list. `STATUS` is
+invalid: every call already clobbers the flags, and the M/X bits follow the
+callee's exit mode. `PBR` and `S` are invalid, and so is the attribute on
+`#[entry]` and `#[interrupt]` functions, or alongside `#[preserves]` of the
+same register.
 
 ---
 
