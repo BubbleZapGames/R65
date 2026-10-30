@@ -72,6 +72,11 @@ class MemoryAllocator:
         self.lowram_used: Set[int] = set()  # Individual bytes
         self.ram_used: Set[Tuple[int, int]] = set()  # (start, end) ranges
 
+        # Explicit placements so far, (start, end, decl), to catch two that
+        # overlap: low RAM (zeropage and lowram share it), and WRAM above it.
+        self._explicit_lowram: list = []
+        self._explicit_ram: list = []
+
     # ========================================================================
     # Size Calculation
     # ========================================================================
@@ -147,11 +152,9 @@ class MemoryAllocator:
         size = self._decl_size(static_decl)
 
         if explicit_addr is not None:
-            # Explicit address - use as-is, no collision check
             address = explicit_addr
             is_explicit = True
 
-            # Validate range only
             if address < 0 or address + size - 1 > self.zeropage_end:
                 raise MemoryAllocationError(
                     f"Zero-page address ${address:02X} for '{symbol.name}' "
@@ -160,6 +163,7 @@ class MemoryAllocator:
                 )
 
             self._warn_if_overlaps_stack("Zero-page", static_decl, address, size)
+            self._claim_explicit(self._explicit_lowram, static_decl, address, size)
         else:
             # Auto-allocate - find next available address that fits
             address = self._find_zeropage_fit(size)
@@ -232,6 +236,27 @@ class MemoryAllocator:
             )
 
     @staticmethod
+    def _claim_explicit(claimed: list, static_decl: HIRStaticDecl,
+                        address: int, size: int):
+        """Record a static placed at *address*, refusing one whose bytes
+        another explicitly placed static already holds: two writers of the
+        same bytes, which nothing else would report."""
+        end = address + size - 1
+        for start, other_end, other in claimed:
+            if address <= other_end and end >= start:
+                width = 6 if address > 0xFFFF else 4
+                fmt = lambda a, b: f"${a:0{width}X}" + (f"-${b:0{width}X}" if b != a else "")
+                where = f" (declared at {other.source_loc})" if other.source_loc else ""
+                raise MemoryAllocationError(
+                    f"'{static_decl.symbol.name}' at {fmt(address, end)} overlaps "
+                    f"'{other.symbol.name}' at {fmt(start, other_end)}{where}",
+                    source_loc=static_decl.source_loc,
+                    hint="give each static its own address, or leave the address "
+                         "off one and let the compiler place it; a union holds "
+                         "two views of the same bytes")
+        claimed.append((address, end, static_decl))
+
+    @staticmethod
     def _lowram_offset(address: int) -> Optional[int]:
         """The low-RAM offset *address* reaches, or None: bank 0's
         $0000-$1FFF, and its mirrors in banks $00-$3F, $80-$BF and $7E."""
@@ -293,8 +318,7 @@ class MemoryAllocator:
         size = self._decl_size(static_decl)
 
         if explicit_addr is not None:
-            # Explicit address - use as-is, no collision check
-            # Allow full low RAM range ($0000-$1FFF)
+            # Explicit address: the full low RAM range ($0000-$1FFF)
             address = explicit_addr
             is_explicit = True
 
@@ -306,6 +330,7 @@ class MemoryAllocator:
                 )
 
             self._warn_if_overlaps_stack("Low RAM", static_decl, address, size)
+            self._claim_explicit(self._explicit_lowram, static_decl, address, size)
         else:
             # Auto-allocate - find next available address (starts at $0100)
             address = self._find_lowram_fit(size)
@@ -391,7 +416,6 @@ class MemoryAllocator:
         size = self._decl_size(static_decl)
 
         if explicit_addr is not None:
-            # Explicit address - use as-is, no collision check
             address = explicit_addr
             is_explicit = True
 
@@ -410,6 +434,7 @@ class MemoryAllocator:
                     f"crosses bank boundary at $7F0000",
                     source_loc=None
                 )
+            self._claim_explicit(self._explicit_ram, static_decl, address, size)
         else:
             # Auto-allocate - find next available address that fits
             address = self._find_ram_fit(size)
@@ -516,8 +541,7 @@ class MemoryAllocator:
         Pass 2: Auto-allocate remaining variables (finds gaps around explicit)
 
         This ensures auto-allocation avoids explicit regions regardless of
-        source order. Explicit addresses can overlap with each other (user's
-        responsibility), but auto-allocated variables will find free space.
+        source order. Two explicit addresses that overlap are an error.
         """
         # Separate explicit and auto declarations
         explicit_decls = []

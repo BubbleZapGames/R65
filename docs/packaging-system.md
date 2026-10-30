@@ -443,10 +443,6 @@ gets worse as package count grows; see `docs/future-work.md`.
 - **Statics are never dead-code eliminated.** Only functions are
   (`r65/compiler/optimize/dead_function_elim.py`). An unused package static still
   burns zeropage, RAM or ROM. "Pay for what you use" holds for code, not data.
-- **Explicit addresses are not collision-checked.** Two packages both hardcoding
-  `#[zeropage(0x40)]` overlap silently
-  (`r65/compiler/codegen/memory_alloc.py`). Packages should use auto-allocation;
-  the `zeropage_budget` lint is the only backstop.
 - **`#[soa]` and tagged-enum types are program-wide singletons.** Each backs
   exactly one static in the whole program, so a package cannot ship one for
   general use.

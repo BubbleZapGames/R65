@@ -284,14 +284,6 @@ Pre-existing global-state assumptions that a package system makes reachable. Eac
 
 **Approach if revisited**: reachability over static reads/writes in MIR, seeded from the same entry points `_find_entry_points` already computes, then filter `mir_program.statics` before `allocate_all`. Care needed for `#[hw]` (never prune), `#[soa]` planes (prune as a group), and `include_bytes!` blobs referenced only from inline asm.
 
-### Explicit Addresses Are Not Collision-Checked
-
-`allocate_zeropage` takes an explicit `#[zeropage(0x40)]` address as-is with no overlap check (the comment at the site says so outright). Two packages hardcoding the same address overlap silently; only a stack-overlap warning (W006) exists.
-
-**Why deferred**: explicit addresses are usually deliberate hardware or ABI choices, and the auto-allocator already avoids reserved bytes. The single-author case rarely collides.
-
-**Approach if revisited**: record explicit ranges in the first allocation pass and error on overlap, with an opt-out attribute for the deliberate-aliasing case (unions over fixed addresses). Packages should prefer auto-allocation; `zeropage_budget` is the only current backstop.
-
 ### Program-Wide Singletons
 
 Two constructs assume there is exactly one of them in the program, so a package cannot ship either for general use:

@@ -2,6 +2,9 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test memory allocation and symbol definition generation."""
 
+import pytest
+
+from r65.compiler.errors import MemoryAllocationError
 from r65.compiler.frontend import parse
 from r65.compiler.hir import HIRBuilder
 from r65.compiler.typeck import TypeChecker
@@ -229,38 +232,12 @@ fn main() -> ! {
 }
 """
 
-    print()
-    print("=" * 80)
-    print("Testing Address Conflict Detection")
-    print("=" * 80)
-    print()
-
-    try:
-        # Parse
-        ast_program = parse(source, "<test>")
-
-        # Build HIR
-        hir_builder = HIRBuilder()
-        hir_program = hir_builder.build_program(ast_program)
-
-        # Type check
-        type_checker = TypeChecker(hir_program)
-        type_checker.check()
-
-        # Build MIR
-        mir_builder = MIRBuilder()
-        mir_program = mir_builder.build_program(hir_program)
-
-        # Generate assembly - should fail during memory allocation
-        codegen = ProgramCodeGenerator()
-        assembly = codegen.generate(mir_program)
-
-        assert False, "Expected exception for address conflict!"
-
-    except Exception as e:
-        assert "already allocated" in str(e) or "conflict" in str(e).lower(), \
-            f"Unexpected exception: {e}"
-        print(f"Correctly detected address conflict: {e}")
+    hir_program = HIRBuilder().build_program(parse(source, "<test>"))
+    TypeChecker(hir_program).check()
+    mir_program = MIRBuilder().build_program(hir_program)
+    with pytest.raises(MemoryAllocationError,
+                       match=r"'VAR2' at \$0020 overlaps 'VAR1' at \$0020"):
+        ProgramCodeGenerator().generate(mir_program)
 
 
 def test_auto_allocation_order():
@@ -349,3 +326,26 @@ if __name__ == "__main__":
     test_auto_allocation_order()
 
     print("🎉 All tests passed!")
+
+
+@pytest.mark.parametrize("first, second, message", [
+    # zeropage and lowram are one address space
+    ("#[zeropage(0x40)] static mut P: u16;", "#[lowram(0x41)] static mut Q: u8;",
+     r"'Q' at \$0041 overlaps 'P' at \$0040-\$0041"),
+    ("#[ram(0x7E3000)] static mut P: [u8; 8];", "#[ram(0x7E3007)] static mut Q: u16;",
+     r"'Q' at \$7E3007-\$7E3008 overlaps 'P' at \$7E3000-\$7E3007"),
+])
+def test_explicit_addresses_that_overlap(first, second, message):
+    from r65.compiler.main import compile_string
+    with pytest.raises(MemoryAllocationError, match=message):
+        compile_string(f"{first}\n{second}\n#[entry] fn main() {{ }}", "t.r65")
+
+
+def test_explicit_neighbours_and_auto_placement_do_not_collide():
+    from r65.compiler.main import compile_string
+    compile_string("""
+        #[zeropage(0x40)] static mut P: u16;
+        #[zeropage(0x42)] static mut Q: u8;
+        #[zeropage] static mut R: u8;
+        #[entry] fn main() { R = P as u8 + Q; }
+    """, "t.r65")
