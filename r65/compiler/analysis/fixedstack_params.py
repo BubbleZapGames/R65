@@ -120,11 +120,13 @@ def promote_all_stack_params(mir_program: MIRProgram, scratch_pool: ScratchRegis
         if func.name in trait_promoted_funcs:
             continue
 
-        # Address-taken functions in FixedStack mode: error if they have unbound stack params
+        # A call through a function pointer passes its arguments on the
+        # stack, and a function pointer cannot hold one with bound params
         if func.name in address_taken:
             raise CodegenError(
                 f"FixedStack ABI: function '{func.name}' has its address taken but has "
-                f"stack parameters. Add explicit register bindings (@ A, @ X, etc.) to all parameters.",
+                f"parameters; a call through a function pointer passes them on the "
+                f"stack, which FixedStack does not use.",
                 source_loc=func.source_loc,
             )
 

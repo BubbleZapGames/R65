@@ -873,7 +873,7 @@ Frame allocation uses `PHB` per byte, except in interrupt handlers, which use `T
 **Restrictions**:
 - **No recursion.** Recursive functions are rejected at compile time. Since all parameters go through fixed locations, a recursive call would overwrite the caller's parameters.
 - **Limited parameter count.** Bounded by available hardware registers (A, X, Y, B) plus scratch DP slots.
-- **Address-taken functions bind every parameter.** A call through a function pointer cannot know where promotion put each parameter, so a function whose address is taken must give each one an explicit `@` register binding; an unbound one is a compile error.
+- **Address-taken functions take no parameters.** A call through a function pointer passes its arguments on the stack, and a function pointer cannot hold a function that binds a parameter, so under FixedStack a function whose address is taken cannot have parameters.
 
 **Use cases**: Interrupt handlers and NMI routines where stack depth must be predictable. Performance-critical inner loops. Programs that need static stack depth analysis. Environments with very small stacks (e.g., 256 bytes).
 

@@ -19,6 +19,30 @@ TYPE_RANGES = {
 }
 
 
+def function_pointer_type(func_decl, source_loc=None) -> FunctionTypeInfo:
+    """The `fn(...)` type a function has as a value.
+
+    A call through a function pointer passes every argument on the stack,
+    so a function that binds a parameter to a register or a variable cannot
+    be one: the type does not record where the callee looks.
+    """
+    from r65.compiler.hir.nodes import RegisterBinding
+    from r65.compiler.typeck.errors import TypeCheckError
+    for param in func_decl.parameters:
+        if param.binding is not None:
+            where = (param.binding.register_name if isinstance(param.binding, RegisterBinding)
+                     else param.binding.variable_name)
+            raise TypeCheckError(
+                f"function '{func_decl.name}' binds parameter '{param.name}' to "
+                f"'{where}' and cannot be used as a function pointer; a call "
+                f"through one passes arguments on the stack",
+                source_loc=source_loc)
+    return FunctionTypeInfo(
+        is_far=func_decl.is_far,
+        param_types=[param.param_type for param in func_decl.parameters],
+        return_type=func_decl.return_type,
+    )
+
 def soa_struct_of(type_info) -> Optional[str]:
     """Name of the planed type *type_info* is, or is an array/pointer to.
 

@@ -1120,16 +1120,8 @@ class TypeChecker:
                 # Function identifier used as value (function pointer)
                 # Look up function declaration to get its type
                 func_decl = self._lookup_function_decl(symbol.name, expr.source_loc)
-
-                # Build FunctionTypeInfo from function signature
-                from r65.compiler.hir.types import FunctionTypeInfo
-                param_types = [param.param_type for param in func_decl.parameters]
-
-                expr.expr_type = FunctionTypeInfo(
-                    is_far=func_decl.is_far,
-                    param_types=param_types,
-                    return_type=func_decl.return_type
-                )
+                from r65.compiler.typeck.type_utils import function_pointer_type
+                expr.expr_type = function_pointer_type(func_decl, expr.source_loc)
             else:
                 raise TypeCheckError(
                     f"'{expr.name}' is not a value",

@@ -52,17 +52,21 @@ def test_far_and_near_u16_results_are_collected_whole():
     ''', [0x00, 0x20, 0x00, 0x01, 0xEF, 0xBE])
 
 
-def test_fixedstack_bound_callee_returning_u16():
+def test_fixedstack_u16_result_then_8_bit_work():
+    """FixedStack points only at parameterless functions. 8-bit work right
+    after the u16 result needs the SEP that a caller still tracking m8
+    leaves out, so its `LDA #imm` would be read a byte too wide."""
     run('''
         #[lowram(0x0300)] static mut OUT: [u16; 2];
-        #[lowram(0x031C)] static mut WP: fn(u8) -> u16;
-        #[inline(never)] fn wide(v @ A: u8) -> u16 { return (v as u16) + 0x300; }
-        #[inline(never)] fn go(k @ A: u8) -> u16 { let x: u16 = WP(k); return x + WP(k + 1); }
+        #[lowram(0x0304)] static mut BYTES: [u8; 2];
+        #[lowram(0x031C)] static mut WP: fn() -> u16;
+        #[inline(never)] fn wide() -> u16 { return 0x1234; }
+        #[inline(never)] fn go(k: u8) -> u16 { let x: u16 = WP(); BYTES[0] = 0x42; BYTES[1] = k; return x; }
 
         #[entry]
         fn main() {
             WP = wide;
-            OUT[0] = go(5);
-            OUT[1] = go(1);
+            OUT[0] = go(7);
+            OUT[1] = 0xBEEF;
         }
-    ''', [0x0B, 0x06, 0x03, 0x06], abi="FixedStack")
+    ''', [0x34, 0x12, 0xEF, 0xBE, 0x42, 0x07], abi="FixedStack")

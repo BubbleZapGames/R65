@@ -870,16 +870,9 @@ class CallValidator:
             )
 
         func_decl = self.lookup_function_decl(func_symbol.name, expr.source_loc)
-
-        param_types = [param.param_type for param in func_decl.parameters]
-        func_type = FunctionTypeInfo(
-            is_far=func_decl.is_far,
-            param_types=param_types,
-            return_type=func_decl.return_type
-        )
-
-        expr.expr_type = func_type
-        return func_type
+        from r65.compiler.typeck.type_utils import function_pointer_type
+        expr.expr_type = function_pointer_type(func_decl, expr.source_loc)
+        return expr.expr_type
 
     def _check_const_fn_runtime_call(self, func_name: str,
                                      func_decl: HIRFunctionDecl,

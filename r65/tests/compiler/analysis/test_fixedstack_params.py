@@ -212,8 +212,8 @@ class TestFixedStackRecursionRejection:
 
 
 def test_address_taken_function_with_stack_params_rejected():
-    """A call through a pointer cannot know where a promotion put each
-    parameter, so an address-taken function must bind them all."""
+    """A call through a pointer passes its arguments on the stack, which
+    FixedStack does not use, so an address-taken function takes none."""
     source = """
     #[zeropage(0x20, register)] static mut S0: u8;
     fn put(v: u8, w: u8) { }
@@ -221,7 +221,7 @@ def test_address_taken_function_with_stack_params_rejected():
     #[entry]
     fn main() { HP(7, 8); }
     """
-    with pytest.raises(CodegenError, match="has its address taken but has stack parameters"):
+    with pytest.raises(CodegenError, match="has its address taken but has parameters"):
         compile_string(source, "test.r65", abi_model=ABI_FIXED_STACK)
 
 
