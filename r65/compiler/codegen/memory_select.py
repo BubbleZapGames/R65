@@ -565,6 +565,13 @@ class MemoryOperationSelector(BaseSelector):
 
         self._validate_pointer_location(ptr_loc)
 
+        # A source in Y would be read after the field offset (or the LDY #0
+        # of a stack or word store) replaced it. Every store below goes
+        # through A, so move it there first. An index in Y is the source's
+        # own register, which nothing writes before the value is read.
+        if src_loc is not None and src_loc.is_hw('Y') and instr.index_register != 'Y':
+            src_loc = self._move_y_source_to_a(instr.type_info)
+
         # Handle field offset - load into Y for indexed indirect
         # For stack indirect addressing, Y is always required (d,S),Y mode
         offset = getattr(instr, 'offset', 0)
@@ -667,6 +674,19 @@ class MemoryOperationSelector(BaseSelector):
         self._emit_instr(opcode, operand, "Store through pointer")
         if will_clobber_y_s and self._has_y_self():
             self._restore_y_self(y_self_save_addr_s)
+
+    def _move_y_source_to_a(self, type_info) -> PhysicalLocation:
+        """TYA at the store's width: a word lands as A low, B high, which
+        the word stores read once they narrow to m8."""
+        is_u16 = self.parent._is_16bit(type_info)
+        if is_u16:
+            self._ensure_m16_mode()
+        else:
+            self._ensure_m8_mode()
+        self._emit_instr(Opcode.TYA, None, "Read the store value before Y is reloaded")
+        self.parent._mark_a_modified()
+        return PhysicalLocation(kind=LocationKind.HARDWARE, hw_register='A',
+                                size=2 if is_u16 else 1)
 
     # ========================================================================
     # Y-Pointer (Trait Self) Addressing
