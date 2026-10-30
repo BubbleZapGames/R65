@@ -97,6 +97,24 @@ _HW_RETURN_WRITE_ORDER = ('Y', 'X', 'B', 'A')
 # substitute HardwareRegister('A') for the vreg source, sparing the
 # caller a redundant Move (often nothing emits at all once the codegen
 # coalesces both endpoints to A).
+def _register_param(callee: MIRFunction, idx: int, param) -> Optional[str]:
+    """The register parameter *idx* of *callee* arrives in, or None.
+
+    Read off the callee's MIR, not the binding alone: under the Pascal ABI
+    every parameter is a stack parameter (in `param_to_vreg`) whatever it
+    binds, and its body reads that vreg.
+    """
+    if idx in callee.param_to_vreg or not isinstance(param.binding, RegisterBinding):
+        return None
+    return param.binding.register_name
+
+
+def _variable_param(callee: MIRFunction, idx: int, param) -> bool:
+    """Whether parameter *idx* arrives in its bound variable (see
+    `_register_param`: under Pascal it arrives on the stack instead)."""
+    return idx not in callee.param_to_vreg and isinstance(param.binding, VariableBinding)
+
+
 def _value_is_in_a_at_end_of(instrs: List[MIRInstruction],
                               vreg: VirtualRegister) -> bool:
     """Conservative check: does A hold `vreg` after `instrs` execute?
@@ -1319,18 +1337,31 @@ class FunctionInliner:
         """
         register_instrs = []
         stack_instrs = []
+        # Under Pascal a register-bound parameter arrives on the stack, but a
+        # body may still read the bare register (`return A + 10` for `x @ A`).
+        # Loaded last, after the stack binds, which may go through A.
+        bare_instrs = []
 
         for i, (arg, param) in enumerate(zip(call.args, callee.parameters)):
+            if (isinstance(param.binding, RegisterBinding) and i in callee.param_to_vreg
+                    and (saved_hw_regs is None
+                         or param.binding.register_name in saved_hw_regs)):
+                bare_instrs.append(Move(
+                    dest=HardwareRegister(param.binding.register_name),
+                    source=arg.value,
+                    type_info=param.param_type
+                ))
             if substituted_idx is not None and i in substituted_idx:
                 # Arg was spliced directly into the body; no bridge Move needed.
                 continue
-            if isinstance(param.binding, RegisterBinding):
+            reg_name = _register_param(callee, i, param)
+            if reg_name is not None:
                 # Register parameter: the call lowering would have set up the
                 # hardware register. After inlining, we must emit this setup
                 # explicitly since the Call instruction is removed — unless
                 # the body never reads this register, in which case the load
                 # is dead. Detected via the absence of a save Move at entry.
-                hw_reg = HardwareRegister(param.binding.register_name)
+                hw_reg = HardwareRegister(reg_name)
                 if saved_hw_regs is not None and hw_reg.name not in saved_hw_regs:
                     continue
                 register_instrs.append(Move(
@@ -1339,7 +1370,7 @@ class FunctionInliner:
                     type_info=param.param_type
                 ))
 
-            elif isinstance(param.binding, VariableBinding):
+            elif _variable_param(callee, i, param):
                 # Variable-bound: caller already stored to the variable
                 pass
 
@@ -1393,8 +1424,9 @@ class FunctionInliner:
         # last: the other loads go through A and would clobber an A param
         # set before them.
         register_instrs.sort(key=lambda m: register_arg_rank(m.dest.name))
+        bare_instrs.sort(key=lambda m: register_arg_rank(m.dest.name))
 
-        return register_instrs, stack_instrs
+        return register_instrs, stack_instrs + bare_instrs
 
     def _leading_save_moves(self, callee: MIRFunction):
         """Pre-clone scan of the callee entry block's leading register-save run
@@ -1420,8 +1452,8 @@ class FunctionInliner:
         # a body HW-read here would both hide it from _direct_hw_reads (skip)
         # and let the drop filter delete a live instruction.
         reg_param_names = {
-            p.binding.register_name for p in callee.parameters
-            if isinstance(p.binding, RegisterBinding)
+            reg for i, p in enumerate(callee.parameters)
+            if (reg := _register_param(callee, i, p)) is not None
         }
         for instr in entry.instructions:
             if (isinstance(instr, Move) and
@@ -1522,14 +1554,14 @@ class FunctionInliner:
                 continue  # HardwareRegister / MemoryLocation / symbolic imm: keep the Move
 
             # Locate the callee vreg this parameter binds to.
-            if isinstance(param.binding, RegisterBinding):
-                reg_name = param.binding.register_name
+            reg_name = _register_param(callee, i, param)
+            if reg_name is not None:
                 cv = hw_to_saved.get(reg_name)
                 if cv is None:
                     continue  # unused param / no save Move -> nothing to bind
                 if reg_name in direct_hw:
                     continue  # condition 3: body reads the bare HW register
-            elif isinstance(param.binding, VariableBinding):
+            elif _variable_param(callee, i, param):
                 continue  # caller already stored to the variable
             else:
                 cv = callee.param_to_vreg.get(i)
@@ -1556,8 +1588,8 @@ class FunctionInliner:
 
             substitution_map[cv.id] = a
             substituted_idx.add(i)
-            if isinstance(param.binding, RegisterBinding):
-                dropped_save_hw.add(param.binding.register_name)
+            if reg_name is not None:
+                dropped_save_hw.add(reg_name)
 
         return substitution_map, substituted_idx, dropped_save_hw, count, save_hw_names
 
