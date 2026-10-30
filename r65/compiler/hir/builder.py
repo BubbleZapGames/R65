@@ -29,6 +29,49 @@ from r65.compiler.hir.lang_items import (
 )
 
 
+def infer_exit_mode(return_type: Optional[TypeInfo]) -> 'ModeState':
+    """
+    Infer exit mode from function return type.
+
+    Rules:
+    - If the value returned in A is two bytes wide -> m16 exit
+    - Otherwise -> m8 exit (default)
+
+    The question is the *machine width* of what lands in A, not the
+    spelling of the type:
+
+    - a newtype answers for its payload, so returning `Q10` leaves the CPU
+      in m16 exactly as `i16` does;
+    - a near pointer and a near `fn()` pointer are two bytes in A; the
+      caller reads this field via `callee_exit_m_mode`, so both sides must
+      agree. Far forms are 3 bytes and the type checker rejects them first;
+    - an enum is one byte until a variant exceeds 255, and two after.
+
+    A multi-return keeps m8: its values are mapped to A/B/X/Y by
+    `get_return_registers`, which owns that decision.
+
+    Args:
+        return_type: Function return type (or None for void)
+
+    Returns:
+        ModeState for function exit (M8 or M16)
+    """
+    from r65.compiler.typeck.processor_mode import ModeState
+    from r65.compiler.hir.types import (EnumTypeInfo, FunctionTypeInfo,
+                                        PointerTypeInfo)
+
+    if return_type is None:
+        return ModeState.M8
+
+    payload = strip_newtype(return_type)
+    if isinstance(payload, (BasicTypeInfo, PointerTypeInfo, FunctionTypeInfo,
+                            EnumTypeInfo)):
+        if payload.size_bytes == 2:
+            return ModeState.M16
+
+    return ModeState.M8
+
+
 class SelfForm(Enum):
     """How a method receives its receiver. One form per type, not per method."""
     POINTER = 'pointer'        # struct/union: `*self`, stack-passed (or SELF_Y)
@@ -806,7 +849,7 @@ class HIRBuilder:
         entry_m_mode = self._infer_entry_mode_and_validate(hir_params, name, loc)
         ret_type = (self._resolve_function_return_type(return_type, entry_m_mode)
                     if return_type else None)
-        return entry_m_mode, ret_type, self._infer_exit_mode(ret_type)
+        return entry_m_mode, ret_type, infer_exit_mode(ret_type)
 
     def _build_extern_function(self, func: ast.FunctionDecl) -> hir.HIRFunctionDecl:
         """Build HIR for an `extern fn` declaration (no body).
@@ -1196,48 +1239,6 @@ class HIRBuilder:
                 )
 
         return tuple_info
-
-    def _infer_exit_mode(self, return_type: Optional[TypeInfo]) -> 'ModeState':
-        """
-        Infer exit mode from function return type.
-
-        Rules:
-        - If the value returned in A is two bytes wide -> m16 exit
-        - Otherwise -> m8 exit (default)
-
-        The question is the *machine width* of what lands in A, not the
-        spelling of the type:
-
-        - a newtype answers for its payload, so returning `Q10` leaves the CPU
-          in m16 exactly as `i16` does;
-        - a near pointer and a near `fn()` pointer are two bytes in A; the
-          caller reads this field via `callee_exit_m_mode`, so both sides must
-          agree. Far forms are 3 bytes and the type checker rejects them first;
-        - an enum is one byte until a variant exceeds 255, and two after.
-
-        A multi-return keeps m8: its values are mapped to A/B/X/Y by
-        `get_return_registers`, which owns that decision.
-
-        Args:
-            return_type: Function return type (or None for void)
-
-        Returns:
-            ModeState for function exit (M8 or M16)
-        """
-        from r65.compiler.typeck.processor_mode import ModeState
-        from r65.compiler.hir.types import (EnumTypeInfo, FunctionTypeInfo,
-                                            PointerTypeInfo)
-
-        if return_type is None:
-            return ModeState.M8
-
-        payload = strip_newtype(return_type)
-        if isinstance(payload, (BasicTypeInfo, PointerTypeInfo, FunctionTypeInfo,
-                                EnumTypeInfo)):
-            if payload.size_bytes == 2:
-                return ModeState.M16
-
-        return ModeState.M8
 
     def _build_parameter(self, param: ast.Parameter) -> hir.HIRParameter:
         """Build HIR parameter from AST."""

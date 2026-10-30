@@ -111,7 +111,7 @@ CASES = {
         fn pair() -> {T}, {T} { return {W}(3), {W}(4); }
         #[entry] fn main() { let a, b = pair(); FIRST = a; SECOND = b; }
     ''',
-    # Guards hir/builder.py::_infer_entry_mode / _infer_exit_mode.
+    # Guards hir/builder.py::_infer_entry_mode / infer_exit_mode.
     "register param and return": '''
         #[zeropage(0x10)] static mut O: {T};
         fn bump(a @ A: {T}) -> {T} { return a + 1; }

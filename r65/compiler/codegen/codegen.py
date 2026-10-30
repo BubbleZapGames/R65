@@ -64,6 +64,22 @@ def _function_modes(mir_func):
     return entry, exit_mode
 
 
+def _dispatch_exit_modes(mir_program) -> Dict[str, int]:
+    """The mode each trait dispatch wrapper returns in, by label: its
+    method's exit mode, which every implementor shares (the return type)."""
+    from r65.compiler.mir.nodes import TraitDispatch
+    from r65.compiler.typeck.processor_mode import ModeState
+
+    exits = {}
+    for func in mir_program.functions:
+        for block in func.blocks.values():
+            for instr in block.instructions:
+                if isinstance(instr, TraitDispatch) and instr.callee_exit_m_mode is not None:
+                    label = f"{instr.trait_name}__{instr.method_name}__dispatch"
+                    exits[label] = 16 if instr.callee_exit_m_mode == ModeState.M16 else 8
+    return exits
+
+
 # What `_emit_dispatch_wrapper`'s code writes on the way to an implementor:
 # the TypeId in A, its table offset in X. Not read off the code, whose
 # `JMP (table,X)` leads where no summary does.
@@ -596,8 +612,11 @@ class ProgramCodeGenerator:
         # Trait dispatch tables (jump tables and wrapper functions): a
         # region of their own, each wrapper entered in its caller's mode.
         start = len(self.emitter.nodes)
+        dispatch_exits = _dispatch_exit_modes(mir_program)
         for dispatch_label in self._emit_trait_dispatch_tables(mir_program):
             entry_modes[dispatch_label] = None
+            if dispatch_label in dispatch_exits:
+                exit_modes[dispatch_label] = dispatch_exits[dispatch_label]
         if len(self.emitter.nodes) > start:
             function_starts.append(self.emitter.nodes[start])
 

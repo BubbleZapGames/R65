@@ -480,6 +480,9 @@ class CallLowerer:
         # Determine if self pointer is far (24-bit)
         self_is_far = isinstance(self_ptr_type, PointerTypeInfo) and self_ptr_type.is_far
 
+        from r65.compiler.hir.builder import infer_exit_mode
+        from r65.compiler.typeck.processor_mode import ModeState
+
         # Emit TraitDispatch MIR node
         self.emit(TraitDispatch(
             trait_name=trait_name,
@@ -490,7 +493,10 @@ class CallLowerer:
             returns=returns,
             is_far=trait_is_far,
             self_is_far=self_is_far,
-            callee_return_type=return_type
+            callee_return_type=return_type,
+            callee_entry_m_mode=ModeState.M8,
+            callee_exit_m_mode=infer_exit_mode(
+                None if return_type == BasicTypeInfo('void') else return_type),
         ))
 
         return returns[0] if returns else None

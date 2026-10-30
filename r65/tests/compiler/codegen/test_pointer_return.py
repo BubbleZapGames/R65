@@ -4,7 +4,7 @@
 Two independent halves, both of which had to be wrong for the value to
 survive a round trip:
 
-1. `_infer_exit_mode` (hir/builder.py) asked whether the return type was
+1. `infer_exit_mode` (hir/builder.py) asked whether the return type was
    *named* `u16`/`i16`. A `*T` is two bytes and rides in A like any other
    16-bit value, but answered "m8", so the callee's return path did
    `SEP #$20` and then moved a single byte — the high half never left the

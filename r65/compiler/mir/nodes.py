@@ -862,6 +862,11 @@ class TraitDispatch(CallBase):
     self_y_after: Optional[int] = None
     self_y_path: Tuple[int, ...] = ()
 
+    # The method's modes, as on Call. The wrapper enters every method in m8
+    # whatever its caller's width; the exit follows the return type.
+    callee_entry_m_mode: Optional[Any] = None
+    callee_exit_m_mode: Optional[Any] = None
+
     def __repr__(self):
         args_str = ', '.join(str(arg) for arg in self.args)
         return f"TraitDispatch {self.trait_name}::{self.method_name}({args_str})"

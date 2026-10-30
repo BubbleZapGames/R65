@@ -537,6 +537,10 @@ class CallInstructionSelector(BaseSelector):
         # Invalidate XBA state after dispatch
         self.parent._invalidate_xba_state()
 
+        # The method returns in its exit mode, not the width the caller
+        # reached the wrapper in
+        self._update_mode_after_call(instr)
+
         # Collect return values
         self._emit_return_value_collection(instr)
 
