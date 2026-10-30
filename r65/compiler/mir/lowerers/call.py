@@ -176,12 +176,17 @@ class CallLowerer:
                 return returns[0]
             return HardwareRegister('A') if is_tuple_return else None
 
-        # For indirect calls, skip mode transition handling (we don't have mode info)
+        # An indirect call's modes come from the pointer type: entered in m8
+        # (call selection pins it for an indirect callee), left in the mode
+        # its return type sets - a u16 result comes back in m16.
         if is_indirect_call:
             # Emit indirect call
+            from r65.compiler.hir.builder import infer_exit_mode
             from r65.compiler.hir.types import FunctionTypeInfo
+            from r65.compiler.typeck.processor_mode import ModeState
             func_type = call_expr.func.expr_type
             is_far = isinstance(func_type, FunctionTypeInfo) and func_type.is_far
+            exit_type = None if return_type == BasicTypeInfo('void') else return_type
 
             self.emit(Call(
                 function=func_ptr_vreg,  # VirtualRegister holding function pointer
@@ -190,7 +195,10 @@ class CallLowerer:
                 is_far=is_far,
                 mode_attr=None,  # No mode attribute for indirect calls
                 bank_attr=None,  # No bank attribute for indirect calls
-                builtin_name=call_expr.builtin_name
+                builtin_name=call_expr.builtin_name,
+                callee_entry_m_mode=ModeState.M8,
+                callee_exit_m_mode=infer_exit_mode(exit_type),
+                callee_return_type=return_type,
             ))
             if returns:
                 return returns[0]
