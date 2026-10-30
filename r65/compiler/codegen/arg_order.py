@@ -10,16 +10,18 @@ from r65.compiler.mir.nodes import ArgumentMechanism
 
 
 def register_arg_rank(register_name: str) -> int:
-    """Order among register arguments: B, then the other registers, then A.
+    """Order among register arguments: the other registers, then B, then A.
 
     Loading B (XBA), DBR (PHA/PLB), D (TCD), or X/Y from a stack slot
-    (LDA; TAX) goes through A, so A is loaded after all of them.
+    (LDA; TAX) goes through A, so A is loaded after all of them. B is A's
+    high byte, which the m16 LDA of a D or an X/Y stack load writes, so it
+    is loaded after those.
     """
     if register_name == 'B':
-        return 3
+        return 4
     if register_name == 'A':
         return 5
-    return 4
+    return 3
 
 
 def arg_sort_key(arg) -> int:

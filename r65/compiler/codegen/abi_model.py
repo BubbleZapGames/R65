@@ -367,13 +367,16 @@ class ABIModel(ABC):
 
         other_args = self._read_a_source_first(selector, other_args)
 
+        # An A-resident value goes first, before anything clobbers A - unless
+        # it is bound for B, which the later loads may write (an m16 LDA): it
+        # keeps its place and the bracket below holds A for it.
         def is_a_resident_priority(arg):
             arg_loc = selector.parent._get_operand_location(arg.value)
             if not arg_loc.is_hw('A'):
                 return False
             if arg.mechanism != ArgumentMechanism.REGISTER:
                 return True
-            return self._register_target_name(arg) != 'A'
+            return self._register_target_name(arg) not in ('A', 'B')
 
         ordered = sorted(other_args, key=selector.arg_sort_key)
         ordered.sort(key=lambda a: 0 if is_a_resident_priority(a) else 1)
