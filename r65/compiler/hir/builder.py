@@ -2015,11 +2015,14 @@ class HIRBuilder:
 
         raw_storage_attr = None
         allow_lints = frozenset()
+        is_used = False
         for attr in processed_attrs:
             if isinstance(attr, StorageAttribute):
                 raw_storage_attr = attr
             elif isinstance(attr, AllowAttribute):
                 allow_lints = attr.codes
+            elif isinstance(attr, UsedAttribute):
+                is_used = True
 
         # Validate storage class based on mutability
         storage_attr = self._validate_static_storage(static, raw_storage_attr)
@@ -2080,6 +2083,7 @@ class HIRBuilder:
             bank_attr=bank_attr,
             allow_lints=allow_lints,
             is_soa=is_soa,
+            is_used=is_used,
             symbol=static_symbol,
             source_loc=static.source_loc
         )

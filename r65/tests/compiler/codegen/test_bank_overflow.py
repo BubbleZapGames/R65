@@ -28,6 +28,7 @@ def test_overflowing_bank_names_an_empty_one():
             static TA: [u8; 20000] = [1; 20000];
             #[bank(1)]
             static TB: [u8; 14000] = [2; 14000];
+            #[used]
             far fn rd(i @ X: u16) -> u8 { return TA[i] + TB[i]; }
         ''')
     assert "ROM bank 1 overflows by" in e.value.message
@@ -37,9 +38,9 @@ def test_overflowing_bank_names_an_empty_one():
 
 
 def test_a_full_bank_fits_and_one_byte_more_does_not():
-    _compile("#[bank(1)]\nstatic TA: [u8; 32768] = [1; 32768];")
+    _compile("#[bank(1)]\n#[used]\nstatic TA: [u8; 32768] = [1; 32768];")
     with pytest.raises(CodegenError, match="bank 1 overflows by 1 byte:"):
-        _compile("#[bank(1)]\nstatic TA: [u8; 32769] = [1; 32769];")
+        _compile("#[bank(1)]\n#[used]\nstatic TA: [u8; 32769] = [1; 32769];")
 
 
 def test_bank_zero_stops_at_the_rom_header():
@@ -60,7 +61,7 @@ def test_include_bytes_larger_than_a_bank(tmp_path, monkeypatch):
     (tmp_path / "src" / "gfx.bin").write_bytes(bytes(40000))
     monkeypatch.chdir(tmp_path)
     with pytest.raises(CodegenError) as e:
-        compile_string(MAIN + '#[bank(1)]\nstatic GFX = include_bytes!("gfx.bin");',
+        compile_string(MAIN + '#[bank(1)]\n#[used]\nstatic GFX = include_bytes!("gfx.bin");',
                        filename=str(tmp_path / "src" / "main.r65"), cfg_options=["snes"])
     assert "more than a bank holds" in e.value.hint
 

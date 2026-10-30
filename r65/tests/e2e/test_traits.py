@@ -157,6 +157,7 @@ class TestTraitDispatch:
                 fn draw(*self) { RESULT = 99; }
             }
 
+            #[used]
             #[lowram]
             static mut PLAYER: Player;
             #[lowram]

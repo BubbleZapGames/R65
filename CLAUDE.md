@@ -479,7 +479,7 @@ Vectors: `nmi`, `irq`, `brk`, `cop`, `abort`. Default `preserve=true`.
 
 *(See [docs/interrupt-mode-transition.md](docs/interrupt-mode-transition.md))*
 
-### Uncalled Functions
+### Unused Functions and Statics
 
 A function nothing calls is removed. `#[used]` keeps one for a caller the
 compiler cannot see - a debugger's `jump`, as a test that swaps a call does:
@@ -488,6 +488,10 @@ compiler cannot see - a debugger's `jump`, as a test that swaps a call does:
 #[used]
 fn boot_harness() -> u8 { return MISSION_HARNESS; }
 ```
+
+A static no live code refers to is removed too, with its initializer and ROM
+data. Statics at an explicit address, `#[hw]` and `register` statics are kept;
+`#[used]` keeps any other, for a debugger or a test that reads it.
 
 ### Pointer Types
 

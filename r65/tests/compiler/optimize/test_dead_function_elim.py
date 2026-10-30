@@ -25,10 +25,6 @@ def test_used_function_is_kept():
     assert "\nspare:" in asm
 
 
-@pytest.mark.parametrize("src", [
-    "#[used(1)]\nfn spare() { }",
-    "#[used]\n#[ram] static mut SPARE: u8;",
-])
-def test_used_misplaced(src):
+def test_used_takes_no_arguments():
     with pytest.raises(HIRError, match=r"#\[used\]"):
-        _compile(src)
+        _compile("#[used(1)]\nfn spare() { }")

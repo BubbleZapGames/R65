@@ -440,9 +440,6 @@ replaces it.
 Recorded so they are not mistaken for oversights. Each is pre-existing, and each
 gets worse as package count grows; see `docs/future-work.md`.
 
-- **Statics are never dead-code eliminated.** Only functions are
-  (`r65/compiler/optimize/dead_function_elim.py`). An unused package static still
-  burns zeropage, RAM or ROM. "Pay for what you use" holds for code, not data.
 - **`#[soa]` and tagged-enum types are program-wide singletons.** Each backs
   exactly one static in the whole program, so a package cannot ship one for
   general use.

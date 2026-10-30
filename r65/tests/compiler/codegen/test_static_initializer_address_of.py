@@ -82,6 +82,7 @@ def test_struct_field_address_of_emits_link_time_bytes():
 ARRAY_OF_POINTERS = """
 static MSG_A: [u8; 4] = "HI\\0";
 
+#[used]
 static TABLE: [far *u8; 2] = [
     &MSG_A as far *u8,
     &MSG_A as far *u8

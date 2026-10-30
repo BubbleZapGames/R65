@@ -207,6 +207,7 @@ class HIRStaticDecl(HIRDeclaration):
     name: str = ""
     is_mutable: bool = False
     is_extern: bool = False  # `extern static` — data lives in an included .s file
+    is_used: bool = False  # #[used]: kept though nothing refers to it
     var_type: Any = None  # Will be TypeInfo
     initializer: Optional[HIRExpression] = None
 

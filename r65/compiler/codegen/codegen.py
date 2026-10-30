@@ -239,6 +239,15 @@ class ProgramCodeGenerator:
             if stores_merged > 0:
                 print(f"Store merging: {stores_merged} byte pair(s) stored as words", file=sys.stderr)
 
+            # Dead static elimination - a static no live code refers to
+            # takes no RAM, zeropage or ROM. Last, once the code is final;
+            # then a function only a dropped table or initializer named goes.
+            from r65.compiler.optimize.dead_static_elim import DeadStaticEliminator
+            statics_eliminated = DeadStaticEliminator(verbose=False).eliminate(mir_program)
+            if statics_eliminated > 0:
+                print(f"Dead static elimination: {statics_eliminated} static(s) removed", file=sys.stderr)
+                DeadFunctionEliminator(verbose=False).eliminate(mir_program)
+
             # Constant-index folding - an X-indexed access with a constant X
             # becomes the absolute access, the X load dropped. What an inlined
             # #[soa] method called on a constant element compiles to:

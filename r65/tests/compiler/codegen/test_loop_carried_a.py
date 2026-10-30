@@ -72,7 +72,7 @@ def test_parameter_in_a_keeps_it_in_memory():
 
 def test_byte_clamp_stays_in_a():
     code = _code('let mut n: u8 = V[3]; if n > 9 { n = 9; } OUT8 = n;', ret='0', sig_ret='u8')
-    assert code[:5] == ['LDA $0283', 'CMP #$0A', 'BCC t__L2', 'LDA #$09', 'STA $02'], code
+    assert code[:5] == ['LDA $0203', 'CMP #$0A', 'BCC t__L2', 'LDA #$09', 'STA $02'], code
     assert 'PHX' not in code, code
 
 

@@ -258,11 +258,13 @@ make clean
   `s.wait(30).right(20); assert s.u16(0x0000) == 140`.
 - `#[zeropage]`/`#[lowram]` statics are `.DEFINE`s, not symbols. Read them by the
   address in the `.DEFINE` line of `build/main.asm`. `#[ram]` statics are in the `.sym` file.
+  A static the program never touches is removed; mark one `#[used]` (or give it an
+  address) to keep it for a test to read.
 - Trust VRAM/OAM/memory dumps over screenshots when checking what is on screen.
   A loop that DMAs OAM before updating it (as in section 2) leaves PPU OAM one
   frame behind the RAM shadow.
 - `asm!("BRK")` is a breakpoint; `#[used]` keeps a function that nothing calls
-  (for a debugger `jump`).
+  (for a debugger `jump`), or a static nothing refers to.
 
 ## 7. SNES and R65 pitfalls
 

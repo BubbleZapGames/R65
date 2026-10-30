@@ -51,10 +51,14 @@ static mut INIDISP: u8;
 #[hw(0x4212)]
 static mut HVBJOY: u8;
 
-// Entry point
+// Entry point; it uses each auto-allocated static, or none would be kept
 #[entry]
 fn main() -> ! {
     TEMP = 42;
+    FLAGS = 1;
+    PLAYER_X = 2;
+    SCORE = 3;
+    LIVES = 4;
     loop {}
 }
 """

@@ -517,8 +517,9 @@ class AttributeProcessor:
 
     def _process_used(self, attr: ast.Attribute, context: str) -> UsedAttribute:
         """Process #[used] attribute."""
-        if context not in ['function']:
-            raise HIRError("#[used] attribute only valid on functions", source_loc=attr.source_loc)
+        if context not in ['function', 'static']:
+            raise HIRError("#[used] attribute only valid on functions and statics",
+                           source_loc=attr.source_loc)
 
         if len(attr.args) > 0:
             raise HIRError("#[used] does not accept arguments", source_loc=attr.source_loc)

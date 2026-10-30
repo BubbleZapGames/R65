@@ -276,14 +276,6 @@ A static base works (`GRID[i][j]`), and so does an array field through a pointer
 
 Pre-existing global-state assumptions that a package system makes reachable. Each is fine in a single-author program and gets worse as package count grows. See [packaging-system.md](packaging-system.md) for the system these block.
 
-### Statics Are Never Dead-Code Eliminated
-
-`DeadFunctionEliminator` (`optimize/dead_function_elim.py`) prunes unreachable functions, but `MemoryAllocator.allocate_all` (`codegen/memory_alloc.py`) allocates every static in `mir_program.statics` regardless of reachability, and `symbol_gen.emit_all_definitions` emits every allocation. An unused static pulled in from a package still burns zeropage, RAM or ROM — so "pay for what you use" holds for code but not data.
-
-**Why deferred**: harmless when every static in the build was written by the author of the build. Packaging is what makes it cost real bytes, and the lint L005 `dead_static_mut` only warns for *mutable* statics that are written and never read.
-
-**Approach if revisited**: reachability over static reads/writes in MIR, seeded from the same entry points `_find_entry_points` already computes, then filter `mir_program.statics` before `allocate_all`. Care needed for `#[hw]` (never prune), `#[soa]` planes (prune as a group), and `include_bytes!` blobs referenced only from inline asm.
-
 ### Program-Wide Singletons
 
 Two constructs assume there is exactly one of them in the program, so a package cannot ship either for general use:
