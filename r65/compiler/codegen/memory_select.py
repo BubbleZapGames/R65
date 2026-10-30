@@ -745,14 +745,8 @@ class MemoryOperationSelector(BaseSelector):
             # 16-bit store
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 field store")
             self.parent.emitter.emit_accu_mode(16)
-            # Load source into A
-            if isinstance(source, MIRImmediate):
-                value = source.value & 0xFFFF
-                self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate(value))
-            elif src_loc.is_hw('A'):
-                pass  # Already in A
-            else:
-                self._emit_load_store('LDA', src_loc)
+            # A source in Y is the pointer itself (`p.me = p`)
+            self._load_word_into_a(src_loc, source)
             self.parent.emitter.emit_raw(f"    STA ${offset:04X},Y")
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
             self.parent.emitter.emit_accu_mode(8)
