@@ -18,9 +18,9 @@ class TestConstPointer:
             #[lowram(0x0300)] static mut BUF: [u8; 4];
             #[lowram(0x0310)] static mut WORDS: [u16; 4];
             #[lowram(0x0318)] static mut AFTER: u16;
-            #[zeropage(0x40)] static mut WALKED: u16;
-            #[zeropage(0x42)] static mut SUMMED: u16;
-            #[zeropage(0x44)] static mut WORDSUM: u16;
+            #[zeropage(0xC0)] static mut WALKED: u16;
+            #[zeropage(0xC2)] static mut SUMMED: u16;
+            #[zeropage(0xC4)] static mut WORDSUM: u16;
 
             #[inline(never)]
             fn walk() -> u16 {
@@ -72,9 +72,9 @@ class TestConstPointer:
                 run();
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0xFA, 0x00],
-            0x7E0042: [0xFA, 0x00],
-            0x7E0044: [0x06, 0x44],                 # 4 * 0x1100 + 0 + 1 + 2 + 3
+            0x7E00C0: [0xFA, 0x00],
+            0x7E00C2: [0xFA, 0x00],
+            0x7E00C4: [0x06, 0x44],                 # 4 * 0x1100 + 0 + 1 + 2 + 3
             0x7E0310: [0x00, 0x11, 0x01, 0x11, 0x02, 0x11, 0x03, 0x11],
             0x7E0318: [0xEF, 0xBE],                 # past the end: untouched
         }), max_instructions=50000)

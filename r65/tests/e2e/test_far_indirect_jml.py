@@ -31,7 +31,7 @@ class TestFarIndirectJmlFastPath:
             #[zeropage(0x13, register)]
             static mut S3: u8;
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut RESULT: u8;
 
             far fn target() {
@@ -47,7 +47,7 @@ class TestFarIndirectJmlFastPath:
                 invoke(target);
             }
         ''', ExpectedState(memory={
-            0x40: 0x42,
+            0xC0: 0x42,
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -65,9 +65,9 @@ class TestFarIndirectJmlFastPath:
             #[zeropage(0x13, register)]
             static mut S3: u8;
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut R0: u8;
-            #[zeropage(0x41)]
+            #[zeropage(0xC1)]
             static mut R1: u8;
 
             far fn target_one() {
@@ -88,8 +88,8 @@ class TestFarIndirectJmlFastPath:
                 invoke(target_two);
             }
         ''', ExpectedState(memory={
-            0x40: 0x11,
-            0x41: 0x22,
+            0xC0: 0x11,
+            0xC1: 0x22,
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -108,10 +108,10 @@ class TestFarIndirectJmlFastPath:
             #[zeropage(0x13, register)]
             static mut S3: u8;
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut CALLEE_VAL: u8;
 
-            #[zeropage(0x41)]
+            #[zeropage(0xC1)]
             static mut POST_CALL: u8;
 
             far fn target() {
@@ -128,7 +128,7 @@ class TestFarIndirectJmlFastPath:
                 invoke(target);
             }
         ''', ExpectedState(memory={
-            0x40: 0x55,
-            0x41: 0x77,
+            0xC0: 0x55,
+            0xC1: 0x77,
         }))
         assert result.success, f"Failures: {result.failures}"

@@ -19,7 +19,7 @@ class TestFarPointerPromotion:
             #[ram]
             static mut BUF: [u8; 4] = [0; 4];
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut RESULT: u8;
 
             fn write_first(ptr: *u8, val @ A: u8) {
@@ -36,7 +36,7 @@ class TestFarPointerPromotion:
                 RESULT = read_first(&BUF);
             }
         ''', ExpectedState(memory={
-            0x7E0040: 0x42,
+            0x7E00C0: 0x42,
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -46,7 +46,7 @@ class TestFarPointerPromotion:
             #[ram]
             static mut BUF: [u8; 4] = [0; 4];
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut RESULT: u8;
 
             #[entry]
@@ -58,21 +58,21 @@ class TestFarPointerPromotion:
                 RESULT = *q;
             }
         ''', ExpectedState(memory={
-            0x7E0040: 0xAB,
+            0x7E00C0: 0xAB,
         }))
         assert result.success, f"Failures: {result.failures}"
 
     def test_no_promotion_zeropage(self, e2e):
         """fn fill(ptr: *u8) called with &ZP_VAR stays near (no D=S overhead)."""
         result = e2e.run('''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut ZP_VAL: u8 = 0;
 
             fn write_ptr(ptr: *u8, val @ A: u8) {
                 *ptr = val;
             }
 
-            #[zeropage(0x50)]
+            #[zeropage(0xD0)]
             static mut RESULT: u8;
 
             #[entry]
@@ -81,7 +81,7 @@ class TestFarPointerPromotion:
                 RESULT = ZP_VAL;
             }
         ''', ExpectedState(memory={
-            0x7E0050: 0x77,
+            0x7E00D0: 0x77,
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -92,12 +92,12 @@ class TestFarPointerPromotion:
             #[ram]
             static mut RAM_VAL: u8 = 0;
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut ZP_VAL: u8 = 0;
 
-            #[zeropage(0x50)]
+            #[zeropage(0xD0)]
             static mut RESULT1: u8;
-            #[zeropage(0x51)]
+            #[zeropage(0xD1)]
             static mut RESULT2: u8;
 
             fn write_val(ptr: *u8, val @ A: u8) {
@@ -116,8 +116,8 @@ class TestFarPointerPromotion:
                 RESULT2 = ZP_VAL;
             }
         ''', ExpectedState(memory={
-            0x7E0050: 0xAA,
-            0x7E0051: 0xBB,
+            0x7E00D0: 0xAA,
+            0x7E00D1: 0xBB,
         }))
         assert result.success, f"Failures: {result.failures}"
 

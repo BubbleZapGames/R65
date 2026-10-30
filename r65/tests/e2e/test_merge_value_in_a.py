@@ -18,9 +18,9 @@ SHAPES = '''
 
     #[zeropage(0x10)]
     static mut POOL: [Shape; 4];
-    #[zeropage(0x40)]
+    #[zeropage(0xC0)]
     static mut OUT: [u8; 4];
-    #[zeropage(0x48)]
+    #[zeropage(0xC8)]
     static mut OUT2: u8;
 '''
 
@@ -45,7 +45,7 @@ class TestMergeValueInA:
                 POOL[3] = Shape::C(Circle { r: 0x44 });
                 get(0); get(1); get(2); get(3);
             }
-        ''', ExpectedState(memory={0x7E0040: [0x11, 0x23, 0x77, 0x44]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x11, 0x23, 0x77, 0x44]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_if_expression(self, e2e):
@@ -60,7 +60,7 @@ class TestMergeValueInA:
                 pick(1, 0);
                 pick(0, 1);
             }
-        ''', ExpectedState(memory={0x7E0040: [0x07, 0x66]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x07, 0x66]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_join_that_uses_a_before_the_merge(self, e2e):
@@ -80,7 +80,7 @@ class TestMergeValueInA:
                 POOL[1] = Shape::Empty;
                 get(0); get(1);
             }
-        ''', ExpectedState(memory={0x7E0040: [0x31, 0x09], 0x7E0048: [0x07]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x31, 0x09], 0x7E00C8: [0x07]}))
         assert result.success, f"Failures: {result.failures}"
 
 

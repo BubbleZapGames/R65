@@ -16,7 +16,7 @@ def test_declared_stack_is_used_from_reset(e2e):
     result = e2e.run('''
         #[stack(0x1F00, 0x1FFF)]
         #[lowram] static mut BIG: [u8; 512];
-        #[zeropage(0x40)] static mut OUT: u16;
+        #[zeropage(0xC0)] static mut OUT: u16;
 
         #[inline(never)]
         fn deep(n: u16) -> u16 {
@@ -35,7 +35,7 @@ def test_declared_stack_is_used_from_reset(e2e):
     ''', ExpectedState(
         SP=0x1FFF,
         memory={
-            0x7E0040: [0x95, 0x02],          # 1 + 4 * 0xA5
+            0x7E00C0: [0x95, 0x02],          # 1 + 4 * 0xA5
             0x7E01F0: [0xA5] * 16,           # where S used to be
         }), max_instructions=20000)
     assert result.success, f"Failures: {result.failures}"

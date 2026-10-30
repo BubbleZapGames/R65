@@ -16,10 +16,10 @@ class TestRightOperandInA:
         result = e2e.run('''
             #[lowram(0x0300)] static mut BUF: [u8; 4];
             #[lowram(0x0304)] static mut AFTER: u8;
-            #[zeropage(0x40)] static mut O1: u16;
-            #[zeropage(0x42)] static mut O2: u16;
-            #[zeropage(0x44)] static mut O3: u8;
-            #[zeropage(0x46)] static mut O4: u16;
+            #[zeropage(0xC0)] static mut O1: u16;
+            #[zeropage(0xC2)] static mut O2: u16;
+            #[zeropage(0xC4)] static mut O3: u8;
+            #[zeropage(0xC6)] static mut O4: u16;
 
             #[inline(never)]
             fn pair(i @ X: u16, j @ Y: u16) -> u16 {
@@ -50,9 +50,9 @@ class TestRightOperandInA:
                 O4 = (BUF[2] as u16) | (BUF[1] as u16);
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0xFD, 0x01],   # 0xFF + 0xFE
-            0x7E0042: [0xB5, 0x12],   # 0x1234 + 0x81
-            0x7E0044: [0x5D],         # 0x5A ^ 0x0F ^ 0x01 ^ 0x07 ^ 0x0E
-            0x7E0046: [0x87, 0x00],   # 0x07 | 0x81
+            0x7E00C0: [0xFD, 0x01],   # 0xFF + 0xFE
+            0x7E00C2: [0xB5, 0x12],   # 0x1234 + 0x81
+            0x7E00C4: [0x5D],         # 0x5A ^ 0x0F ^ 0x01 ^ 0x07 ^ 0x0E
+            0x7E00C6: [0x87, 0x00],   # 0x07 | 0x81
         }))
         assert result.success, f"Failures: {result.failures}"

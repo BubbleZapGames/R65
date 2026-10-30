@@ -16,8 +16,8 @@ class TestWebSplit:
         result = e2e.run('''
             #[lowram] static mut FLAGS: [u8; 1024];
             #[lowram] static mut ROW: [u8; 32];
-            #[zeropage(0x40)] static mut PRIMES: u16;
-            #[zeropage(0x42)] static mut MIXED: u16;
+            #[zeropage(0xC0)] static mut PRIMES: u16;
+            #[zeropage(0xC2)] static mut MIXED: u16;
 
             #[inline(never)]
             fn sieve() -> u16 {
@@ -60,7 +60,7 @@ class TestWebSplit:
                 MIXED = c + (ROW[7] as u16) + (ROW[29] as u16);
             }
         ''', ExpectedState(memory={
-            0x7E0040: [172, 0],        # primes below 1024
-            0x7E0042: [8 + 1 + 2, 0],
+            0x7E00C0: [172, 0],        # primes below 1024
+            0x7E00C2: [8 + 1 + 2, 0],
         }), max_instructions=200000)
         assert result.success, f"Failures: {result.failures}"

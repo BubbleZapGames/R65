@@ -43,7 +43,7 @@ class TestSoaLayout:
 
             #[zeropage(0x10)]
             static mut POOL: [Enemy; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -70,7 +70,7 @@ class TestSoaLayout:
 
             #[zeropage(0x10)]
             static mut POOL: [E; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -120,7 +120,7 @@ class TestSoaMethods:
 
             #[zeropage(0x10)]
             static mut POOL: [Enemy; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -150,7 +150,7 @@ class TestSoaMethods:
 
             #[zeropage(0x10)]
             static mut POOL: [Enemy; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -191,7 +191,7 @@ class TestSoaMethods:
 
             #[zeropage(0x10)]
             static mut POOL: [Enemy; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -255,7 +255,7 @@ class TestSoaNestedFields:
 
             #[zeropage(0x10)]
             static mut SPR: [Sprite; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -284,7 +284,7 @@ class TestSoaNestedFields:
 
             #[zeropage(0x10)]
             static mut SPR: [Sprite; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -318,7 +318,7 @@ class TestSoaControlFlow:
 
             #[zeropage(0x10)]
             static mut P: [E; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -346,7 +346,7 @@ class TestSoaControlFlow:
 
             #[zeropage(0x10)]
             static mut P: [E; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -370,10 +370,10 @@ class TestSoaInitializer:
                 Area { id: 0x11, exits: 0x1234, flags: 0x00 },
                 Area { id: 0x12, exits: 2,      flags: 0x04 },
             ];
-            #[zeropage(0x30)] static mut i: u16;
-            #[zeropage(0x32)] static mut exits: u16;
-            #[zeropage(0x34)] static mut id: u8;
-            #[zeropage(0x35)] static mut flags: u8;
+            #[zeropage(0xB0)] static mut i: u16;
+            #[zeropage(0xB2)] static mut exits: u16;
+            #[zeropage(0xB4)] static mut id: u8;
+            #[zeropage(0xB5)] static mut flags: u8;
 
             #[entry]
             fn main() {
@@ -383,9 +383,9 @@ class TestSoaInitializer:
                 flags = AREAS[2].flags;
             }
         ''', ExpectedState(memory={
-            0x7E0032: [0x34, 0x12],
-            0x7E0034: 0x11,
-            0x7E0035: 0x04,
+            0x7E00B2: [0x34, 0x12],
+            0x7E00B4: 0x11,
+            0x7E00B5: 0x04,
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -400,8 +400,8 @@ class TestSoaInitializer:
                 Area { name: &NAME_A as far *u8, id: 1 },
                 Area { name: &NAME_B as far *u8, id: 2 },
             ];
-            #[zeropage(0x30)] static mut i: u16;
-            #[zeropage(0x32)] static mut out: u8;
+            #[zeropage(0xB0)] static mut i: u16;
+            #[zeropage(0xB2)] static mut out: u8;
 
             #[entry]
             fn main() {
@@ -409,7 +409,7 @@ class TestSoaInitializer:
                 let p: far *u8 = AREAS[i].name;
                 out = *p;
             }
-        ''', ExpectedState(memory={0x7E0032: 0xBB}))
+        ''', ExpectedState(memory={0x7E00B2: 0xBB}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_ram_pool_is_copied_per_plane(self, e2e):

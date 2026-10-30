@@ -16,9 +16,9 @@ class TestLoopRotation:
     def test_exit_width_and_counter_after_the_loop(self, e2e):
         result = e2e.run('''
             #[lowram] static mut DATA: [u16; 16];
-            #[zeropage(0x40)] static mut G: u8;
-            #[zeropage(0x42)] static mut OUT8: u8;
-            #[zeropage(0x44)] static mut OUT16: u16;
+            #[zeropage(0xC0)] static mut G: u8;
+            #[zeropage(0xC2)] static mut OUT8: u8;
+            #[zeropage(0xC4)] static mut OUT16: u16;
 
             #[inline(never)]
             fn sum_then_m8() -> u8 {
@@ -54,9 +54,9 @@ class TestLoopRotation:
                 OUT16 = count();        // 8, and G = 8 + 16
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x18],
-            0x7E0042: [0x90],
-            0x7E0044: [0x08, 0x00],
+            0x7E00C0: [0x18],
+            0x7E00C2: [0x90],
+            0x7E00C4: [0x08, 0x00],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -65,7 +65,7 @@ class TestLoopRotation:
         # back into the loop, so the rotated loop cannot fall into the exit.
         result = e2e.run('''
             #[lowram] static mut DATA: [u16; 8];
-            #[zeropage(0x40)] static mut OUT: u16;
+            #[zeropage(0xC0)] static mut OUT: u16;
 
             #[inline(never)]
             fn score() -> u16 {
@@ -94,15 +94,15 @@ class TestLoopRotation:
                 }
                 OUT = score();   // odd 1,3,5,7: 400; even >= 4 (4, 6): 20
             }
-        ''', ExpectedState(memory={0x7E0040: [0xA4, 0x01]}))
+        ''', ExpectedState(memory={0x7E00C0: [0xA4, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_continue_and_nested_counters(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut OUT: u16;
-            #[zeropage(0x42)] static mut G: u8;
-            #[zeropage(0x43)] static mut H: u8;
-            #[zeropage(0x44)] static mut K: u8;
+            #[zeropage(0xC0)] static mut OUT: u16;
+            #[zeropage(0xC2)] static mut G: u8;
+            #[zeropage(0xC3)] static mut H: u8;
+            #[zeropage(0xC4)] static mut K: u8;
 
             #[inline(never)]
             fn evens() -> u16 {
@@ -154,10 +154,10 @@ class TestLoopRotation:
                 nested();        // two passes of three: K = 6
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x1E, 0x00],
-            0x7E0042: [0x06],
-            0x7E0043: [0x03],
-            0x7E0044: [0x06],
+            0x7E00C0: [0x1E, 0x00],
+            0x7E00C2: [0x06],
+            0x7E00C3: [0x03],
+            0x7E00C4: [0x06],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -165,11 +165,11 @@ class TestLoopRotation:
         # The first test may fail: the guard copy must skip the body.
         result = e2e.run('''
             #[lowram] static mut BUF: [u8; 4];
-            #[zeropage(0x40)] static mut BITS: u16;
-            #[zeropage(0x42)] static mut FROM_START: u16;
-            #[zeropage(0x44)] static mut FROM_END: u16;
-            #[zeropage(0x46)] static mut ODD: u16;
-            #[zeropage(0x48)] static mut START: u16;
+            #[zeropage(0xC0)] static mut BITS: u16;
+            #[zeropage(0xC2)] static mut FROM_START: u16;
+            #[zeropage(0xC4)] static mut FROM_END: u16;
+            #[zeropage(0xC6)] static mut ODD: u16;
+            #[zeropage(0xC8)] static mut START: u16;
 
             #[inline(never)]
             fn popcount() -> u16 {
@@ -223,9 +223,9 @@ class TestLoopRotation:
                 ODD = odd_sum(4);           // 5 + 7 + 9
             }
         ''', ExpectedState(memory={
-            0x7E0040: [10, 0],
-            0x7E0042: [7, 0],
-            0x7E0044: [0, 0],
-            0x7E0046: [21, 0],
+            0x7E00C0: [10, 0],
+            0x7E00C2: [7, 0],
+            0x7E00C4: [0, 0],
+            0x7E00C6: [21, 0],
         }))
         assert result.success, f"Failures: {result.failures}"

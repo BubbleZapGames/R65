@@ -400,8 +400,8 @@ class TestQ8ToString:
         r = e2e.run(program(f"let q: Q8 = {expr};\n"
                             "LEN = q.to_string(&BUF as far *u8) as u8;",
                             statics=("#[ram]\nstatic mut BUF: [u8; 16];\n"
-                                     "#[zeropage(0x30)]\nstatic mut LEN: u8;")),
-                    ExpectedState(memory={0x7E0030: len(expected)}))
+                                     "#[zeropage(0xB0)]\nstatic mut LEN: u8;")),
+                    ExpectedState(memory={0x7E00B0: len(expected)}))
         assert r.success, f"{expr}: {r.error} {r.failures}"
         assert self.read_n(r.cpu, len(expected)) == expected
 
@@ -443,8 +443,8 @@ class TestQ8ToString:
                             "let q: Q8 = Q8::from(12, 192);\n"
                             "LEN = q.to_string(&BUF as far *u8) as u8;",
                             statics=("#[ram]\nstatic mut BUF: [u8; 16];\n"
-                                     "#[zeropage(0x30)]\nstatic mut LEN: u8;")),
-                    ExpectedState(memory={0x7E0030: 5}))
+                                     "#[zeropage(0xB0)]\nstatic mut LEN: u8;")),
+                    ExpectedState(memory={0x7E00B0: 5}))
         assert r.success, f"{r.error} {r.failures}"
         assert self.read_n(r.cpu, 5) == "12.75"
         assert r.cpu.memory.read(self.BUF + 5) == 0xFF, (

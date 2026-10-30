@@ -17,8 +17,8 @@ class TestMacroExprPrecedence:
         result = e2e.run('''
             macro_rules! DBL($e:expr) { $e * 2 }
 
-            #[zeropage(0x30)] static mut FY: u8;
-            #[zeropage(0x31)] static mut OUT: u8;
+            #[zeropage(0xB0)] static mut FY: u8;
+            #[zeropage(0xB1)] static mut OUT: u8;
 
             #[entry]
             fn main() {
@@ -26,7 +26,7 @@ class TestMacroExprPrecedence:
                 OUT = DBL!(FY + 1);
             }
         ''', ExpectedState(memory={
-            0x7E0031: [12],     # (5 + 1) * 2, not 5 + 1 * 2
+            0x7E00B1: [12],     # (5 + 1) * 2, not 5 + 1 * 2
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -35,9 +35,9 @@ class TestMacroExprPrecedence:
         result = e2e.run('''
             macro_rules! POS($x:expr, $y:expr) { ((($y as u16) << 5) + ($x as u16)) }
 
-            #[zeropage(0x30)] static mut FX: u8;
-            #[zeropage(0x31)] static mut FY: u8;
-            #[zeropage(0x32)] static mut OUT: u16;
+            #[zeropage(0xB0)] static mut FX: u8;
+            #[zeropage(0xB1)] static mut FY: u8;
+            #[zeropage(0xB2)] static mut OUT: u16;
 
             #[entry]
             fn main() {
@@ -46,6 +46,6 @@ class TestMacroExprPrecedence:
                 OUT = POS!(FX >> 3, FY >> 3);
             }
         ''', ExpectedState(memory={
-            0x7E0032: [0x23, 0x03],     # 25 * 32 + 3 = 803
+            0x7E00B2: [0x23, 0x03],     # 25 * 32 + 3 = 803
         }))
         assert result.success, f"Failures: {result.failures}"

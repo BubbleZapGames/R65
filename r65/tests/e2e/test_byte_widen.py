@@ -16,9 +16,9 @@ class TestByteWiden:
         result = e2e.run('''
             #[lowram(0x0300)] static mut BUF: [u8; 4];
             #[lowram(0x0304)] static mut AFTER: u8;
-            #[zeropage(0x40)] static mut OUT_STATIC: u16;
-            #[zeropage(0x42)] static mut OUT_PTR: u16;
-            #[zeropage(0x44)] static mut OUT_MASK: u16;
+            #[zeropage(0xC0)] static mut OUT_STATIC: u16;
+            #[zeropage(0xC2)] static mut OUT_PTR: u16;
+            #[zeropage(0xC4)] static mut OUT_MASK: u16;
 
             #[inline(always)]
             fn sum_bytes(p: *u8, n: u16) -> u16 {
@@ -66,8 +66,8 @@ class TestByteWiden:
                 OUT_MASK = low_bits();                   // 3 + 1 + 3 + 2
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x85, 0x02],
-            0x7E0042: [0x85, 0x02],
-            0x7E0044: [0x09, 0x00],
+            0x7E00C0: [0x85, 0x02],
+            0x7E00C2: [0x85, 0x02],
+            0x7E00C4: [0x09, 0x00],
         }))
         assert result.success, f"Failures: {result.failures}"

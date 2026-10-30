@@ -56,12 +56,12 @@ def test_b_survives_a_later_load_into_a(e2e):
     "A already holds B" and skipped its XBA: R got Q's 9, not t's 7.
     """
     result = e2e.run('''
-        #[zeropage(0x40)] static mut P: u8;
-        #[zeropage(0x41)] static mut Q: u8;
-        #[zeropage(0x42)] static mut R: u8;
+        #[zeropage(0xC0)] static mut P: u8;
+        #[zeropage(0xC1)] static mut Q: u8;
+        #[zeropage(0xC2)] static mut R: u8;
         #[entry]
         fn main() -> ! { P = 5; Q = 9; let t: u8 = P + 2; B = t; A = Q; R = B; loop {} }
-    ''', ExpectedState(memory={0x7E0042: [7]}))
+    ''', ExpectedState(memory={0x7E00C2: [7]}))
     assert result.success, f"Failures: {result.failures} {result.error}"
 
 

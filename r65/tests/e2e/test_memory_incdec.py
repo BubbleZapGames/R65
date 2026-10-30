@@ -15,11 +15,11 @@ class TestIncDecMemory:
 
     def test_wraparound_both_widths(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut B0: u8;
+            #[zeropage(0xC0)] static mut B0: u8;
             #[lowram] static mut B1: u8;
-            #[zeropage(0x42)] static mut W0: u16;
-            #[zeropage(0x44)] static mut W1: u16;
-            #[zeropage(0x48)] static mut OUT: u8;
+            #[zeropage(0xC2)] static mut W0: u16;
+            #[zeropage(0xC4)] static mut W1: u16;
+            #[zeropage(0xC8)] static mut OUT: u8;
 
             #[entry]
             fn main() {
@@ -30,9 +30,9 @@ class TestIncDecMemory:
                 OUT = B1;
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0xFF],
-            0x7E0042: [0x00, 0x01, 0xFF, 0x00],
-            0x7E0048: [0x00],
+            0x7E00C0: [0xFF],
+            0x7E00C2: [0x00, 0x01, 0xFF, 0x00],
+            0x7E00C8: [0x00],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -67,11 +67,11 @@ class TestIncDecMemory:
 
     def test_shifts_by_one_on_memory(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut BY: u8;
-            #[zeropage(0x42)] static mut W: u16;
-            #[zeropage(0x44)] static mut SG: i8;
+            #[zeropage(0xC0)] static mut BY: u8;
+            #[zeropage(0xC2)] static mut W: u16;
+            #[zeropage(0xC4)] static mut SG: i8;
             #[lowram] static mut ARR: [u8; 4];
-            #[zeropage(0x46)] static mut OUT: [u8; 2];
+            #[zeropage(0xC6)] static mut OUT: [u8; 2];
 
             #[inline(never)]
             fn step(i @ X: u16) {
@@ -90,10 +90,10 @@ class TestIncDecMemory:
                 OUT[1] = ARR[3];
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x82],          # 0xC1 << 1, bit 7 out
-            0x7E0042: [0x80, 0x01],    # 0x0301 >> 1: bit 8 moves into the low byte
-            0x7E0044: [0xFD],          # -6 >> 1 = -3
-            0x7E0046: [0x40, 0x00],
+            0x7E00C0: [0x82],          # 0xC1 << 1, bit 7 out
+            0x7E00C2: [0x80, 0x01],    # 0x0301 >> 1: bit 8 moves into the low byte
+            0x7E00C4: [0xFD],          # -6 >> 1 = -3
+            0x7E00C6: [0x40, 0x00],
         }))
         assert result.success, f"Failures: {result.failures}"
 

@@ -25,11 +25,11 @@ class TestAParkWidth:
             #[zeropage(0x18, register)] static mut SCRATCH1: u16;
             #[zeropage(0x1A, register)] static mut SCRATCH2: u16;
 
-            #[zeropage(0x30)] static mut base_x: u16;
-            #[zeropage(0x32)] static mut base_y: u16;
-            #[zeropage(0x34)] static mut face_left: u8;
-            #[zeropage(0x36)] static mut out_y: u16;
-            #[zeropage(0x38)] static mut out_vx: i16;
+            #[zeropage(0xB0)] static mut base_x: u16;
+            #[zeropage(0xB2)] static mut base_y: u16;
+            #[zeropage(0xB4)] static mut face_left: u8;
+            #[zeropage(0xB6)] static mut out_y: u16;
+            #[zeropage(0xB8)] static mut out_vx: i16;
 
             fn spawn(kind: u8, x: u16, y: u16, vx: i16, vy: i16, life: u8, owner: u8) {
                 out_y = y;
@@ -50,8 +50,8 @@ class TestAParkWidth:
                 spawn(1, mx, base_y + (7 << 8), v, 0, 40, 0);
             }
         ''', ExpectedState(memory={
-            0x7E0036: [0x00, 0x67],      # y = 0x6000 + 0x0700, high byte intact
-            0x7E0038: [0x00, 0x02],      # vx
+            0x7E00B6: [0x00, 0x67],      # y = 0x6000 + 0x0700, high byte intact
+            0x7E00B8: [0x00, 0x02],      # vx
         }))
         assert result.success, f"Failures: {result.failures}"
 

@@ -15,11 +15,11 @@ from r65.tests.e2e import ExpectedState
 class TestDecFoldOverflow:
     def test_signed_compare_after_overflowing_add(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x30)] static mut A8: i8;
-            #[zeropage(0x31)] static mut B8: i8;
-            #[zeropage(0x32)] static mut S8: i8;
-            #[zeropage(0x33)] static mut DX: i8;
-            #[zeropage(0x34)] static mut OUT: u8;
+            #[zeropage(0xB0)] static mut A8: i8;
+            #[zeropage(0xB1)] static mut B8: i8;
+            #[zeropage(0xB2)] static mut S8: i8;
+            #[zeropage(0xB3)] static mut DX: i8;
+            #[zeropage(0xB4)] static mut OUT: u8;
 
             fn check() {
                 S8 = A8 + B8;       // 0x7F + 1 overflows: V = 1
@@ -34,6 +34,6 @@ class TestDecFoldOverflow:
                 check();
             }
         ''', ExpectedState(memory={
-            0x7E0034: [2],      # 5 <= 1 is false
+            0x7E00B4: [2],      # 5 <= 1 is false
         }))
         assert result.success, f"Failures: {result.failures}"

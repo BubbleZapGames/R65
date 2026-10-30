@@ -174,15 +174,15 @@ class TestIndirectStoreFromPromotedCounter:
     which register holds what, these pin that the right bytes reach memory.
     """
 
-    DECL = ("#[zeropage(0x40)]\nstatic mut PTR: *u8;\n"
+    DECL = ("#[zeropage(0xC0)]\nstatic mut PTR: *u8;\n"
             "#[lowram]\nstatic mut BUF: [u8; 32];\n"
-            "#[zeropage(0x50)]\nstatic mut K: u8;\n"
-            "#[zeropage(0x51)]\nstatic mut GUARD: u8;\n")
+            "#[zeropage(0xD0)]\nstatic mut K: u8;\n"
+            "#[zeropage(0xD1)]\nstatic mut GUARD: u8;\n")
 
     def run(self, e2e, body: str):
         src = (self.DECL + "#[entry]\nfn main() { GUARD = 0xEE; PTR = &BUF;"
                " K = 0; let mut i: u8 = 0; " + body + " }")
-        r = e2e.run(src, ExpectedState(memory={0x7E0051: 0xEE}))
+        r = e2e.run(src, ExpectedState(memory={0x7E00D1: 0xEE}))
         assert r.success, f"Failures: {r.failures}"
         return r
 

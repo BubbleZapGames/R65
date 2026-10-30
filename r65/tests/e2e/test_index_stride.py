@@ -22,15 +22,15 @@ def test_scaled_counters(e2e):
         #[lowram(0x036F)] static mut AFTER3: u16;
         #[ram] static mut CELLS: [u8; 6];
         #[ram] static mut PTRS: [far *u8; 6];
-        #[zeropage(0x46)] static mut VIA: u16;
+        #[zeropage(0xC6)] static mut VIA: u16;
         #[lowram(0x0300)] static mut W: [u16; 16];
         #[lowram(0x0320)] static mut A1: [u16; 4];
         #[lowram(0x0328)] static mut A2: [u16; 4];
         #[lowram(0x0330)] static mut A3: [u16; 4];
         #[lowram(0x0338)] static mut AFTER: u16;
-        #[zeropage(0x40)] static mut FROM3: u16;
-        #[zeropage(0x42)] static mut PAST: u16;
-        #[zeropage(0x44)] static mut THROUGH: u16;
+        #[zeropage(0xC0)] static mut FROM3: u16;
+        #[zeropage(0xC2)] static mut PAST: u16;
+        #[zeropage(0xC4)] static mut THROUGH: u16;
 
         #[inline(never)]
         fn sum_from(start: u16) -> u16 {
@@ -111,14 +111,14 @@ def test_scaled_counters(e2e):
             trip();                // elements 1..4; element 0 untouched
         }
     ''', ExpectedState(memory={
-        0x7E0040: [0x2A, 0x07],
-        0x7E0042: [0x55, 0x00],
-        0x7E0044: [0x78, 0x10],
+        0x7E00C0: [0x2A, 0x07],
+        0x7E00C2: [0x55, 0x00],
+        0x7E00C4: [0x78, 0x10],
         0x7E0320: [0x11, 0x11] * 4 + [0x22, 0x22] * 4 + [0x00, 0x00] * 4,
         0x7E0338: [0xEF, 0xBE],
         0x7E0340: [0xAA, 0xAA, 0x5A, 0x66] + [0x34, 0x12, 0x5A, 0x09] * 3,
         0x7E0350: [0xFE, 0xCA],
-        0x7E0046: [0xA0, 0x00],
+        0x7E00C6: [0xA0, 0x00],
         0x7E0360: [0x11, 0x33, 0x22] + [0x77, 0xB2, 0xA1] * 4 + [0x0D, 0xD0],
     }), max_instructions=50000)
     assert result.success, f"Failures: {result.failures}"

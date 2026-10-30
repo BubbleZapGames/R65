@@ -24,7 +24,7 @@ class TestIndexParamSurvivesForeignRegisterUse:
             static mut DEST: [u8; 4];
             #[zeropage(0x20)]
             static mut TABLE: [u8; 4];
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut k: u16;
 
             fn store(idx @ X: u16) { DEST[idx] = TABLE[k]; }

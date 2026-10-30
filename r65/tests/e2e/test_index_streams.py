@@ -22,7 +22,7 @@ class TestIndexStreams:
             #[ram] static mut PX: [u8; 4];
             #[ram] static mut PY: [u8; 4];
             #[lowram(0x0300)] static mut OAM: [Spr; 8];
-            #[zeropage(0x30)] static mut N: u8;
+            #[zeropage(0xB0)] static mut N: u8;
 
             fn draw() {
                 let mut spr: u16 = 2;
@@ -53,8 +53,8 @@ class TestIndexStreams:
             struct Pair { a: u8, b: u8 }
             #[lowram(0x0300)] static mut SRC: [Pair; 4];
             #[lowram(0x0340)] static mut DST: [Pair; 4];
-            #[zeropage(0x30)] static mut I: u16;
-            #[zeropage(0x32)] static mut J: u16;
+            #[zeropage(0xB0)] static mut I: u16;
+            #[zeropage(0xB2)] static mut J: u16;
 
             #[entry]
             fn main() {
@@ -74,9 +74,9 @@ class TestIndexStreams:
         """A direct page static indexed by Y goes through abs,Y."""
         result = e2e.run('''
             #[ram] static mut SRC: [u8; 4];
-            #[zeropage(0x40)] static mut DST: [u8; 8];
-            #[zeropage(0x30)] static mut I: u16;
-            #[zeropage(0x32)] static mut J: u16;
+            #[zeropage(0xC0)] static mut DST: [u8; 8];
+            #[zeropage(0xB0)] static mut I: u16;
+            #[zeropage(0xB2)] static mut J: u16;
 
             #[entry]
             fn main() {
@@ -89,7 +89,7 @@ class TestIndexStreams:
                 DST[j] = DST[j] + SRC[i];
             }
         ''', ExpectedState(memory={
-            0x7E0048: [10, 6],
+            0x7E00C8: [10, 6],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -99,7 +99,7 @@ class TestIndexStreams:
             struct Spr { x: u8, y: u8 }
             #[ram] static mut PX: [u8; 4];
             #[lowram(0x0300)] static mut OAM: [Spr; 4];
-            #[zeropage(0x30)] static mut OUT: u16;
+            #[zeropage(0xB0)] static mut OUT: u16;
 
             fn copy(i @ X: u16, keep @ Y: u16) {
                 OAM[1].x = PX[i];
@@ -114,7 +114,7 @@ class TestIndexStreams:
             }
         ''', ExpectedState(memory={
             0x0302: [3, 4],
-            0x7E0030: [0x34, 0x12],
+            0x7E00B0: [0x34, 0x12],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -126,8 +126,8 @@ class TestIndexStreams:
             #[ram] static mut PX: [u8; 4];
             #[lowram(0x0300)] static mut OAM: [Spr; 4];
             #[lowram(0x0320)] static mut PT: Pt;
-            #[zeropage(0x30)] static mut I: u16;
-            #[zeropage(0x32)] static mut SP_IN: u16;
+            #[zeropage(0xB0)] static mut I: u16;
+            #[zeropage(0xB2)] static mut SP_IN: u16;
 
             fn copy(p: *Pt) {
                 let i = I;

@@ -18,11 +18,11 @@ class TestUnionsE2E:
 
             #[zeropage(0x20)]
             static mut P: Pixel;
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut LO: u8;
-            #[zeropage(0x31)]
+            #[zeropage(0xB1)]
             static mut HI: u8;
-            #[zeropage(0x32)]
+            #[zeropage(0xB2)]
             static mut ROUNDTRIP: u16;
 
             #[entry]
@@ -34,9 +34,9 @@ class TestUnionsE2E:
                 ROUNDTRIP = P.raw;
             }
         ''', ExpectedState(memory={
-            0x7E0030: 0x34,
-            0x7E0031: 0x12,
-            0x7E0032: [0x34, 0xFF],  # 0xFF34 little-endian
+            0x7E00B0: 0x34,
+            0x7E00B1: 0x12,
+            0x7E00B2: [0x34, 0xFF],  # 0xFF34 little-endian
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -77,7 +77,7 @@ class TestUnionsE2E:
             // One scratch region, read as either a menu state or a battle state
             union Scene { menu: Menu, battle: Battle }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut SCENE: Scene;
             #[zeropage(0x20)]
             static mut CURSOR: u8;
@@ -95,6 +95,6 @@ class TestUnionsE2E:
             0x7E0020: 9,
             0x7E0022: [0x00, 0x01],
             # menu.cursor and battle.hp's low byte are the same byte
-            0x7E0040: 9,
+            0x7E00C0: 9,
         }))
         assert result.success, f"Failures: {result.failures}"

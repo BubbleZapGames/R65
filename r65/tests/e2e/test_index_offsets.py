@@ -16,7 +16,7 @@ class TestIndexOffsets:
         result = e2e.run('''
             #[ram] static mut MAP: [u8; 128];
             #[lowram(0x0300)] static mut OUT: [u8; 4];
-            #[zeropage(0x30)] static mut T: u16;
+            #[zeropage(0xB0)] static mut T: u16;
 
             #[entry]
             fn main() {
@@ -40,7 +40,7 @@ class TestIndexOffsets:
             struct Row { a: u8, b: u8, c: u8, d: u8 }
             #[ram] static mut ROWS: [Row; 8];
             #[lowram(0x0300)] static mut OUT: [u8; 2];
-            #[zeropage(0x30)] static mut I: u16;
+            #[zeropage(0xB0)] static mut I: u16;
 
             #[entry]
             fn main() {
@@ -59,7 +59,7 @@ class TestIndexOffsets:
         result = e2e.run('''
             static TABLE: [u8; 4] = [10, 20, 30, 40];
             #[lowram(0x0300)] static mut OUT: [u8; 2];
-            #[zeropage(0x30)] static mut I: u16;
+            #[zeropage(0xB0)] static mut I: u16;
 
             #[entry]
             fn main() {
@@ -76,7 +76,7 @@ class TestIndexOffsets:
         result = e2e.run('''
             #[ram] static mut RING: [u8; 256];
             #[lowram(0x0300)] static mut OUT: [u8; 1];
-            #[zeropage(0x30)] static mut HEAD: u8;
+            #[zeropage(0xB0)] static mut HEAD: u8;
 
             #[entry]
             fn main() {

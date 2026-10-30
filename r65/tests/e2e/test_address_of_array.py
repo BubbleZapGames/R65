@@ -19,7 +19,7 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x20)]
             static mut ARR: [u8; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u8;
 
             fn read_via_ptr(ptr: *u8) -> u8 {
@@ -32,7 +32,7 @@ class TestAddressOfArrayIndex:
                 RESULT = read_via_ptr(p);
             }
         ''', ExpectedState(memory={
-            0x7E0030: 30,  # ARR[2] == 30
+            0x7E00B0: 30,  # ARR[2] == 30
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -42,7 +42,7 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x20)]
             static mut ARR: [u16; 4] = [0x1111, 0x2222, 0x3333, 0x4444];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u16;
 
             #[entry]
@@ -52,7 +52,7 @@ class TestAddressOfArrayIndex:
                 RESULT = *p;
             }
         ''', ExpectedState(memory={
-            0x7E0030: [0x33, 0x33],  # ARR[2] == 0x3333
+            0x7E00B0: [0x33, 0x33],  # ARR[2] == 0x3333
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -62,10 +62,10 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x20)]
             static mut ARR: [u8; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u8;
 
-            #[zeropage(0x31)]
+            #[zeropage(0xB1)]
             static mut IDX: u8 = 3;
 
             fn read_via_ptr(ptr: *u8) -> u8 {
@@ -79,7 +79,7 @@ class TestAddressOfArrayIndex:
                 RESULT = read_via_ptr(p);
             }
         ''', ExpectedState(memory={
-            0x7E0030: 40,  # ARR[3] == 40
+            0x7E00B0: 40,  # ARR[3] == 40
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -89,10 +89,10 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x20)]
             static mut ARR: [u16; 4] = [0x1111, 0x2222, 0x3333, 0x4444];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u16;
 
-            #[zeropage(0x32)]
+            #[zeropage(0xB2)]
             static mut IDX: u8 = 1;
 
             #[entry]
@@ -102,7 +102,7 @@ class TestAddressOfArrayIndex:
                 RESULT = *p;
             }
         ''', ExpectedState(memory={
-            0x7E0030: [0x22, 0x22],  # ARR[1] == 0x2222
+            0x7E00B0: [0x22, 0x22],  # ARR[1] == 0x2222
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -112,7 +112,7 @@ class TestAddressOfArrayIndex:
             #[ram]
             static mut ARR: [u8; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u8;
 
             fn read_via_far_ptr(ptr: far *u8) -> u8 {
@@ -125,7 +125,7 @@ class TestAddressOfArrayIndex:
                 RESULT = read_via_far_ptr(p);
             }
         ''', ExpectedState(memory={
-            0x7E0030: 30,  # ARR[2] == 30
+            0x7E00B0: 30,  # ARR[2] == 30
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -135,10 +135,10 @@ class TestAddressOfArrayIndex:
             #[ram]
             static mut ARR: [u8; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u8;
 
-            #[zeropage(0x31)]
+            #[zeropage(0xB1)]
             static mut IDX: u8 = 5;
 
             fn read_via_far_ptr(ptr: far *u8) -> u8 {
@@ -152,7 +152,7 @@ class TestAddressOfArrayIndex:
                 RESULT = read_via_far_ptr(p);
             }
         ''', ExpectedState(memory={
-            0x7E0030: 60,  # ARR[5] == 60
+            0x7E00B0: 60,  # ARR[5] == 60
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -162,7 +162,7 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x20)]
             static mut ARR: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
 
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut RESULT: u8;
 
             fn read_via_ptr(ptr: *u8) -> u8 {
@@ -175,7 +175,7 @@ class TestAddressOfArrayIndex:
                 RESULT = read_via_ptr(p);
             }
         ''', ExpectedState(memory={
-            0x7E0030: 0xAA,  # ARR[0] == 0xAA
+            0x7E00B0: 0xAA,  # ARR[0] == 0xAA
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -206,7 +206,7 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x10)] static mut P: *[u8; 16];
             #[zeropage(0x12)] static mut Q: *u8;
             #[zeropage(0x14)] static mut I: u16;
-            #[zeropage(0x30)] static mut RESULT: u8;
+            #[zeropage(0xB0)] static mut RESULT: u8;
             #[entry]
             fn main() {
                 ONE[5] = 0x66;
@@ -214,7 +214,7 @@ class TestAddressOfArrayIndex:
                 Q = &P[I];
                 RESULT = *Q;
             }
-        ''', ExpectedState(memory={0x7E0012: [0x05, 0x03], 0x7E0030: 0x66}))
+        ''', ExpectedState(memory={0x7E0012: [0x05, 0x03], 0x7E00B0: 0x66}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_nested_ram_element_is_far(self, e2e):
@@ -227,7 +227,7 @@ class TestAddressOfArrayIndex:
             #[ram] static mut RR: [R; 2];
             #[zeropage(0x14)] static mut I: u16;
             #[zeropage(0x1C)] static mut FQ: far *u8;
-            #[zeropage(0x30)] static mut RESULT: [u8; 3];
+            #[zeropage(0xB0)] static mut RESULT: [u8; 3];
             fn rd(p: *u8) -> u8 { return *p; }
             #[entry]
             fn main() {
@@ -237,7 +237,7 @@ class TestAddressOfArrayIndex:
                 FQ = &RR[I].cells[2];    RESULT[1] = *FQ;
                 RESULT[2] = rd(&RT[I][2]);
             }
-        ''', ExpectedState(memory={0x7E0030: [0x12, 0x31, 0x12]}))
+        ''', ExpectedState(memory={0x7E00B0: [0x12, 0x31, 0x12]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_element_through_a_far_pointer_is_far(self, e2e):
@@ -252,7 +252,7 @@ class TestAddressOfArrayIndex:
             #[zeropage(0x16)] static mut FP: far *[[u8; 4]; 4];
             #[zeropage(0x1C)] static mut FQ: far *u8;
             #[zeropage(0x20)] static mut I: u16;
-            #[zeropage(0x30)] static mut RESULT: [u8; 4];
+            #[zeropage(0xB0)] static mut RESULT: [u8; 4];
             #[entry]
             fn main() {
                 RONE.z = 0x41; RONE.cells[3] = 0x42; RT[2][1] = 0x21;
@@ -263,5 +263,5 @@ class TestAddressOfArrayIndex:
                 FQ = &(*FS)[3];      RESULT[2] = *FQ;
                 FQ = &FP[I][1];      RESULT[3] = *FQ;
             }
-        ''', ExpectedState(memory={0x7E0030: [0x41, 0x42, 0x42, 0x21]}))
+        ''', ExpectedState(memory={0x7E00B0: [0x41, 0x42, 0x42, 0x21]}))
         assert result.success, f"Failures: {result.failures}"

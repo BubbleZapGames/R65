@@ -19,8 +19,8 @@ class TestReturnSinkClobber:
     def test_store_between_load_and_return(self, e2e):
         """The swap idiom: a store to the loaded static before the return."""
         result = e2e.run('''
-            #[zeropage(0x30)] static mut CUR: u8;
-            #[zeropage(0x31)] static mut H: u8;
+            #[zeropage(0xB0)] static mut CUR: u8;
+            #[zeropage(0xB1)] static mut H: u8;
 
             fn swap_out(n @ A: u8) -> u8 {
                 let old = CUR;
@@ -34,8 +34,8 @@ class TestReturnSinkClobber:
                 H = swap_out(3);
             }
         ''', ExpectedState(memory={
-            0x7E0030: [0x03],   # CUR took the new value
-            0x7E0031: [0x07],   # the old one came back
+            0x7E00B0: [0x03],   # CUR took the new value
+            0x7E00B1: [0x07],   # the old one came back
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -43,8 +43,8 @@ class TestReturnSinkClobber:
         """An indexed load whose X is reloaded for another array's store."""
         result = e2e.run('''
             static TBL: [u8; 4] = [10, 20, 30, 40];
-            #[zeropage(0x40)] static mut SLOT: [u8; 8];
-            #[zeropage(0x31)] static mut H: u8;
+            #[zeropage(0xC0)] static mut SLOT: [u8; 8];
+            #[zeropage(0xB1)] static mut H: u8;
 
             fn lookup_and_clear(i @ X: u16, k: u8) -> u8 {
                 let v = TBL[k];
@@ -58,8 +58,8 @@ class TestReturnSinkClobber:
                 H = lookup_and_clear(1, 3);
             }
         ''', ExpectedState(memory={
-            0x7E0031: [40],     # TBL[3], not TBL[1]
-            0x7E0041: [0x00],   # SLOT[1] cleared
+            0x7E00B1: [40],     # TBL[3], not TBL[1]
+            0x7E00C1: [0x00],   # SLOT[1] cleared
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -67,8 +67,8 @@ class TestReturnSinkClobber:
         """Rolling::process's shape: read a table at a field, bump the field."""
         result = e2e.run('''
             static TBL: [u8; 4] = [10, 20, 30, 40];
-            #[zeropage(0x31)] static mut H: u8;
-            #[zeropage(0x32)] static mut F: u8;
+            #[zeropage(0xB1)] static mut H: u8;
+            #[zeropage(0xB2)] static mut F: u8;
 
             #[soa]
             struct Anim { frame: u8 }
@@ -89,7 +89,7 @@ class TestReturnSinkClobber:
                 F = ANIMS[1].frame;
             }
         ''', ExpectedState(memory={
-            0x7E0031: [30],     # TBL[2], not TBL[1]
-            0x7E0032: [3],
+            0x7E00B1: [30],     # TBL[2], not TBL[1]
+            0x7E00B2: [3],
         }))
         assert result.success, f"Failures: {result.failures}"

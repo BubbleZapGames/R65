@@ -14,7 +14,7 @@ def test_code_and_include_bytes_in_one_bank(e2e, tmp_path):
     blob.write_bytes(data)
     total = sum(data[:256])     # the bytes the code used to land on
     result = e2e.run(f'''
-        #[zeropage(0x40)] static mut SUM: u16;
+        #[zeropage(0xC0)] static mut SUM: u16;
         #[entry]
         fn main() {{ SUM = head_sum(); }}
         #[bank(1)]
@@ -24,5 +24,5 @@ def test_code_and_include_bytes_in_one_bank(e2e, tmp_path):
             for i in 0..256 {{ s = s + (DATA[i] as u16); }}
             return s;
         }}
-    ''', ExpectedState(memory={0x7E0040: [total & 0xFF, total >> 8]}))
+    ''', ExpectedState(memory={0x7E00C0: [total & 0xFF, total >> 8]}))
     assert result.success, f"Failures: {result.failures}"

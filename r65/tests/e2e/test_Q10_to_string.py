@@ -44,7 +44,7 @@ def read_str(cpu, addr=BUF, limit=16) -> str:
 def program(body: str) -> str:
     return (PRELUDE
             + "#[ram]\nstatic mut BUF: [u8; 16];\n"
-            + "#[zeropage(0x30)]\nstatic mut LEN: u8;\n"
+            + "#[zeropage(0xB0)]\nstatic mut LEN: u8;\n"
             + "#[entry]\nfn main() { " + body + " }")
 
 
@@ -67,7 +67,7 @@ class TestToString:
     def test_formats(self, e2e, expr, expected):
         src = program(f"let q: Q10 = {expr};"
                       " LEN = q.to_string(&BUF as far *u8) as u8;")
-        r = e2e.run(src, ExpectedState(memory={0x7E0030: len(expected)}))
+        r = e2e.run(src, ExpectedState(memory={0x7E00B0: len(expected)}))
         assert r.success, f"Failures: {r.failures}"
         assert read_n(r.cpu, len(expected)) == expected
 
@@ -79,7 +79,7 @@ class TestToString:
                       " while i < 16 { BUF[i] = 0xFF; i = i + 1; }"
                       " let q: Q10 = Q10::from(12, 48);"
                       " LEN = q.to_string(&BUF as far *u8) as u8;")
-        r = e2e.run(src, ExpectedState(memory={0x7E0030: 5}))
+        r = e2e.run(src, ExpectedState(memory={0x7E00B0: 5}))
         assert r.success, f"Failures: {r.failures}"
         assert read_n(r.cpu, 5) == "12.75"
         assert r.cpu.memory.read(BUF + 5) == 0xFF, (

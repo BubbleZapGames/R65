@@ -45,7 +45,7 @@ class TestLayout:
 
     def test_variable_index(self, e2e):
         result = e2e.run(SHAPES + '''
-            #[zeropage(0x30)]
+            #[zeropage(0xB0)]
             static mut i: u16;
 
             #[entry]
@@ -65,7 +65,7 @@ class TestMatch:
 
     def test_each_variant_takes_its_own_arm(self, e2e):
         result = e2e.run(SHAPES + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: [u8; 3];
 
             fn area(i: u16) -> u8 {
@@ -85,7 +85,7 @@ class TestMatch:
                 OUT[1] = area(1);
                 OUT[2] = area(2);
             }
-        ''', ExpectedState(memory={0x7E0040: [0x11, 0x22, 0xFF]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x11, 0x22, 0xFF]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_binding_writes_through_to_the_pool(self, e2e):
@@ -111,7 +111,7 @@ class TestMatch:
         """A `let i` after the match must not move the binding: it views the
         element that was matched, in a match arm and after a `let ... else`."""
         result = e2e.run(SHAPES + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: [u8; 2];
 
             fn read(i: u16) {
@@ -130,12 +130,12 @@ class TestMatch:
                 POOL[3] = Shape::C(Circle { r: 0x33 });
                 read(1);
             }
-        ''', ExpectedState(memory={0x7E0040: [0x11, 0x11]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x11, 0x11]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_second_payload_field(self, e2e):
         result = e2e.run(SHAPES + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u8;
 
             #[entry]
@@ -146,7 +146,7 @@ class TestMatch:
                     _ => 0,
                 };
             }
-        ''', ExpectedState(memory={0x7E0040: [0x9C]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x9C]}))
         assert result.success, f"Failures: {result.failures}"
 
 
@@ -165,7 +165,7 @@ class TestMethods:
                 }
             }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: [u8; 2];
 
             #[entry]
@@ -175,7 +175,7 @@ class TestMethods:
                 OUT[0] = POOL[0].area();
                 OUT[1] = POOL[3].area();
             }
-        ''', ExpectedState(memory={0x7E0040: [0x44, 0xFF]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x44, 0xFF]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_method_mutates_the_pool(self, e2e):
@@ -210,7 +210,7 @@ class TestSingleInstance:
             #[zeropage(0x10)]
             static mut SHAPE: Shape;
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u8;
 
             #[entry]
@@ -224,7 +224,7 @@ class TestSingleInstance:
         ''', ExpectedState(memory={
             0x7E0010: [0x01],    # tag plane, one element
             0x7E0011: [0x6B],    # payload plane
-            0x7E0040: [0x6B],
+            0x7E00C0: [0x6B],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -238,7 +238,7 @@ class TestDiscriminantCast:
 
     def test_ids_round_trip(self, e2e):
         result = e2e.run(SHAPES + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: [u8; 3];
 
             #[entry]
@@ -250,7 +250,7 @@ class TestDiscriminantCast:
                 OUT[1] = POOL[1] as u8;
                 OUT[2] = POOL[2] as u8;
             }
-        ''', ExpectedState(memory={0x7E0040: [0x02, 0x00, 0x01]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x02, 0x00, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_indexes_a_per_kind_table(self, e2e):
@@ -264,9 +264,9 @@ class TestDiscriminantCast:
                 Row { speed: 0x3333, hp: 0x30, pad: 0 },
             ];
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut SPEED: u16;
-            #[zeropage(0x42)]
+            #[zeropage(0xC2)]
             static mut HP: u8;
 
             fn look(i: u16) {
@@ -283,8 +283,8 @@ class TestDiscriminantCast:
                 look(1);
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x33, 0x33],    # ROWS[2].speed — the R row
-            0x7E0042: [0x30],
+            0x7E00C0: [0x33, 0x33],    # ROWS[2].speed — the R row
+            0x7E00C2: [0x30],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -313,7 +313,7 @@ class TestNestedInSoaStruct:
 
     def test_both_halves_round_trip(self, e2e):
         result = e2e.run(self.SOURCE + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: [u8; 4];
 
             #[entry]
@@ -330,12 +330,12 @@ class TestNestedInSoaStruct:
                 OUT[2] = things[2].body.hp;
                 OUT[3] = things[2].shape as u8;          // the discriminant
             }
-        ''', ExpectedState(memory={0x7E0040: [25, 0x41, 12, 0x01]}))
+        ''', ExpectedState(memory={0x7E00C0: [25, 0x41, 12, 0x01]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_a_payload_binding_writes_through_to_the_pool(self, e2e):
         result = e2e.run(self.SOURCE + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u8;
 
             fn bump(i: u16) {
@@ -352,7 +352,7 @@ class TestNestedInSoaStruct:
                 bump(3);
                 OUT = match things[3].shape { Shape::C(c) => c.r, _ => 0 };
             }
-        ''', ExpectedState(memory={0x7E0040: [0x12]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x12]}))
         assert result.success, f"Failures: {result.failures}"
 
     def test_method_over_the_nested_pool(self, e2e):
@@ -367,7 +367,7 @@ class TestNestedInSoaStruct:
                 }
             }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: [u8; 2];
 
             #[entry]
@@ -377,7 +377,7 @@ class TestNestedInSoaStruct:
                 OUT[0] = things[0].shape.area();
                 OUT[1] = things[2].shape.area();
             }
-        ''', ExpectedState(memory={0x7E0040: [0x44, 0xFF]}))
+        ''', ExpectedState(memory={0x7E00C0: [0x44, 0xFF]}))
         assert result.success, f"Failures: {result.failures}"
 
 
@@ -449,7 +449,7 @@ class TestSoaPayloadAccess:
 
     def test_binding_reads_and_writes_the_planes(self, e2e):
         result = e2e.run(SOA_PAYLOADS + '''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u8;
 
             fn tick(i: u16) {
@@ -470,7 +470,7 @@ class TestSoaPayloadAccess:
         ''', ExpectedState(memory={
             0x7E0019: [0x11],    # Fireball::phase[1]
             0x7E001A: [0x1F],    # Boss::cooldown[2]
-            0x7E0040: [0x77],
+            0x7E00C0: [0x77],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -484,7 +484,7 @@ class TestSoaPayloadAccess:
                 fn flicker(self) { self.phase = self.phase + 2; self.burn(); }
             }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u8;
 
             #[entry]
@@ -498,7 +498,7 @@ class TestSoaPayloadAccess:
         ''', ExpectedState(memory={
             0x7E0016: [0x32],    # heat[2]: two burns
             0x7E001A: [0x42],    # phase[2]: one flicker
-            0x7E0040: [0x31],    # first burn's return
+            0x7E00C0: [0x31],    # first burn's return
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -579,11 +579,11 @@ class TestMorph:
 
 
 INDEX_ONCE = SOA_PAYLOADS + '''
-    #[zeropage(0x40)]
+    #[zeropage(0xC0)]
     static mut CNT: u16;
-    #[zeropage(0x42)]
+    #[zeropage(0xC2)]
     static mut OUT: u8;
-    #[zeropage(0x48)]
+    #[zeropage(0xC8)]
     static mut ARR: [u8; 4];
 
     fn next() -> u16 { CNT = CNT + 1; return CNT; }
@@ -609,7 +609,7 @@ class TestIndexEvaluatedOnce:
             0x7E0011: [0x02],          # tag[1]: Fireball
             0x7E0015: [0xA0],          # Fireball::heat[1]
             0x7E0019: [0xA1],          # Fireball::phase[1]
-            0x7E0040: [0x01, 0x00],    # next() ran once
+            0x7E00C0: [0x01, 0x00],    # next() ran once
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -626,8 +626,8 @@ class TestIndexEvaluatedOnce:
                 };
             }
         ''', ExpectedState(memory={
-            0x7E0042: [7],             # both fields from element 1
-            0x7E0040: [0x01, 0x00],
+            0x7E00C2: [7],             # both fields from element 1
+            0x7E00C0: [0x01, 0x00],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -645,8 +645,8 @@ class TestIndexEvaluatedOnce:
                 CNT = i;
             }
         ''', ExpectedState(memory={
-            0x7E0042: [3],             # element 1, the one matched
-            0x7E0040: [0x02, 0x00],
+            0x7E00C2: [3],             # element 1, the one matched
+            0x7E00C0: [0x02, 0x00],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -664,9 +664,9 @@ class TestIndexEvaluatedOnce:
                 POOL[next()].x += 1;
             }
         ''', ExpectedState(memory={
-            0x7E0049: [6, 9],          # ARR[1] bumped, ARR[2] untouched
+            0x7E00C9: [6, 9],          # ARR[1] bumped, ARR[2] untouched
             0x7E002D: [8],             # POOL__x[1]
-            0x7E0040: [0x01, 0x00],    # the second next() ran once too
+            0x7E00C0: [0x01, 0x00],    # the second next() ran once too
         }))
         assert result.success, f"Failures: {result.failures}"
 

@@ -14,10 +14,10 @@ class TestExpressionShapes:
 
     def test_logical_not_and_reverse_subtract(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut F: bool;
-            #[zeropage(0x41)] static mut G: u8;
-            #[zeropage(0x42)] static mut H: u8;
-            #[zeropage(0x44)] static mut V: u16;
+            #[zeropage(0xC0)] static mut F: bool;
+            #[zeropage(0xC1)] static mut G: u8;
+            #[zeropage(0xC2)] static mut H: u8;
+            #[zeropage(0xC4)] static mut V: u16;
             #[lowram(0x0300)] static mut OUT: [u8; 8];
             #[lowram(0x0310)] static mut OUT16: [u16; 2];
 
@@ -61,12 +61,12 @@ class TestExpressionShapes:
 
     def test_left_operand_read_by_the_alu_instruction(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut G: u8;
-            #[zeropage(0x41)] static mut H: u8;
-            #[zeropage(0x42)] static mut K: u8;
+            #[zeropage(0xC0)] static mut G: u8;
+            #[zeropage(0xC1)] static mut H: u8;
+            #[zeropage(0xC2)] static mut K: u8;
             #[lowram(0x0300)] static mut EXT: [u8; 4];
             #[lowram(0x0310)] static mut OUT: [u8; 3];
-            #[zeropage(0x44)] static mut W: u16;
+            #[zeropage(0xC4)] static mut W: u16;
             #[lowram(0x0320)] static mut OUT16: u16;
 
             #[inline(never)]
@@ -103,7 +103,7 @@ class TestExpressionShapes:
 
     def test_inlined_bool_threaded_to_its_branch(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut G: u8;
+            #[zeropage(0xC0)] static mut G: u8;
             #[lowram(0x0300)] static mut OUT: [u8; 6];
 
             #[inline]

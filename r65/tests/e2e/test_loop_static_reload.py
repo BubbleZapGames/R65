@@ -15,11 +15,11 @@ class TestLoopStaticReload:
 
     def test_static_reloaded_across_the_back_edge_and_after_the_loop(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x40)] static mut G: u8;
-            #[zeropage(0x41)] static mut H: u8;
-            #[zeropage(0x42)] static mut OUT: u16;
-            #[zeropage(0x44)] static mut SEEN: u8;
-            #[zeropage(0x45)] static mut N: u8;
+            #[zeropage(0xC0)] static mut G: u8;
+            #[zeropage(0xC1)] static mut H: u8;
+            #[zeropage(0xC2)] static mut OUT: u16;
+            #[zeropage(0xC4)] static mut SEEN: u8;
+            #[zeropage(0xC5)] static mut N: u8;
 
             #[inline(never)]
             fn bump() -> u16 {
@@ -51,8 +51,8 @@ class TestLoopStaticReload:
                 skipped();        // no pass: SEEN = 1 + 9
             }
         ''', ExpectedState(memory={
-            0x7E0040: [11],
-            0x7E0042: [8, 0],
-            0x7E0044: [10],
+            0x7E00C0: [11],
+            0x7E00C2: [8, 0],
+            0x7E00C4: [10],
         }))
         assert result.success, f"Failures: {result.failures}"

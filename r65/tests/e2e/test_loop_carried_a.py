@@ -16,13 +16,13 @@ def test_loop_carried_values_in_a(e2e):
     result = e2e.run('''
         #[lowram(0x0300)] static mut W: [u16; 16];
         #[lowram(0x0320)] static mut V: [u8; 16];
-        #[zeropage(0x40)] static mut SUM: u16;
-        #[zeropage(0x42)] static mut SUM8: u8;
-        #[zeropage(0x44)] static mut LAST: u16;
-        #[zeropage(0x46)] static mut PAST: u16;
-        #[zeropage(0x48)] static mut NESTED: u16;
+        #[zeropage(0xC0)] static mut SUM: u16;
+        #[zeropage(0xC2)] static mut SUM8: u8;
+        #[zeropage(0xC4)] static mut LAST: u16;
+        #[zeropage(0xC6)] static mut PAST: u16;
+        #[zeropage(0xC8)] static mut NESTED: u16;
         #[lowram(0x0330)] static mut T: [u8; 8];
-        #[zeropage(0x4A)] static mut CLAMPED: [u8; 4];
+        #[zeropage(0xCA)] static mut CLAMPED: [u8; 4];
 
         #[inline(never)]
         fn sum() -> u16 {
@@ -98,11 +98,11 @@ def test_loop_carried_values_in_a(e2e):
             CLAMPED[3] = level_row(40);    // T[5]
         }
     ''', ExpectedState(memory={
-        0x7E0040: [0x88, 0x98],
-        0x7E0042: [0x00],
-        0x7E0044: [0x88, 0x88],
-        0x7E0046: [0x55, 0x00],
-        0x7E0048: [0x98, 0x99],
-        0x7E004A: [0x07, 0x09, 0x62, 0x65],
+        0x7E00C0: [0x88, 0x98],
+        0x7E00C2: [0x00],
+        0x7E00C4: [0x88, 0x88],
+        0x7E00C6: [0x55, 0x00],
+        0x7E00C8: [0x98, 0x99],
+        0x7E00CA: [0x07, 0x09, 0x62, 0x65],
     }), max_instructions=50000)
     assert result.success, f"Failures: {result.failures}"

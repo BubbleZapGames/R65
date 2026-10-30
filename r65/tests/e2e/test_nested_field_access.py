@@ -18,7 +18,7 @@ class TestNestedFieldAccessE2E:
             struct Mid   { pad: u8, inner: Inner }
             struct Outer { tag: u8, mid: Mid }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut O: Outer;
             #[zeropage(0x20)]
             static mut RW: u16;
@@ -38,10 +38,10 @@ class TestNestedFieldAccessE2E:
             0x7E0020: [0x34, 0x12],
             0x7E0022: 3,
             # Layout: tag@0, mid.pad@1, mid.inner.a@2, mid.inner.w@3
-            0x7E0040: 1,
-            0x7E0041: 2,
-            0x7E0042: 3,
-            0x7E0043: [0x34, 0x12],
+            0x7E00C0: 1,
+            0x7E00C1: 2,
+            0x7E00C2: 3,
+            0x7E00C3: [0x34, 0x12],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -51,7 +51,7 @@ class TestNestedFieldAccessE2E:
             union Word { raw: u16, bytes: [u8; 2] }
             struct Holder { tag: u8, w: Word }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut H: Holder;
             #[zeropage(0x20)]
             static mut LO: u8;
@@ -68,8 +68,8 @@ class TestNestedFieldAccessE2E:
         ''', ExpectedState(memory={
             0x7E0020: 0x34,
             0x7E0021: 0x12,
-            0x7E0040: 9,              # tag untouched by the union write
-            0x7E0041: [0x34, 0x12],   # union at offset 1
+            0x7E00C0: 9,              # tag untouched by the union write
+            0x7E00C1: [0x34, 0x12],   # union at offset 1
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -79,7 +79,7 @@ class TestNestedFieldAccessE2E:
             struct Inner { a: u8, w: u16 }
             struct Mid   { pad: u8, inner: Inner }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut ARR: [Mid; 3];
             #[zeropage(0x20)]
             static mut RW: u16;
@@ -91,8 +91,8 @@ class TestNestedFieldAccessE2E:
             }
         ''', ExpectedState(memory={
             0x7E0020: [0x78, 0x56],
-            # element 2 starts at 0x40 + 2*4 = 0x48; inner.w is at +2
-            0x7E004A: [0x78, 0x56],
+            # element 2 starts at 0xC0 + 2*4 = 0xC8; inner.w is at +2
+            0x7E00CA: [0x78, 0x56],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -108,7 +108,7 @@ class TestNestedFieldAccessE2E:
             struct Mid   { pad: u8, inner: Inner }
             struct Outer { tag: u8, arr: [Mid; 3] }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut O: Outer;
             #[zeropage(0x20)]
             static mut RW: u16;
@@ -121,9 +121,9 @@ class TestNestedFieldAccessE2E:
             }
         ''', ExpectedState(memory={
             0x7E0020: [0x34, 0x12],
-            0x7E0040: 1,
-            # tag@0, arr@1, element 2 at +2*4, inner.w at +2 => 0x40+1+8+2
-            0x7E004B: [0x34, 0x12],
+            0x7E00C0: 1,
+            # tag@0, arr@1, element 2 at +2*4, inner.w at +2 => 0xC0+1+8+2
+            0x7E00CB: [0x34, 0x12],
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -133,7 +133,7 @@ class TestNestedFieldAccessE2E:
             struct Inner { a: u8, w: u16 }
             struct Mid   { pad: u8, inner: Inner }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut M: Mid;
             #[zeropage(0x20)]
             static mut RW: u16;
@@ -147,7 +147,7 @@ class TestNestedFieldAccessE2E:
             }
         ''', ExpectedState(memory={
             0x7E0020: [0x34, 0x12],
-            0x7E0042: [0x34, 0x12],   # M.inner.w at offset 2
+            0x7E00C2: [0x34, 0x12],   # M.inner.w at offset 2
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -157,7 +157,7 @@ class TestNestedFieldAccessE2E:
             struct Inner { a: u8, w: u16 }
             struct Mid   { pad: u8, inner: Inner }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut M: Mid;
             #[zeropage(0x20)]
             static mut RW: u16;
@@ -173,7 +173,7 @@ class TestNestedFieldAccessE2E:
             }
         ''', ExpectedState(memory={
             0x7E0020: [0xBB, 0xAA],
-            0x7E0042: [0xBB, 0xAA],   # M.inner.w at offset 2
+            0x7E00C2: [0xBB, 0xAA],   # M.inner.w at offset 2
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -183,7 +183,7 @@ class TestNestedFieldAccessE2E:
             struct Inner { a: u8, w: u16 }
             struct Mid   { pad: u8, inner: Inner }
 
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut M: Mid;
             #[zeropage(0x20)]
             static mut RA: u8;
@@ -199,7 +199,7 @@ class TestNestedFieldAccessE2E:
             }
         ''', ExpectedState(memory={
             0x7E0020: 7,
-            0x7E0041: 7,   # M.inner.a at offset 1
+            0x7E00C1: 7,   # M.inner.a at offset 1
         }))
         assert result.success, f"Failures: {result.failures}"
 

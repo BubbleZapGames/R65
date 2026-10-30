@@ -33,9 +33,9 @@ class TestLoopCounterVersusPointerField:
 
             #[lowram]
             static mut RECS: [Rec; 8];
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut TOTAL: u16;
-            #[zeropage(0x42)]
+            #[zeropage(0xC2)]
             static mut VISITS: u8;
 
             fn rec(i: u16) -> *Rec { return &RECS[i] as *Rec; }
@@ -55,8 +55,8 @@ class TestLoopCounterVersusPointerField:
                 }
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x18, 0x00],     # 8 * (1 + 2)
-            0x7E0042: [0x08],           # every element visited exactly once
+            0x7E00C0: [0x18, 0x00],     # 8 * (1 + 2)
+            0x7E00C2: [0x08],           # every element visited exactly once
         }))
         assert result.success, f"Failures: {result.failures}"
 
@@ -78,7 +78,7 @@ class TestCounterOutlivesItsLoop:
 
             #[lowram]
             static mut R: Rec;
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u16;
 
             fn norm(p: *Rec, start: u16) {
@@ -99,7 +99,7 @@ class TestCounterOutlivesItsLoop:
                 OUT = R.b;
             }
         ''', ExpectedState(memory={
-            0x7E0040: [0x89, 0x00],     # 151 - 14 shifts
+            0x7E00C0: [0x89, 0x00],     # 151 - 14 shifts
         }))
         assert result.success, f"Failures: {result.failures}"
 

@@ -20,10 +20,10 @@ class TestShiftPackingWidth:
                 { Color(((($b) & 0x1F) << 10) | ((($g) & 0x1F) << 5) | (($r) & 0x1F)) }
             }
 
-            #[zeropage(0x30)] static mut R: u8;
-            #[zeropage(0x31)] static mut G: u8;
-            #[zeropage(0x32)] static mut BL: u8;
-            #[zeropage(0x34)] static mut OUT: Color;
+            #[zeropage(0xB0)] static mut R: u8;
+            #[zeropage(0xB1)] static mut G: u8;
+            #[zeropage(0xB2)] static mut BL: u8;
+            #[zeropage(0xB4)] static mut OUT: Color;
 
             #[entry]
             fn main() {
@@ -31,15 +31,15 @@ class TestShiftPackingWidth:
                 OUT = rgb!(R, G, BL);
             }
         ''', ExpectedState(memory={
-            0x7E0034: [0x43, 0x51],     # (20 << 10) | (10 << 5) | 3 = 0x5143
+            0x7E00B4: [0x43, 0x51],     # (20 << 10) | (10 << 5) | 3 = 0x5143
         }))
         assert result.success, f"Failures: {result.failures}"
 
     def test_high_byte_plus_low_byte(self, e2e):
         result = e2e.run('''
-            #[zeropage(0x30)] static mut HI: u8;
-            #[zeropage(0x31)] static mut LO: u8;
-            #[zeropage(0x32)] static mut OUT: u16;
+            #[zeropage(0xB0)] static mut HI: u8;
+            #[zeropage(0xB1)] static mut LO: u8;
+            #[zeropage(0xB2)] static mut OUT: u16;
 
             #[entry]
             fn main() {
@@ -47,6 +47,6 @@ class TestShiftPackingWidth:
                 OUT = (HI << 8) + LO;
             }
         ''', ExpectedState(memory={
-            0x7E0032: [0x34, 0x12],
+            0x7E00B2: [0x34, 0x12],
         }))
         assert result.success, f"Failures: {result.failures}"

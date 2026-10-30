@@ -79,13 +79,13 @@ class TestInlineSubstitutionBehavior:
         """Constant-address pointer arg: the Immediate must NOT be spliced into
         the pointer slot (it stays a register/DP value), so the store lands."""
         result = e2e.run('''
-            #[zeropage(0x40)]
+            #[zeropage(0xC0)]
             static mut OUT: u8;
             #[inline]
             fn store5(p: *u8) { *p = 5; }
             #[entry]
             fn main() { store5(&OUT); A = OUT; }
-        ''', ExpectedState(A=5, memory={0x40: 5}), extra_args=["-O2"])
+        ''', ExpectedState(A=5, memory={0xC0: 5}), extra_args=["-O2"])
         assert result.success, f"Failures: {result.failures}"
 
     def test_method_variable_bound_param(self, e2e):
@@ -127,24 +127,24 @@ class TestInlineMultiReturnBehavior:
         """`P, Q = h(..)` stores straight from the return registers, so the
         inlined values must be placed in A and X."""
         result = e2e.run('''
-            #[zeropage(0x40)] static mut P: u8;
-            #[zeropage(0x42)] static mut Q: u16;
+            #[zeropage(0xC0)] static mut P: u8;
+            #[zeropage(0xC2)] static mut Q: u16;
             #[inline(always)]
             fn h(a: u8, b: u16) -> u8, u16 { return a + 1, b + 2; }
             #[entry]
             fn main() { P, Q = h(3, 0x1230); }
-        ''', ExpectedState(memory={0x40: 4, 0x42: [0x32, 0x12]}),
+        ''', ExpectedState(memory={0xC0: 4, 0xC2: [0x32, 0x12]}),
             extra_args=["-O2"])
         assert result.success, f"Failures: {result.failures}"
 
     def test_u8_pair_via_b(self, e2e):
         """`-> u8, u8` returns in A and B; both captures must see their value."""
         result = e2e.run('''
-            #[zeropage(0x40)] static mut P: u8;
-            #[zeropage(0x41)] static mut Q: u8;
+            #[zeropage(0xC0)] static mut P: u8;
+            #[zeropage(0xC1)] static mut Q: u8;
             #[inline(always)]
             fn h(a: u8, b: u8) -> u8, u8 { return a + 1, b + 2; }
             #[entry]
             fn main() { let v, w = h(3, 7); P = v; Q = w; }
-        ''', ExpectedState(memory={0x40: 4, 0x41: 9}), extra_args=["-O2"])
+        ''', ExpectedState(memory={0xC0: 4, 0xC1: 9}), extra_args=["-O2"])
         assert result.success, f"Failures: {result.failures}"
