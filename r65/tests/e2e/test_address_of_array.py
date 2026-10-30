@@ -198,3 +198,70 @@ class TestAddressOfArrayIndex:
             0x7E0022: 0x42,  # ARR[2] at address 0x20+2
         }))
         assert result.success, f"Failures: {result.failures}"
+
+    def test_pointer_to_array_element_steps_by_the_element(self, e2e):
+        """&p[i] on a `*[u8; 16]` is p + i, as p[i] reads it - not p + 16 * i."""
+        result = e2e.run('''
+            #[lowram(0x0300)] static mut ONE: [u8; 16];
+            #[zeropage(0x10)] static mut P: *[u8; 16];
+            #[zeropage(0x12)] static mut Q: *u8;
+            #[zeropage(0x14)] static mut I: u16;
+            #[zeropage(0x30)] static mut RESULT: u8;
+            #[entry]
+            fn main() {
+                ONE[5] = 0x66;
+                P = &ONE; I = 5;
+                Q = &P[I];
+                RESULT = *Q;
+            }
+        ''', ExpectedState(memory={0x7E0012: [0x05, 0x03], 0x7E0030: 0x66}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_nested_ram_element_is_far(self, e2e):
+        """An element below a field or a second index of a #[ram] static is
+        in bank $7E, so its address is far; a `*u8` parameter it reaches is
+        promoted."""
+        result = e2e.run('''
+            struct R { z: u8, cells: [u8; 4] }
+            #[ram] static mut RT: [[u8; 4]; 4];
+            #[ram] static mut RR: [R; 2];
+            #[zeropage(0x14)] static mut I: u16;
+            #[zeropage(0x1C)] static mut FQ: far *u8;
+            #[zeropage(0x30)] static mut RESULT: [u8; 3];
+            fn rd(p: *u8) -> u8 { return *p; }
+            #[entry]
+            fn main() {
+                RT[1][2] = 0x12; RR[1].cells[2] = 0x31;
+                I = 1;
+                FQ = &RT[I][2];          RESULT[0] = *FQ;
+                FQ = &RR[I].cells[2];    RESULT[1] = *FQ;
+                RESULT[2] = rd(&RT[I][2]);
+            }
+        ''', ExpectedState(memory={0x7E0030: [0x12, 0x31, 0x12]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_element_through_a_far_pointer_is_far(self, e2e):
+        """An element reached through a far pointer lives where the pointer
+        points, so its address keeps the bank."""
+        result = e2e.run('''
+            struct R { z: u8, cells: [u8; 4] }
+            #[ram] static mut RONE: R;
+            #[ram] static mut RT: [[u8; 4]; 4];
+            #[zeropage(0x10)] static mut FR: far *R;
+            #[zeropage(0x13)] static mut FS: far *[u8; 4];
+            #[zeropage(0x16)] static mut FP: far *[[u8; 4]; 4];
+            #[zeropage(0x1C)] static mut FQ: far *u8;
+            #[zeropage(0x20)] static mut I: u16;
+            #[zeropage(0x30)] static mut RESULT: [u8; 4];
+            #[entry]
+            fn main() {
+                RONE.z = 0x41; RONE.cells[3] = 0x42; RT[2][1] = 0x21;
+                FR = &RONE; FS = &RONE.cells; FP = &RT;
+                I = 2;
+                FQ = &FR.z;          RESULT[0] = *FQ;
+                FQ = &FR.cells[3];   RESULT[1] = *FQ;
+                FQ = &(*FS)[3];      RESULT[2] = *FQ;
+                FQ = &FP[I][1];      RESULT[3] = *FQ;
+            }
+        ''', ExpectedState(memory={0x7E0030: [0x41, 0x42, 0x42, 0x21]}))
+        assert result.success, f"Failures: {result.failures}"

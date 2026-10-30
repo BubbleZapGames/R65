@@ -914,7 +914,10 @@ class ExpressionLowerer:
           3. Pointer-relative field array: &ptr.field[i] / &self.field[i] —
              auto-deref field access. The base is a runtime pointer; the
              field offset and scaled index are added to it at runtime.
-          4. Indexed pointer: &p[i] — the pointer's value is the base.
+          4. Indexed pointer: &p[i] — the pointer's value is the base, and
+             the stride is the element's (`*[u8; 16]` steps by one byte).
+             With 3, any shape pointer_index_path recognises, including
+             &p[i][j] and &(*p)[i].
           5. Multi-index: &T[i][j], &ROWS[i].name[j].
 
         Args:
@@ -935,28 +938,9 @@ class ExpressionLowerer:
         else:
             element_size = 1
 
-        # Case 3: &ptr.field[index] — auto-deref field access over a pointer.
-        # The base address only exists at runtime, so emit a runtime add
-        # rather than a symbolic Immediate.
-        if (isinstance(array_expr, HIRFieldAccess) and
-                getattr(array_expr, 'auto_deref', False)):
-            return self._lower_addressof_array_index_via_pointer(
-                expr, array_expr.base, array_expr.field_offset or 0,
-                array_index.index, element_size, array_expr.field_name
-            )
-
-        # Case 4: &p[index] — indexing a pointer itself (a parameter, a local,
-        # any pointer-valued expression). Its value is the base, known only
-        # at runtime; the element is the pointee. The static path below would
-        # take the pointer variable's own address.
-        if isinstance(array_type, PointerTypeInfo):
-            return self._lower_addressof_array_index_via_pointer(
-                expr, array_expr, 0, array_index.index,
-                self.builder._get_type_size(array_type.pointee_type), "ptr"
-            )
-
-        # &p[i][j], &(*p)[i], &self.outer.arr[i]: the remaining shapes reached
-        # through a pointer.
+        # Cases 3 and 4, and &p[i][j] or &(*p)[i]: an element reached through
+        # a pointer. The base address only exists at runtime, so emit a
+        # runtime add rather than a symbolic Immediate.
         path = self.builder.pointer_index_path(array_index)
         if path is not None:
             return self._lower_addressof_pointer_path(expr, *path)
@@ -1076,20 +1060,26 @@ class ExpressionLowerer:
         """Lower `&p[i][j]` and the like: the pointer's value, plus the folded
         field offsets and constant indices, plus the sum of the variable
         indices scaled by their strides (see pointer_index_path)."""
-        ptr_type = expr.expr_type
         array_index = expr.operand
+        if len(terms) == 1:
+            return self._lower_addressof_array_index_via_pointer(
+                expr, ptr_expr, field_offset, array_index.index, terms[0][1], "ptr")
+
+        ptr_type = expr.expr_type
         base_ptr = self.builder.lower_expression(ptr_expr)
         index_operand = self.builder.lower_expression(array_index.index)
         const, total = self.builder.sum_index_terms(
             terms[:-1], array_index.index, index_operand, terms[-1][1])
 
         result = base_ptr
-        for addend in (Immediate(field_offset + const) if field_offset + const else None,
-                       total):
-            if addend is None:
-                continue
+        if field_offset + const:
+            shifted = self.ctx.alloc_vreg(ptr_type, "ptr_field_base")
+            self.emit(BinaryOp(dest=shifted, op='+', left=result,
+                               right=Immediate(field_offset + const), type_info=ptr_type))
+            result = shifted
+        if total is not None:
             summed = self.ctx.alloc_vreg(ptr_type, "addr_of_ptr_elem")
-            self.emit(BinaryOp(dest=summed, op='+', left=result, right=addend,
+            self.emit(BinaryOp(dest=summed, op='+', left=result, right=total,
                                type_info=ptr_type))
             result = summed
         if result is base_ptr:

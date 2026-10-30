@@ -148,30 +148,27 @@ class PointerValidator:
         Returns:
             True if far pointer needed, False for near pointer
         """
-        # Extract symbol from the operand (may be wrapped in ArrayIndex or FieldAccess)
-        if isinstance(operand, HIRIdentifier):
-            symbol = operand.symbol
-        elif isinstance(operand, HIRArrayIndex):
-            # &p[i] through a pointer lives wherever p points, so it is as
-            # far as p is - a far pointer parameter's element is not in bank 0.
-            base = operand.array
-            base_type = getattr(base, 'expr_type', None)
+        # Walk the indices and fields down to what owns the storage. An element
+        # reached through a pointer (`&p[i][j]`, `&fp.field`, `&(*p)[i]`)
+        # lives wherever the pointer points, so it is as far as the pointer
+        # is; otherwise the static at the bottom decides (`&RAM[i][j]`).
+        node = operand
+        while not isinstance(node, HIRIdentifier):
+            if isinstance(node, HIRArrayIndex):
+                base = node.array
+            elif isinstance(node, HIRFieldAccess):
+                base = node.base
+            elif isinstance(node, HIRDereference):
+                base = node.pointer
+            else:
+                return False
+            base_type = PointerValidator._known_type(base)
             if isinstance(base_type, PointerTypeInfo):
                 return base_type.is_far
-            # &array[i] — check the array's storage
-            if isinstance(base, HIRIdentifier):
-                symbol = base.symbol
-            else:
+            if isinstance(node, HIRDereference):
                 return False
-        elif isinstance(operand, HIRFieldAccess):
-            # &var.field — check the struct's storage
-            base = operand.base
-            if isinstance(base, HIRIdentifier):
-                symbol = base.symbol
-            else:
-                return False
-        else:
-            return False
+            node = base
+        symbol = node.symbol
         if not symbol or not symbol.definition:
             return False
 
@@ -197,3 +194,12 @@ class PointerValidator:
 
         # ZEROPAGE, LOWRAM, and HW are all in bank 0, so near pointers work
         return False
+
+    @staticmethod
+    def _known_type(expr: HIRExpression):
+        """*expr*'s type, if known yet. far_pointer_params asks before any
+        body is checked, when only a named variable's type is."""
+        expr_type = getattr(expr, 'expr_type', None)
+        if expr_type is None and isinstance(expr, HIRIdentifier) and expr.symbol:
+            expr_type = expr.symbol.var_type
+        return expr_type
