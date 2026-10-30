@@ -897,6 +897,26 @@ class ControlFlowInstructionSelector(BaseSelector):
         self._emit_immediate(Opcode.ADC_IMMEDIATE, amount, f"Adjust past {cleaned} bytes")
         self._emit_implied(Opcode.TCS, "A to SP")
 
+    def _free_keeping_saved_a(self, total: int, pushed: int):
+        """SP += total, past an area with an A that `_save_a` pushed on top.
+
+        The saved bytes are copied to the top of the area first, so after
+        SP moves they are still on top for `_restore_a` to pull, with the
+        return address right above them. Adding `pushed` as well would free
+        them, and the PLA would read the byte after.
+        """
+        if pushed:
+            from r65.compiler.codegen.constants import M_FLAG
+            if pushed == 2:
+                self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A to move saved A")
+                self.parent.emitter.emit_accu_mode(16)
+            else:
+                self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "8-bit A to move saved A")
+                self.parent.emitter.emit_accu_mode(8)
+            self._emit_stack_relative(Opcode.LDA_STACK, 1, "Load saved A")
+            self._emit_stack_relative(Opcode.STA_STACK, total + 1, "Move it to the top of the freed area")
+        self._emit_sp_add(total, total)
+
     def _restore_exit_accu_mode(self):
         """Return to the function's exit width before A is restored: TXA/TYA
         in m8 would move only the low byte of a 16-bit return value."""
@@ -955,7 +975,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         self.parent.emitter.emit_accu_mode(16)
         self._emit_stack_relative(Opcode.LDA_STACK, frame_size + 1 + pushed, "Load return address")
         self._emit_stack_relative(Opcode.STA_STACK, total + 1 + pushed, "Store past cleanup area")
-        self._emit_sp_add(total + pushed, total)
+        self._free_keeping_saved_a(total, pushed)
         self._restore_exit_accu_mode()
         self._restore_a(method)
 
@@ -970,7 +990,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         """
         method = self._choose_a_save(return_count)
         pushed = self._save_a(method)
-        self._emit_sp_add(adjust_bytes + pushed, adjust_bytes)
+        self._free_keeping_saved_a(adjust_bytes, pushed)
         self._restore_exit_accu_mode()
         self._restore_a(method)
 
@@ -1051,7 +1071,7 @@ class ControlFlowInstructionSelector(BaseSelector):
         self.parent.emitter.emit_accu_mode(16)
         self._emit_stack_relative(Opcode.LDA_STACK, ret_addr_offset, "Load return address")
         self._emit_stack_relative(Opcode.STA_STACK, store_offset, "Store past cleanup area")
-        self._emit_sp_add(total + pushed, total)
+        self._free_keeping_saved_a(total, pushed)
         self._restore_exit_accu_mode()
         self._restore_a(method)
 
