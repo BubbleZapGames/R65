@@ -489,18 +489,37 @@ class CallInstructionSelector(BaseSelector):
         # TypeId lookup and jump table dispatch.
         dispatch_name = f"{instr.trait_name}__{instr.method_name}__dispatch"
 
+        # In a far-pointer function D (D=S) or DBR (SET_DBR) is the caller's
+        # own; the method expects the program's, as any callee does
+        # (select_call). Nested the same way: PLD before the spills, PHB
+        # after them.
+        from r65.compiler.mir.nodes import FarPtrStrategy
+        func = self.parent.current_function
+        needs_d_management = (func is not None and func.has_far_ptr_stack_params
+                              and func.far_ptr_strategy != FarPtrStrategy.SET_DBR)
+        needs_dbr_management = (func is not None
+                                and func.far_ptr_strategy == FarPtrStrategy.SET_DBR)
+
         # A dispatch preserves nothing (call_effects), so this spills every
         # register live across it
         spills = self._compute_hw_spills(instr)
+        if needs_d_management:
+            self._emit_d_restore_before_call()
         self._emit_hw_spills(spills)
+        if needs_dbr_management:
+            self._emit_dbr_save_before_call()
 
         # Chain coalescing: SOLO and START dispatches push PHB; SOLO and END
         # dispatches pull PLB. MIDDLE dispatches do neither — DBR is held
         # at self's bank across the whole run. See
         # analysis/trait_chain_coalesce.analyze_trait_dispatch_chains.
         # A MIDDLE/END member of either kind skips its Y load when Y still
-        # holds self from the member before (_self_still_in_y).
+        # holds self from the member before (_self_still_in_y). A held DBR
+        # cannot nest with the per-call D/DBR above, so those dispatches
+        # each stand alone.
         role = getattr(instr, 'self_chain_role', ChainRole.SOLO)
+        if needs_d_management or needs_dbr_management:
+            role = ChainRole.SOLO
         emit_phb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_dbr_set = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.START)
         emit_plb = instr.self_is_far and role in (ChainRole.SOLO, ChainRole.END)
@@ -551,10 +570,20 @@ class CallInstructionSelector(BaseSelector):
         # Restore caller's DBR after far self dispatch
         if emit_plb:
             self._emit_pull('DBR', "Restore caller's DBR after far self dispatch")
+        if needs_dbr_management:
+            self._emit_dbr_restore_after_call()
 
         # Reload spilled registers
         reloads = self._compute_hw_reloads(instr)
+        if needs_d_management:
+            reloads = self._reload_all_spills(reloads)
         self._emit_hw_reloads(reloads)
+
+        if needs_d_management:
+            if self._has_far_ptr_derefs_after_call(instr):
+                self._emit_d_equals_s_restore(self._compute_live_regs_after_call(instr, reloads))
+            else:
+                self._emit_d_push_only()
 
     def _self_still_in_y(self, instr: TraitDispatch) -> bool:
         """Whether Y still holds self from the chain member before *instr*.
