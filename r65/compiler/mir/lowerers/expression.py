@@ -549,12 +549,13 @@ class ExpressionLowerer:
             # Pointer indexing: load through pointer with indirect addressing
             return self._lower_pointer_index(expr, index_operand, element_size, element_type, array_type)
 
-        # Pointer-deref'd array base (`self.bytes[i]` via auto-deref, or
-        # `(*p)[i]`). Folds the outer field offset into Y and loads indirect
-        # through the pointer (see emit_pointer_deref_array_access).
-        deref = self.builder.try_pointer_deref_array_base(expr.array)
-        if deref is not None:
-            ptr_expr, base_field_offset = deref
+        # An array reached through a pointer (`self.bytes[i]` via auto-deref,
+        # `(*p)[i]`, `p[i][j]`). Folds the field offsets and every index into
+        # Y and loads indirect through the pointer (see
+        # emit_pointer_deref_array_access).
+        path = self.builder.pointer_index_path(expr)
+        if path is not None:
+            ptr_expr, base_field_offset, terms = path
             result = self.ctx.alloc_vreg(element_type, "deref_arr_elem")
             return self.builder.emit_pointer_deref_array_access(
                 ptr_expr=ptr_expr,
@@ -563,6 +564,7 @@ class ExpressionLowerer:
                 const_offset=base_field_offset,
                 result_type=element_type,
                 is_load=True, dest=result,
+                inner_terms=terms[:-1],
             )
 
         # Regular array indexing — resolve the array base (a bare static array
@@ -953,6 +955,12 @@ class ExpressionLowerer:
                 self.builder._get_type_size(array_type.pointee_type), "ptr"
             )
 
+        # &p[i][j], &(*p)[i], &self.outer.arr[i]: the remaining shapes reached
+        # through a pointer.
+        path = self.builder.pointer_index_path(array_index)
+        if path is not None:
+            return self._lower_addressof_pointer_path(expr, *path)
+
         # &T[i][j], &ROWS[i].name[j]: an element below the outermost index.
         cursor = array_expr
         while isinstance(cursor, HIRFieldAccess) and not getattr(cursor, 'auto_deref', False):
@@ -1061,6 +1069,32 @@ class ExpressionLowerer:
         self.emit(Move(dest=base_addr, source=addr_immediate, type_info=expr.expr_type))
         self.emit(BinaryOp(dest=result, op='+', left=base_addr, right=total,
                            type_info=expr.expr_type))
+        return result
+
+    def _lower_addressof_pointer_path(self, expr: HIRAddressOf, ptr_expr,
+                                      field_offset: int, terms) -> VirtualRegister:
+        """Lower `&p[i][j]` and the like: the pointer's value, plus the folded
+        field offsets and constant indices, plus the sum of the variable
+        indices scaled by their strides (see pointer_index_path)."""
+        ptr_type = expr.expr_type
+        array_index = expr.operand
+        base_ptr = self.builder.lower_expression(ptr_expr)
+        index_operand = self.builder.lower_expression(array_index.index)
+        const, total = self.builder.sum_index_terms(
+            terms[:-1], array_index.index, index_operand, terms[-1][1])
+
+        result = base_ptr
+        for addend in (Immediate(field_offset + const) if field_offset + const else None,
+                       total):
+            if addend is None:
+                continue
+            summed = self.ctx.alloc_vreg(ptr_type, "addr_of_ptr_elem")
+            self.emit(BinaryOp(dest=summed, op='+', left=result, right=addend,
+                               type_info=ptr_type))
+            result = summed
+        if result is base_ptr:
+            result = self.ctx.alloc_vreg(ptr_type, "addr_of_ptr_elem")
+            self.emit(Move(dest=result, source=base_ptr, type_info=ptr_type))
         return result
 
     def _lower_addressof_array_index_via_pointer(

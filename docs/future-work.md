@@ -254,24 +254,6 @@ Inlining a far function into a caller in another bank needs a body that means th
 
 ---
 
-## Indexing an Element Reached Through a Pointer
-
-Indexing twice through a pointer is a MIR error ("indexing into an element reached through a pointer is not supported", `mir/builder.py`):
-
-```rust
-#[zeropage]
-static mut P: *[[u8; 4]; 4];
-let v: u8 = P[1][2];    // error
-```
-
-A static base works (`GRID[i][j]`), and so does an array field through a pointer (`R.cells[j]` with `R: *Row`).
-
-**Why deferred**: nested indexing landed for static bases, where the outer index folds into the base `MemoryLocation` (`resolve_array_base_memloc`). A pointer base has no static address to fold into. The full offset (`i * stride + j`) has to be computed into Y for `LDA (ptr),Y`, and a run-time `i` needs a stride multiply.
-
-**Approach if revisited**: when the base resolves to a pointer (`try_pointer_deref_array_base`), sum the index terms into one offset and lower through the existing pointer-indexed path. **Workaround today**: point at a flat array (`*[u8; 16]`) and write `P[i * 4 + j]`.
-
----
-
 ## Packaging Hazards
 
 Pre-existing global-state assumptions that a package system makes reachable. Each is fine in a single-author program and gets worse as package count grows. See [packaging-system.md](packaging-system.md) for the system these block.

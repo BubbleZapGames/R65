@@ -396,12 +396,13 @@ class AssignmentLowerer:
         if isinstance(base_type, PointerTypeInfo):
             return self._lower_pointer_index_assignment(expr, value, base_type)
 
-        # Pointer-deref'd array base (`self.bytes[i] = v` via auto-deref,
-        # or `(*p)[i] = v`). Folds the outer field offset into Y and stores
-        # indirect through the pointer (see emit_pointer_deref_array_access).
-        deref = self.builder.try_pointer_deref_array_base(array_index.array)
-        if deref is not None:
-            ptr_expr, base_field_offset = deref
+        # An array reached through a pointer (`self.bytes[i] = v` via
+        # auto-deref, `(*p)[i] = v`, `p[i][j] = v`). Folds the field offsets
+        # and every index into Y and stores indirect through the pointer (see
+        # emit_pointer_deref_array_access).
+        path = self.builder.pointer_index_path(array_index)
+        if path is not None:
+            ptr_expr, base_field_offset, terms = path
             self.builder.emit_pointer_deref_array_access(
                 ptr_expr=ptr_expr,
                 index_expr=array_index.index,
@@ -409,6 +410,7 @@ class AssignmentLowerer:
                 const_offset=base_field_offset,
                 result_type=element_type,
                 is_load=False, source=value,
+                inner_terms=terms[:-1],
             )
             return value
 

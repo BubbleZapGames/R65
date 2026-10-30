@@ -1906,9 +1906,8 @@ class MIRBuilder:
             return offset_memloc, reuse_base_key, terms
 
         if isinstance(array_expr, HIRArrayIndex):
-            from r65.compiler.hir.types import PointerTypeInfo
-            if (isinstance(array_expr.array.expr_type, PointerTypeInfo)
-                    or self.try_pointer_deref_array_base(array_expr.array) is not None):
+            # Callers take pointer_index_path first; this only guards the rest.
+            if self.pointer_index_path(array_expr) is not None:
                 raise MIRLoweringError(
                     "indexing into an element reached through a pointer is not supported",
                     source_loc=getattr(array_expr, 'source_loc', None)
@@ -2010,10 +2009,14 @@ class MIRBuilder:
                 array_indices.append(node)
 
         for node in array_indices:
-            try:
-                _memloc, _key, terms = self.resolve_array_base_memloc(node.array)
-            except MIRLoweringError:
-                continue
+            path = self.pointer_index_path(node)
+            if path is not None:
+                terms = path[2][:-1]
+            else:
+                try:
+                    _memloc, _key, terms = self.resolve_array_base_memloc(node.array)
+                except MIRLoweringError:
+                    continue
             for index, stride in terms:
                 if not isinstance(index, HIRIdentifier):
                     continue
@@ -2160,38 +2163,45 @@ class MIRBuilder:
             node = node.base
         return node, offset
 
-    def try_pointer_deref_array_base(self, array_expr):
-        """Recognise `(*p).arr` / `(*p)` array bases that need indirect codegen.
+    def pointer_index_path(self, index_expr):
+        """Recognise an indexed element whose storage is reached through a pointer.
 
-        Returns `(ptr_expr, base_field_offset)` when *array_expr* is a
-        pointer-deref'd array — either an auto_deref ``HIRFieldAccess``
-        (`self.arr[..]`) or an explicit ``HIRDereference`` (`(*p)[..]`),
-        possibly wrapped in intermediate static (non-auto_deref)
-        ``HIRFieldAccess`` nodes. The latter handles chained shapes like
-        ``self.outer.inner_arr[..]`` where the pointer-deref happens at an
-        inner field-access (`.outer`) and the array is reached through
-        further inline struct fields (`.inner_arr`); each wrapper's
-        ``field_offset`` is folded into the returned constant.
+        *index_expr* is an ``HIRArrayIndex``. Walking down its base through
+        further indices and inline (non-auto_deref) fields, the chain may
+        bottom out at a pointer: an indexed pointer value (`p[i]`, also
+        `p[i][j]`, `p[i].name[j]`), an auto_deref field (`self.arr[i]`,
+        `self.outer.inner[i][j]`), or an explicit ``HIRDereference``
+        (`(*p)[i]`).
 
-        Returns ``None`` for any other shape (caller falls through to the
-        static-base path via :py:meth:`resolve_array_base_memloc`).
+        Returns ``(ptr_expr, const_offset, terms)``: the HIR node yielding the
+        pointer, the summed field offsets, and the ``(index_hir, stride)`` of
+        every index on the way, inner-first (the order of
+        :py:meth:`resolve_array_base_memloc`), so the last term is
+        *index_expr*'s own. Returns ``None`` for a chain that ends at a static
+        base; the caller then takes the static path.
         """
+        from r65.compiler.hir.types import PointerTypeInfo
+
         offset = 0
-        node = array_expr
-        # Peel non-deref'd HIRFieldAccess nodes, summing each field_offset
-        # into the running constant. Stops at the first auto_deref'd
-        # field-access (the pointer is its `.base`) or an explicit
-        # HIRDereference, or bails out (returns None) for a purely static
-        # chain so the static path keeps its existing handling.
-        while isinstance(node, HIRFieldAccess) and not node.auto_deref:
-            offset += node.field_offset if node.field_offset is not None else 0
-            node = node.base
-        if isinstance(node, HIRFieldAccess) and node.auto_deref:
-            own = node.field_offset if node.field_offset is not None else 0
-            return node.base, offset + own
-        if isinstance(node, HIRDereference):
-            return node.pointer, offset
-        return None
+        terms = []
+        node = index_expr
+        while True:
+            if isinstance(node, HIRArrayIndex):
+                # `*[T; N]` indexes the pointee's elements and `*T` steps over
+                # T's: either way the stride is the indexed element's size.
+                terms.append((node.index, self._get_type_size(node.expr_type)))
+                if isinstance(node.array.expr_type, PointerTypeInfo):
+                    return node.array, offset, terms[::-1]
+                node = node.array
+            elif isinstance(node, HIRFieldAccess):
+                offset += node.field_offset if node.field_offset is not None else 0
+                if node.auto_deref:
+                    return node.base, offset, terms[::-1]
+                node = node.base
+            elif isinstance(node, HIRDereference):
+                return node.pointer, offset, terms[::-1]
+            else:
+                return None
 
     def emit_pointer_deref_array_access(
         self,
@@ -2204,16 +2214,17 @@ class MIRBuilder:
         is_load: bool,
         source=None,
         dest=None,
+        inner_terms=(),
     ):
         """Emit a Load/StoreIndirect against a pointer-deref'd array element.
 
         Used by both lowerers when :py:meth:`resolve_array_base_memloc`
         can't fold the base into a ``MemoryLocation`` because the array is
-        reached through a pointer (auto-deref `self.arr[i]` or explicit
-        `(*p)[i]`). Folds the compile-time `const_offset` (= outer field
-        offset within the pointee struct + any inner ``.field`` offset
-        within the element) and the runtime ``index * element_size`` into
-        Y, then emits the indirect instruction against the pointer.
+        reached through a pointer (see :py:meth:`pointer_index_path`). Folds
+        the compile-time `const_offset` (= outer field offset within the
+        pointee struct + any inner ``.field`` offset within the element) and
+        the runtime ``index * element_size`` into Y, then emits the indirect
+        instruction against the pointer.
 
         Args:
             ptr_expr: HIR node yielding the pointer (e.g. ``self`` for
@@ -2230,6 +2241,8 @@ class MIRBuilder:
             source: For stores, the value being written.
             dest: For loads, the destination vreg (caller-allocated so it
                 carries the right type metadata).
+            inner_terms: ``(index_hir, stride)`` of the indices below
+                *index_expr* (`i` in `p[i][j]`), summed into Y with it.
 
         Returns:
             ``dest`` (for loads) or ``source`` (for stores).
@@ -2246,8 +2259,18 @@ class MIRBuilder:
 
         index_operand = self.lower_expression(index_expr)
 
+        scaled = None
+        if inner_terms:
+            # `p[i][j]`: every index scaled by its stride, the constant ones
+            # folded into the offset.
+            const, scaled = self.sum_index_terms(
+                inner_terms, index_expr, index_operand, element_size)
+            const_offset += const
+            if scaled is None:
+                index_operand, element_size = Immediate(0), 1
+
         # Fully constant index: fold the whole byte offset, no Y needed.
-        if isinstance(index_operand, Immediate):
+        if scaled is None and isinstance(index_operand, Immediate):
             total_offset = const_offset + index_operand.value * element_size
             if is_load:
                 self.emit(LoadIndirect(
@@ -2264,7 +2287,8 @@ class MIRBuilder:
         # Variable index → Y = scaled_index + const_offset. memory_select
         # doesn't combine an explicit `offset` with an existing
         # index_register, so the constant lives inside the Y value.
-        scaled = self.scale_index(index_operand, element_size, index_expr.expr_type)
+        if scaled is None:
+            scaled = self.scale_index(index_operand, element_size, index_expr.expr_type)
         u16 = BasicTypeInfo('u16')
         if const_offset != 0:
             sum_vreg = self.ctx.alloc_vreg(u16, 'arr_off')
@@ -2332,12 +2356,12 @@ class MIRBuilder:
         )
         from r65.compiler.hir.types import BasicTypeInfo
 
-        # Pointer-deref'd array base (`self.sprites[i].field` via auto-deref,
-        # or `(*p)[i].field`). Folds outer and inner field offsets into Y and
-        # accesses indirect through the pointer.
-        deref = self.try_pointer_deref_array_base(array_index_expr.array)
-        if deref is not None:
-            ptr_expr, base_field_offset = deref
+        # An element reached through a pointer (`p[i].field`,
+        # `self.sprites[i].field`, `(*p)[i].field`). Folds outer and inner
+        # field offsets into Y and accesses indirect through the pointer.
+        path = self.pointer_index_path(array_index_expr)
+        if path is not None:
+            ptr_expr, base_field_offset, terms = path
             return self.emit_pointer_deref_array_access(
                 ptr_expr=ptr_expr,
                 index_expr=array_index_expr.index,
@@ -2345,6 +2369,7 @@ class MIRBuilder:
                 const_offset=base_field_offset + field_offset,
                 result_type=result_type,
                 is_load=is_load, dest=dest, source=source,
+                inner_terms=terms[:-1],
             )
 
         # Static array base — a bare static array or an array field of a

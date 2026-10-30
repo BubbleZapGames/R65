@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
-Unit tests for MIRBuilder.try_pointer_deref_array_base and the array-index
+Unit tests for MIRBuilder.pointer_index_path and the array-index
 lowering through a pointer-dereferenced struct field.
 
 Before the fix, the MIR builder rejected `self.arr[i]` shapes with:
@@ -50,7 +50,7 @@ class TestPointerDerefArrayIndex:
         """`self.sprites[i].y = 240` — write a sub-field of an element.
 
         HIR shape: HIRFieldAccess(.y, base=HIRArrayIndex(array=HIRFieldAccess
-        (sprites, auto_deref=True, base=self))). try_pointer_deref_array_base
+        (sprites, auto_deref=True, base=self))). pointer_index_path
         matches the auto_deref field directly and emits StoreIndirect with
         offsetof(y) folded into Y alongside (idx * 4).
         """
@@ -178,7 +178,7 @@ class TestPointerDerefArrayIndex:
         """`(*p)[i] = v; out = (*p)[i];` — explicit-deref array shape.
 
         Exercises the HIRDereference branch (vs auto_deref HIRFieldAccess
-        for `self.arr[..]`). try_pointer_deref_array_base must match the
+        for `self.arr[..]`). pointer_index_path must match the
         HIRDereference node and lift its `.pointer` as the underlying
         pointer with zero base_field_offset.
         """

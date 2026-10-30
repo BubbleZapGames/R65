@@ -6,15 +6,13 @@ Indexing an element that is itself reached by an index.
 also `self.arr[j]` in its methods) used to fail in MIR lowering: an array base
 had to fold into one MemoryLocation, and the inner index has a runtime part.
 X now holds the sum of every variable index scaled by its stride; constant
-indices fold into the address.
+indices fold into the address. Through a pointer (`p[i][j]`, `self.c[i][j]`)
+the sum goes to Y instead, for `(p),Y`.
 
 The indices live in zero page so nothing folds them away.
 """
 
-import pytest
-
 from r65.compiler.main import compile_string
-from r65.compiler.errors import MIRLoweringError
 from r65.tests.e2e import ExpectedState
 
 
@@ -153,16 +151,121 @@ def test_the_address_of_an_inner_element(e2e):
     assert result.success, f"Failures: {result.failures}"
 
 
-def test_an_element_reached_through_a_pointer_index_is_an_error():
-    with pytest.raises(MIRLoweringError, match="reached through a pointer"):
-        compile_string('''
-            struct Row { name: [u8; 4], z: u8 }
-            #[lowram] static mut ROWS: [Row; 2];
-            #[zeropage(0x10)] static mut O: u8;
-            fn read(p: *[Row; 2], i: u16, j: u16) -> u8 { return p[i].name[j]; }
-            #[entry]
-            fn main() { O = read(&ROWS, 1, 2); }
-        ''', cfg_options=['snes'])
+# Through a pointer the same terms sum into Y, for `(p),Y`.
+
+def test_a_two_dimensional_array_through_a_pointer(e2e):
+    result = e2e.run(INDICES + '''
+        #[lowram(0x0300)]
+        static mut TWO: [[u8; 4]; 4];
+        #[zeropage(0x10)] static mut O: [u8; 6];
+        #[zeropage(0x18)] static mut P: *[[u8; 4]; 4];
+        #[zeropage(0x1A)] static mut Q: *u8;
+
+        #[entry]
+        fn main() {
+            P = &TWO;
+            let mut n: u8 = 1;
+            for i in 0..4 {
+                for j in 0..4 {
+                    P[i][j] = n;
+                    n = n + 1;
+                }
+            }
+            I = 2; J = 3; I8 = 1;
+            O[0] = P[I][J];
+            O[1] = P[1][2];
+            O[2] = P[I][0];
+            O[3] = (*P)[I][J];
+            O[4] = P[I8][J];
+            Q = &P[I][J];
+            O[5] = *Q;
+        }
+    ''', ExpectedState(memory={0x7E0300: list(range(1, 17)),
+                               0x7E0010: [12, 7, 9, 12, 8, 12]}))
+    assert result.success, f"Failures: {result.failures}"
+
+
+def test_u16_elements_through_a_pointer_scale_the_inner_index(e2e):
+    result = e2e.run(INDICES + '''
+        #[lowram(0x0300)]
+        static mut W: [[u16; 3]; 2];
+        #[zeropage(0x10)] static mut O: u16;
+        #[zeropage(0x18)] static mut P: *[[u16; 3]; 2];
+
+        #[entry]
+        fn main() {
+            P = &W;
+            I = 1; J = 2;
+            P[I][J] = 0xBEEF;
+            P[I][J - 1] = 0x1234;
+            O = P[I][J];
+        }
+    ''', ExpectedState(memory={0x7E0308: [0x34, 0x12, 0xEF, 0xBE],
+                               0x7E0010: [0xEF, 0xBE]}))
+    assert result.success, f"Failures: {result.failures}"
+
+
+def test_a_two_dimensional_field_through_a_pointer(e2e):
+    """`cells` sits after `z`, so `P.cells[1][2]` is 0x0300 + 1 + 3 + 2."""
+    result = e2e.run(INDICES + '''
+        struct Board { z: u8, cells: [[u8; 3]; 2] }
+        impl Board {
+            near fn get(*self, i: u16, j: u16) -> u8 { return self.cells[i][j]; }
+        }
+        #[lowram(0x0300)]
+        static mut BOARD: Board;
+        #[zeropage(0x10)] static mut O: [u8; 2];
+        #[zeropage(0x18)] static mut P: *Board;
+
+        #[entry]
+        fn main() {
+            P = &BOARD;
+            I = 1; J = 2;
+            P.cells[I][J] = 0x5A;
+            O[0] = P.cells[I][J];
+            O[1] = BOARD.get(I, J);
+        }
+    ''', ExpectedState(memory={0x7E0306: 0x5A, 0x7E0010: [0x5A, 0x5A]}))
+    assert result.success, f"Failures: {result.failures}"
+
+
+def test_an_element_reached_through_a_pointer_index(e2e):
+    result = e2e.run(INDICES + '''
+        struct Row { name: [u8; 4], z: u8 }
+        #[lowram(0x0300)] static mut ROWS: [Row; 2];
+        #[zeropage(0x10)] static mut O: u8;
+        fn read(p: *[Row; 2], i: u16, j: u16) -> u8 { return p[i].name[j]; }
+        #[entry]
+        fn main() {
+            ROWS[1].name[2] = 0x41;
+            O = read(&ROWS, 1, 2);
+        }
+    ''', ExpectedState(memory={0x7E0010: 0x41}))
+    assert result.success, f"Failures: {result.failures}"
+
+
+def test_a_field_of_an_indexed_pointer(e2e):
+    """`p[i].b` reads the pointee. It used to index the pointer variable's
+    own bytes, and a parameter `p` failed in codegen."""
+    result = e2e.run(INDICES + '''
+        struct Pair { a: u8, b: u8 }
+        #[lowram(0x0300)] static mut PAIRS: [Pair; 3];
+        #[zeropage(0x10)] static mut O: [u8; 2];
+        #[zeropage(0x18)] static mut P: *Pair;
+        #[zeropage(0x1A)] static mut GUARD: [u8; 4] = [0; 4];
+        fn second(p: *Pair, i: u16) -> u8 { return p[i].b; }
+        #[entry]
+        fn main() {
+            P = &PAIRS[0];
+            I = 2;
+            P[I].b = 0x77;
+            P[I].a = 0x66;
+            O[0] = P[I].b;
+            O[1] = second(P, 2);
+        }
+    ''', ExpectedState(memory={0x7E0304: [0x66, 0x77], 0x7E0010: [0x77, 0x77],
+                               0x7E001A: [0, 0, 0, 0]}))
+    assert result.success, f"Failures: {result.failures}"
 
 
 # An inner index the loop never changes is scaled once, before the loop.
@@ -236,3 +339,23 @@ def test_hoisted_and_unhoisted_inner_indices(e2e):
     14 + 10 + 6 + 2."""
     result = e2e.run(ROW_SUM, ExpectedState(memory={0x7E0010: [42, 34, 32]}))
     assert result.success, f"Failures: {result.failures}"
+
+
+def test_an_invariant_inner_index_through_a_pointer_is_scaled_before_the_loop():
+    asm = compile_string('''
+        #[lowram(0x0300)] static mut T: [[u8; 4]; 4];
+        #[zeropage(0x10)] static mut O: u8;
+        #[used]
+        fn row_sum(p: *[[u8; 4]; 4], i: u16) -> u8 {
+            let mut s: u8 = 0;
+            for j in 0..4 { s = s + p[i][j]; }
+            return s;
+        }
+        #[entry]
+        fn main() { O = row_sum(&T, 2); }
+    ''', cfg_options=['snes']).splitlines()
+    start = asm.index('row_sum:')
+    body = asm[start:asm.index('    RTS', start)]
+    loop = next(n for n, line in enumerate(body) if line.startswith('row_sum__L'))
+    shifts = [n for n, line in enumerate(body) if line.strip() == 'ASL A']
+    assert shifts and max(shifts) < loop, "i * 4 is recomputed inside the loop"

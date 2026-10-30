@@ -62,7 +62,7 @@ static mut BUFFER: [u8; 256] = [0; 256];
 static mut MESSAGE: [u8; 16] = "Hello, World!";  // String literal, zero-padded
 ```
 
-Arrays nest (`[[u8; 3]; 2]`, indexed `T[i][j]`), and an array field of an element indexes the same way (`ROWS[i].name[j]`).
+Arrays nest (`[[u8; 3]; 2]`, indexed `T[i][j]`), and an array field of an element indexes the same way (`ROWS[i].name[j]`), also through a pointer (`p[i][j]`).
 
 A local's literal may hold run-time values (`let a = [x, 1, 2];`, `[x; N]`, struct literals with run-time fields); a static's initializer must be compile-time constant.
 

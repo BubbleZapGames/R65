@@ -181,8 +181,10 @@ assign, declare or take the address of - is scaled once, before the loop
 (`_hoist_invariant_index_terms`), so `for k in 0..N { T[i][k] }` adds a
 precomputed `i * stride` rather than rescaling `i` on every pass. X reuse
 across consecutive accesses (`x_index_reuse_key`) is off when more than the
-outermost index is involved, since X holds a sum. An element reached through
-a pointer index (`p[i].name[j]`) is not supported.
+outermost index is involved, since X holds a sum. Through a pointer -
+`p[i][j]`, `p[i].name[j]`, `self.cells[i][j]`, `(*p)[i][j]` -
+`pointer_index_path` collects the same terms and they sum into Y, for
+`(p),Y` / `[p],Y`; invariant inner indices hoist the same way.
 
 ## Code Locations
 
