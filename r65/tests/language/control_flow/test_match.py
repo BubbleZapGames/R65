@@ -188,3 +188,53 @@ class TestMatchPatterns:
         assert pat.name == "MY_CONST"
 
 
+
+
+class TestMatchStatement:
+    """A match in statement position ends its statement; no `;` needed."""
+
+    ARMS = "{ 0 => { G = 1; } _ => { G = 2; } }"
+
+    def body(self, source):
+        return parse_function(f"fn test(t: u8) {{ {source} }}").body.statements
+
+    def test_statement_follows(self):
+        stmts = self.body(f"match t {self.ARMS} G = 3;")
+        assert isinstance(stmts[0].expr, ast.MatchExpression)
+        assert isinstance(stmts[1].expr, ast.Assignment)
+
+    def test_deref_starts_next_statement(self):
+        """`*P = 3` after a match is a new statement, not a multiply."""
+        stmts = self.body(f"match t {self.ARMS} *P = 3;")
+        assert isinstance(stmts[0].expr, ast.MatchExpression)
+        assert isinstance(stmts[1].expr.target, ast.Dereference)
+
+    def test_explicit_semicolon_still_parses(self):
+        stmts = self.body(f"match t {self.ARMS}; G = 3;")
+        assert isinstance(stmts[0].expr, ast.MatchExpression)
+        assert len(stmts) == 2
+
+    def test_loop_bodies_end_in_match(self):
+        for head in ("loop", "while t != 0", "for i in 0..4"):
+            loop = self.body(f"{head} {{ match t {self.ARMS} }}")[0]
+            assert isinstance(loop.body.statements[-1].expr, ast.MatchExpression), head
+
+    def test_if_body_ends_in_match(self):
+        if_stmt = self.body(f"if t == 0 {{ match t {self.ARMS} }} G = 3;")[0]
+        assert isinstance(if_stmt, ast.IfStmt)
+        assert isinstance(if_stmt.then_block.statements[-1].expr, ast.MatchExpression)
+
+    def test_if_with_valued_else_stays_an_expression(self):
+        """`if c { match .. } else { 3 }` is still an if expression, so it can
+        be a function's value."""
+        stmts = self.body("if t == 0 { match t { 0 => 1, _ => 2 } } else { 3 }")
+        if_expr = stmts[-1].expr
+        assert isinstance(if_expr, ast.IfExpression)
+        assert isinstance(if_expr.then_block.final_expr, ast.MatchExpression)
+
+    def test_else_if_let_is_kept(self):
+        """HIR builds an else only from a Block or IfStmt; `else if let` is an
+        ExprStmt, so it is wrapped rather than dropped."""
+        if_stmt = self.body("if t == 5 { G = 1; } else if let 0 = t { G = 2; }")[0]
+        assert isinstance(if_stmt.else_block, ast.Block)
+        assert isinstance(if_stmt.else_block.statements[0].expr, ast.MatchExpression)

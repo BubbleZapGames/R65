@@ -925,3 +925,65 @@ class TestComparisonLiteralPromotion:
             0x7E0011: 0,
         }))
         assert result.success, f"Failures: {result.failures}"
+
+
+class TestMatchStatement:
+    """A statement-position match with no `;`, and `else if let`."""
+
+    def test_match_without_semicolon(self, e2e):
+        """A match followed by a statement, a loop ending in a match, and an
+        if/else whose then arm ends in a match as a function's value."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut OUT: [u8; 4];
+
+            fn pick(t: u8) -> u8 {
+                if t == 0 { match t { 0 => 7, _ => 8 } } else { 9 }
+            }
+
+            #[entry]
+            fn main() {
+                let t: u8 = 1;
+                match t {
+                    0 => { OUT[0] = 10; }
+                    _ => { OUT[0] = 20; }
+                }
+                OUT[1] = OUT[0] + 1;
+                let mut n: u8 = 0;
+                while n < 3 {
+                    n = n + 1;
+                    match n {
+                        3 => { OUT[2] = n; }
+                        _ => {}
+                    }
+                }
+                OUT[3] = pick(0) + pick(1);
+            }
+        ''', ExpectedState(memory={0x7E0010: [20, 21, 3, 16]}))
+        assert result.success, f"Failures: {result.failures}"
+
+    def test_else_if_let(self, e2e):
+        """`else if let` in an if statement used to be dropped, and in an if
+        expression it crashed the HIR builder."""
+        result = e2e.run('''
+            #[zeropage(0x10)]
+            static mut OUT: [u8; 2];
+
+            fn stmt(t: u8) -> u8 {
+                let mut r: u8 = 0;
+                if t == 5 { r = 1; } else if let 0 = t { r = 2; } else { r = 3; }
+                return r;
+            }
+
+            fn value(t: u8) -> u8 {
+                let v: u8 = if t == 5 { 1 } else if let 0 = t { 2 } else { 3 };
+                return v;
+            }
+
+            #[entry]
+            fn main() {
+                OUT[0] = stmt(0) * 16 + stmt(7);
+                OUT[1] = value(0) * 16 + value(7);
+            }
+        ''', ExpectedState(memory={0x7E0010: [0x23, 0x23]}))
+        assert result.success, f"Failures: {result.failures}"

@@ -307,27 +307,18 @@ Two constructs assume there is exactly one of them in the program, so a package 
 
 ## Parser
 
-### A `match` statement needs a `;` before the next statement
+### Two places a statement-position `match` still needs `;`
 
-`match` exists only as an expression (`match_expr`, reached through `primary`), so in statement position it is an `expr_stmt: expr ";"`. A `match` that is not the last thing in its block must therefore end in `};` — Rust lets a block-like expression stand as a statement with no `;`, and R65 rejects the Rust spelling:
+A `match` in statement position ends its statement (`match_stmt` in `grammar.lark`), and loop and `if` bodies may end in one. Two shapes still fail:
 
 ```rust
-far fn music_play(track: u8) {
-    match track {
-        0 => { music_load(&MUSIC_1 as far *u8); }
-        _ => { return; }
-    }
-    music_now = track;     // error: unexpected token 'music_now' — expected ;, }
-}
+let v: u8 = { match t { .. } G };   // a match, then a non-match tail value
+{ G = 1; match t { .. } } G = 2;    // a bare block ending in a match, then more
 ```
 
-A trailing `match` (the last statement of a function or block) parses, because nothing follows it. `if` has no such problem: it has a statement form of its own (`if_stmt`), and `loop`/`while`/`for` are statements outright.
+**Why deferred**: both meet the decision `match_stmt` avoids. A `match_stmt` is never a block's last item, which keeps a match before `}` an expression, the block's tail value. The first shape needs a match_stmt followed by a tail expression; the parser can only tell which follows after it has committed. In the second, the bare block is ambiguous between a block statement and a `block_expr` until the token after its `}`; the match tail decides for `block_expr`, which then wants a `;`. Neither came up in real code.
 
-**Why deferred**: the obvious fix — a `match_stmt: match_expr` alternative under `statement`, transformed to the same `ExprStmt` — does not build. The parser is LALR (`_LARK_OPTIONS`, `parser='lalr'`), and after a `match_expr` in statement position it cannot tell a statement that has ended from an expression that goes on, so Lark reports reduce/reduce collisions between `match_stmt` and `primary : match_expr` on `[`, `(`, `-`, `&` and `*` (each could index, call or operate on the match's value, or start the next statement), and on `}` (the match could be the block's tail value, `block_expr: "{" statement* expr "}"`). Resolving them is a restructuring of the statement/expression grammar, not a one-line rule. Found writing `rotor_raiders/src/sound.r65`, where `music_play` was restructured around it (the work after the match moved into the arms' callee).
-
-**Approach if revisited**: do what Rust's grammar does — a block-like expression at the start of a statement is a statement, and does not continue as an operand. In LALR terms: give statement position its own entry for block-like expressions (`match`, and blocks/`if` used as values) that is not reachable through `primary`, and split `expr_stmt` so the expression it starts with cannot itself begin with a block-like expression (`match x {..} - 1;` then needs parentheses, as `(match x {..}) - 1;` does in Rust). The `}` collision needs the same choice for `block_expr`'s tail: a `match` immediately before `}` is the tail value when the block is used as a value, so either the tail rule takes block-like expressions explicitly or the statement form is preferred and a value-producing tail is recognised after the fact (as Rust does when a block's last statement is a block-like expression with a type). Check: the grammar builds with no collisions, `match ...;` still parses, and a trailing match still yields the function's value.
-
-**Workaround today**: end the match with `};`, or move what follows into the arms (or a function the arms call).
+**Approach if revisited**: Rust's model in full. Give `block` and `block_expr` one syntax, `"{" _stmt_item* expr? "}"`, prefer the statement reading at statement start (rule priority settles the reduce/reduce collisions, as it does for `match_stmt.1`), and recover a block's value after the fact from its last block-like statement (`ASTBuilder._if_forms` already does this for an `if` whose then arm ends in a match). The `if` and block forms would then need the same treatment, so `if_stmt`/`if_expr` and `block`/`block_expr` could merge.
 
 ---
 

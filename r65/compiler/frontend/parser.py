@@ -13,7 +13,8 @@ from r65.compiler.frontend.tokens import (
     split_integer_suffix, parse_integer, decode_literal, ESCAPE_HINT,
 )
 from r65.compiler.errors import ParseError, SourceLocation, get_source_line
-from typing import List
+from dataclasses import dataclass
+from typing import List, Optional
 
 
 # Load the grammar
@@ -76,6 +77,18 @@ def render_ast_type(node) -> str:
 def _tok(item):
     """A Lark token's text, or *item* itself when it is already a value."""
     return item.value if isinstance(item, LarkToken) else item
+
+
+@dataclass
+class _TailBlock:
+    """An if or else body as parsed, with its trailing expression apart.
+
+    ASTBuilder._if_forms turns it into a Block or a BlockExpression once the
+    whole `if` is known; it never leaves the builder.
+    """
+    statements: list
+    tail: Optional[ast.Expression]
+    source_loc: Optional[SourceLocation]
 
 
 class ASTBuilder(Transformer):
@@ -1631,6 +1644,82 @@ class ASTBuilder(Transformer):
         statements = [item for item in items if not isinstance(item, LarkToken)]
         return ast.Block(statements=self._desugar_let_else(statements))
 
+    @v_args(tree=True)
+    def match_stmt(self, tree):
+        """A match in statement position: the ExprStmt `match ..;` gives."""
+        match = self._filter_tokens(tree.children)[0]
+        return ast.ExprStmt(expr=match, source_loc=self._make_source_loc(tree.meta))
+
+    def loop_body(self, items):
+        """A loop body, which may end in a match with no `;`."""
+        statements = self._filter_tokens(items)
+        if statements and isinstance(statements[-1], ast.MatchExpression):
+            tail = statements[-1]
+            statements[-1] = ast.ExprStmt(expr=tail, source_loc=tail.source_loc)
+        return ast.Block(statements=self._desugar_let_else(statements))
+
+    @v_args(tree=True)
+    def if_body(self, tree):
+        """An if or else body; `_if_forms` decides whether it has a value."""
+        statements = self._filter_tokens(tree.children)
+        tail = None
+        if statements and isinstance(statements[-1], ast.Expression):
+            tail = statements.pop()
+        return _TailBlock(statements, tail, self._make_source_loc(tree.meta))
+
+    else_body = if_body
+
+    def _if_forms(self, then_body, else_part):
+        """The arms of an `if` statement: `(True, then, else)` as values, or
+        `(False, then, else)` as statement blocks.
+
+        The arms are values when the then arm ends in a match and the else
+        has a value, as in `if c { match .. } else { 3 }` in a function's
+        tail; before match_stmt that parsed as an if expression, and it still
+        builds one.
+        """
+        else_value = None
+        if then_body.tail is not None:
+            if isinstance(else_part, _TailBlock) and else_part.tail is not None:
+                else_value = self._tail_block_expr(else_part)
+            elif (isinstance(else_part, ast.ExprStmt)
+                    and self._is_if_value(else_part.expr)):
+                else_value = self._else_value(else_part.expr)
+        if else_value is not None:
+            return True, self._tail_block_expr(then_body), else_value
+
+        then_block = self._tail_block_stmt(then_body)
+        if isinstance(else_part, _TailBlock):
+            else_part = self._tail_block_stmt(else_part)
+        elif else_part is not None and not isinstance(else_part, (ast.Block, ast.IfStmt)):
+            # `else if let` is an ExprStmt, which HIR's _build_if would drop
+            else_part = ast.Block(statements=[else_part], source_loc=else_part.source_loc)
+        return False, then_block, else_part
+
+    @staticmethod
+    def _is_if_value(expr):
+        """Whether an else-if statement is one `_if_forms` built as a value."""
+        return (isinstance(expr, ast.IfExpression)
+                or (isinstance(expr, ast.MatchExpression) and expr.origin is None))
+
+    @staticmethod
+    def _else_value(expr):
+        """An if expression's else: `else if let` is a match, which HIR builds
+        only inside a block expression."""
+        if isinstance(expr, ast.MatchExpression):
+            return ast.BlockExpression(statements=[], final_expr=expr,
+                                       source_loc=expr.source_loc)
+        return expr
+
+    def _tail_block_expr(self, body):
+        return self._let_else_block_expr(list(body.statements), body.tail, body.source_loc)
+
+    def _tail_block_stmt(self, body):
+        statements = list(body.statements)
+        if body.tail is not None:
+            statements.append(ast.ExprStmt(expr=body.tail, source_loc=body.tail.source_loc))
+        return ast.Block(statements=self._desugar_let_else(statements))
+
     @staticmethod
     def _desugared_match(scrutinee, pattern, then_body, else_body, origin, loc):
         """`match scrutinee { pattern => then_body, _ => else_body }`.
@@ -1869,18 +1958,29 @@ class ASTBuilder(Transformer):
         """If statement."""
         items = self._filter_tokens(tree.children)
         condition = items[0]
-        then_block = items[1]
-        else_block = items[2] if len(items) > 2 else None
+        else_part = items[2] if len(items) > 2 else None
+        loc = self._make_source_loc(tree.meta)
+        is_value, then_block, else_block = self._if_forms(items[1], else_part)
+        if is_value:
+            return ast.ExprStmt(
+                expr=ast.IfExpression(condition=condition, then_block=then_block,
+                                      else_block=else_block, source_loc=loc),
+                source_loc=loc)
         return ast.IfStmt(condition=condition, then_block=then_block, else_block=else_block,
-                         source_loc=self._make_source_loc(tree.meta))
+                         source_loc=loc)
 
     @v_args(tree=True)
     def if_let_stmt(self, tree):
         """`if let P = e { .. } else ..` — `match e { P => { .. }, _ => else }`."""
         items = self._filter_tokens(tree.children)
-        pattern, scrutinee, then_block = items[0], items[1], items[2]
-        else_block = items[3] if len(items) > 3 else None
+        pattern, scrutinee = items[0], items[1]
+        else_part = items[3] if len(items) > 3 else None
         loc = self._make_source_loc(tree.meta)
+        is_value, then_block, else_block = self._if_forms(items[2], else_part)
+        if is_value:                                     # as if_let_expr builds it
+            match = self._desugared_match(scrutinee, pattern, then_block, else_block,
+                                          None, loc)
+            return ast.ExprStmt(expr=match, source_loc=loc)
         if else_block is None:
             else_block = ast.Block(statements=[], source_loc=loc)
         elif not isinstance(else_block, ast.Block):      # else if ...
@@ -2230,7 +2330,7 @@ class ASTBuilder(Transformer):
         return ast.IfExpression(
             condition=condition,
             then_block=then_block,
-            else_block=else_block,
+            else_block=self._else_value(else_block),
             source_loc=self._make_source_loc(tree.meta)
         )
 

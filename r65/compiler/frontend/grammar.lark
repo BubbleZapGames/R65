@@ -61,8 +61,8 @@ doc_comment: DOC_OUTER | DOC_BLOCK_OUTER
 function_decl: doc_comment* attribute* CONST? (FAR | NEAR)? FN IDENT "(" param_list? ")" return_type? function_body
 
 // Function body: block with optional trailing expression (Rust-style implicit returns)
-function_body: "{" statement* "}"
-             | "{" statement* expr "}"  -> function_body_trailing
+function_body: "{" _stmt_item* "}"
+             | "{" _stmt_item* expr "}"  -> function_body_trailing
 
 param_list: param ("," param)* ","?
 // Supports pointer parameters: [far|near] *name: type
@@ -281,7 +281,24 @@ cfg_comparison: IDENT "=" STRING                 -> cfg_eq
                | IDENT "!=" STRING               -> cfg_ne
 
 // Block
-block: "{" statement* "}"
+block: "{" _stmt_item* "}"
+
+// A match in statement position ends its statement when another statement
+// follows, as in Rust: on `(`, `[`, `-`, `&` or `*` the next statement
+// begins, rather than calling, indexing or operating on the match's value.
+// The priority settles that reduce/reduce collision with `primary:
+// match_expr`. A match_stmt is never a block's last item, so before `}` a
+// match stays an expression: the tail value of a block_expr or function body.
+_stmt_item: statement | _match_then
+_match_then: match_stmt (statement | _match_then)
+match_stmt.1: match_expr
+
+// Loop and if bodies have no value, so they may also end in a match. An if
+// arm ending in a match whose else has a value is rebuilt as an if_expr
+// (ASTBuilder._if_forms), which is how it parsed before.
+loop_body: "{" _stmt_item* match_expr? "}"
+if_body: "{" _stmt_item* match_expr? "}"
+else_body: "{" _stmt_item* expr? "}"
 
 // Statements
 ?statement: let_stmt
@@ -330,15 +347,15 @@ continue_stmt: CONTINUE LABEL_REF? ";"
 increment_stmt: unary PLUSPLUS ";"
 decrement_stmt: unary MINUSMINUS ";"
 
-if_stmt: IF expr block (ELSE else_clause)?
-       | IF LET pattern "=" expr block (ELSE else_clause)?  -> if_let_stmt
-else_clause: if_stmt | block
+if_stmt: IF expr if_body (ELSE else_clause)?
+       | IF LET pattern "=" expr if_body (ELSE else_clause)?  -> if_let_stmt
+else_clause: if_stmt | else_body
 
-// Note: identical to loop_expr but produces a different tree node;
+// Note: the same syntax as loop_expr but produces a different tree node;
 // loop_stmt is a statement, loop_expr is an initializer (see initializer_expr)
-loop_stmt: LABEL_DEF? LOOP block
-while_stmt: LABEL_DEF? WHILE expr block
-          | LABEL_DEF? WHILE LET pattern "=" expr block  -> while_let_stmt
+loop_stmt: LABEL_DEF? LOOP loop_body
+while_stmt: LABEL_DEF? WHILE expr loop_body
+          | LABEL_DEF? WHILE LET pattern "=" expr loop_body  -> while_let_stmt
 
 // let PATTERN = expr else { diverge }; — a bare IDENT pattern is excluded so
 // `let x = ...` stays a let_stmt (it would be irrefutable anyway)
@@ -349,7 +366,7 @@ let_else_stmt: LET let_else_pattern "=" expr ELSE block ";"
                  | pattern_neg_literal
                  | pattern_literal
                  | pattern_enum
-for_stmt: LABEL_DEF? FOR IDENT IN expr (DOTDOT | DOTDOTEQ) expr block
+for_stmt: LABEL_DEF? FOR IDENT IN expr (DOTDOT | DOTDOTEQ) expr loop_body
 
 asm_stmt: ASM "!" "(" STRING ("," asm_arg)* ")" ";"
 asm_arg: STRING | asm_named_arg
@@ -364,7 +381,7 @@ match_arm: pattern "=>" match_arm_body
               | match_arm_continue
               | match_arm_block
               | expr
-match_arm_block: "{" statement* "}"
+match_arm_block: "{" _stmt_item* "}"
 match_arm_return: RETURN expr?
 match_arm_break: BREAK LABEL_REF?
 match_arm_continue: CONTINUE LABEL_REF?
@@ -494,7 +511,7 @@ arg_list: arg ("," arg)* ","?
         | array_literal_expr
 
 // Block expression: { statements; final_expr } in expression context
-block_expr: "{" statement* expr "}"
+block_expr: "{" _stmt_item* expr "}"
 
 // If expression: if cond { expr } else { expr } (else required)
 if_expr: IF expr block_expr (ELSE (if_expr | block_expr))
