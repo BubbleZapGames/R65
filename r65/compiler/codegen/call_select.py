@@ -347,18 +347,18 @@ class CallInstructionSelector(BaseSelector):
         # Spill hw registers that are live across this call and not preserved by callee
         spills = self._compute_hw_spills(instr)
 
-        # Step 0.5: Emit spills BEFORE argument setup (to avoid clobbering args)
-        self._emit_hw_spills(spills)
-
-        # Step 0.7: Restore D register BEFORE argument setup (for far pointer functions)
-        # CRITICAL: PLD must happen before pushing arguments. If PLD happens after,
-        # it pops 2 bytes from the top of the stack, consuming part of the just-pushed
-        # arguments instead of the saved D value.
+        # Step 0.5: Restore D register BEFORE anything is pushed (for far pointer
+        # functions). CRITICAL: the D the prologue saved is on top of the frame,
+        # so PLD must come before the spills and the argument pushes - after
+        # them it would pop a spilled register or part of an argument instead.
         # The stack tracker records the PLD displacement so that all subsequent
         # stack-relative accesses (argument loading, return value storing) are
         # automatically adjusted.
         if needs_d_management:
             self._emit_d_restore_before_call()
+
+        # Step 0.7: Emit spills BEFORE argument setup (to avoid clobbering args)
+        self._emit_hw_spills(spills)
 
         # Step 0.7b: SET_DBR: save ptr-bank DBR and set DBR to the data bank for callee
         if needs_dbr_management:
@@ -437,9 +437,16 @@ class CallInstructionSelector(BaseSelector):
         # If callee exited in m16 (u16 return), switch back to m8
         self._emit_exit_mode_restore(instr)
 
+        # Step 6.2: SET_DBR: restore ptr-bank DBR after call. Its PHB went on
+        # above the spills, so it comes off before they are reloaded.
+        if needs_dbr_management:
+            self._emit_dbr_restore_after_call()
+
         # Step 6.5: Reload spilled hardware registers (region-based)
         # Only reload registers where this is the last call in the region
         reloads = self._compute_hw_reloads(instr)
+        if needs_d_management:
+            reloads = self._reload_all_spills(reloads)
         self._emit_hw_reloads(reloads)
 
         # Step 8: Restore D to stack and optionally re-establish D = S
@@ -451,10 +458,6 @@ class CallInstructionSelector(BaseSelector):
                 self._emit_d_equals_s_restore(live_regs)  # PHD + TSC + TCD
             else:
                 self._emit_d_push_only()  # Just PHD (for epilogue)
-
-        # Step 8b: SET_DBR: restore ptr-bank DBR after call
-        if needs_dbr_management:
-            self._emit_dbr_restore_after_call()
 
         if inferred:
             self._check_inferred_preserves(instr, call_start, inferred)
@@ -859,6 +862,22 @@ class CallInstructionSelector(BaseSelector):
                 del self.region_state.pending_xy_spills[hw_reg]
 
         return reloads
+
+    def _reload_all_spills(self, reloads: List[SpillInfo]) -> List[SpillInfo]:
+        """*reloads* plus every register still spilled, for a D=S function.
+
+        The PHD after the call must land where the prologue's did, and the
+        D=S it re-establishes must be the frame base the [dp] offsets assume,
+        so nothing may stay pushed across it. A region with calls still to
+        come is pushed again at its next one (`respill`).
+        """
+        wanted = {spill.hw_reg for spill in reloads}
+        extra = []
+        for reg in self.region_state.spill_stack:
+            if reg not in wanted:
+                extra.append(SpillInfo(vreg=None, hw_reg=reg))
+                self.region_state.respill.add(reg)
+        return reloads + extra
 
     def _emit_hw_spills(self, spills: List[SpillInfo]):
         """
