@@ -92,8 +92,10 @@ def call_effects(instr: CallBase,
         arg_regs.add('Y')
     has_stack_args = any(a.mechanism == ArgumentMechanism.STACK for a in args)
 
+    # A preserved register an argument goes to comes back holding the
+    # argument, not what the caller had in it before setting it up.
     attr = getattr(instr, 'preserves_attr', None)
-    declared = frozenset(attr.registers) if attr else frozenset()
+    declared = (frozenset(attr.registers) - arg_regs) if attr else frozenset()
     clobbers_attr = getattr(instr, 'clobbers_attr', None)
     clobbers = frozenset(clobbers_attr.registers) if clobbers_attr else frozenset()
     if getattr(instr, 'callee_is_extern', False):
