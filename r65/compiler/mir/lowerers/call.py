@@ -199,6 +199,7 @@ class CallLowerer:
                 callee_entry_m_mode=ModeState.M8,
                 callee_exit_m_mode=infer_exit_mode(exit_type),
                 callee_return_type=return_type,
+                pascal_result_bytes=self._pascal_result_bytes(return_type),
             ))
             if returns:
                 return returns[0]
@@ -514,6 +515,18 @@ class CallLowerer:
     # ========================================================================
 
 
+    def _pascal_result_bytes(self, return_type) -> int:
+        """The result space a Pascal caller pushes for *return_type*: the
+        callee stores its result there. None elsewhere, or for no result."""
+        from r65.compiler.codegen.abi_model import ABIKind
+        from r65.compiler.hir.types import NeverTypeInfo
+        if (self.builder.abi_kind != ABIKind.PASCAL or return_type is None
+                or isinstance(return_type, NeverTypeInfo)
+                or return_type == BasicTypeInfo('void')):
+            return 0
+        from r65.compiler.codegen.type_utils import get_type_size
+        return get_type_size(return_type)
+
     def _emit_call(
         self,
         func_decl: HIRFunctionDecl,
@@ -534,16 +547,7 @@ class CallLowerer:
             returns: Virtual registers for return values
             builtin_name: Name of built-in function if this is a built-in call
         """
-        # Compute Pascal result space bytes if needed
-        pascal_result_bytes = 0
-        from r65.compiler.codegen.abi_model import ABIKind
-        if self.builder.abi_kind == ABIKind.PASCAL and func_decl.return_type:
-            from r65.compiler.hir.types import BasicTypeInfo, NeverTypeInfo
-            if (not isinstance(func_decl.return_type, NeverTypeInfo) and
-                not (isinstance(func_decl.return_type, BasicTypeInfo) and
-                     func_decl.return_type.name == 'void')):
-                from r65.compiler.codegen.type_utils import get_type_size
-                pascal_result_bytes = get_type_size(func_decl.return_type)
+        pascal_result_bytes = self._pascal_result_bytes(func_decl.return_type)
 
         self.emit(Call(
             function=func_decl.name,
