@@ -57,10 +57,10 @@ def test_dispatch_reached_in_m16_resumes_in_m8():
     """With self in a scratch register, `LDY` loads it in m16 and the JSL
     goes out in m16; the void method comes back in m8."""
     source = '''
-        #[zeropage(0x30, register)] static mut S0: u16;
-        #[zeropage(0x32, register)] static mut S1: u16;
-        #[zeropage(0x34, register)] static mut S2: u16;
-        #[zeropage(0x36, register)] static mut S3: u16;
+        #[zeropage(0x10, register)] static mut S0: u16;
+        #[zeropage(0x12, register)] static mut S1: u16;
+        #[zeropage(0x14, register)] static mut S2: u16;
+        #[zeropage(0x16, register)] static mut S3: u16;
 
         struct Node { tag: u8, back: *Node, val: u16 }
         trait Linker { fn point_at_me(*self, other: *Node, v: u16); }
