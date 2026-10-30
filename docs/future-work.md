@@ -149,22 +149,10 @@ const-cast variants). In `LookupTable.values` store tuples
 loads + a stack store sequence, mirroring the per-byte spill
 pattern used elsewhere for far pointers; the merge BRA stays.
 
-When this lands the kong-frame dispatch in `classickong.r65`'s
-`game_show_kong` shrinks from a ~21-arm JumpTable + 21 inline
-constant-pointer blocks (~600 bytes) to one indexed LUT + a single
-3-byte store (~150 bytes), at the cost of one extra indexed read
-per dispatch.
-
----
-
-## SoA Struct Arrays — `#[soa]` Attribute
-
-Lay a `static [T; N]` out as parallel per-field arrays so `arr[i].field`
-desugars to `arr__field[i]` — no stride multiply for non-power-of-2 struct
-sizes, while keeping struct syntax and a single `N` at the source level.
-
-Specified in full, including layout, restrictions, initializer
-transposition, and a six-slice implementation plan — see [soa.md](soa.md).
+The motivating case, a ~21-arm far-pointer match in classickong's
+`game_show_kong`, has since been rewritten to index a `kong_frames`
+ROM table, which is the workaround today: put the pointers in a
+`static` array and index it.
 
 ---
 
@@ -186,7 +174,7 @@ The return ABI is register-count based — each returned value rides back in A, 
 
 **Why deferred**: fixed in place, but the class of problem remains — any unused stdlib macro is unverified.
 
-**Approach if revisited**: a test source that expands every stdlib macro once, compiled as part of the suite. Cheap to write, and it turns "unused" into "at least syntactically live". Related: `enable_nmi!`/`disable_nmi!`/`enable_autojoy!` read-modify-write `NMITIMEN` ($4200), which is write-only — they fold open bus into the value and need a shadow variable to be correct.
+**Approach if revisited**: a test source that expands every stdlib macro once, compiled as part of the suite. Cheap to write, and it turns "unused" into "at least syntactically live".
 
 ---
 
@@ -226,6 +214,61 @@ Individual methods honour `#[cfg(...)]`, but an `impl` block as a whole cannot b
 **Why deferred**: per-method filtering covers the cases that came up (`Q10::lerp`, `q10_mul`), so what is left is ergonomics rather than capability.
 
 **Approach if revisited**: allow `attribute*` on `impl_decl` and fold the block's cfg into each method's, so an outer disable wins over an inner enable.
+
+---
+
+## Clone
+
+Deferred parts of `impl Clone` — see [operator-overloading.md](operator-overloading.md).
+
+### Clone through a runtime pointer
+
+`p.clone_from(...)` or a clone whose receiver is a pointer is rejected (`typeck/call_validator.py`, "clone through a runtime pointer is not yet supported"). The intrinsic copy needs a static address at both ends: `mir/builder.py::_clone_place_memloc` resolves each operand to a `MemoryLocation`, and returns `None` for anything else.
+
+**Why deferred**: the place-based copy covers named variables and statics, which is where clones came up. A pointer end has no address known at compile time, so the copy becomes a different lowering, not an extension of this one.
+
+**Approach if revisited**: lower a pointer end to an indexed copy loop through the pointer (`LDA [src],Y` / `STA [dst],Y`), or call `stdlib/string.r65::memcpy` above some size; the design table in operator-overloading.md already names `memcpy` for this case. Accept the pointer form in `call_validator.py` once the lowering exists, and test near and far pointers at each end.
+
+### `let x = a.clone()` with a custom `Clone` impl
+
+The `.clone()` sugar works only for the compiler-generated bitwise clone (`impl Clone for T {}`). A type with a hand-written `clone_from` body is rejected, with a hint to write `x.clone_from(&a)`.
+
+**Why deferred**: the sugar routes the source into the `let`'s initializer, which may decompose `x` into vregs that have no address. A user `clone_from` needs `&x` to pass as `self`.
+
+**Approach if revisited**: when the impl is manual, force `x` addressable (as clone operands already are), then emit the ordinary static call `x.clone_from(&a)` as the initializer.
+
+---
+
+## Inlining
+
+### Far functions that are not bank-safe
+
+Inlining a far function into a caller in another bank needs a body that means the same thing from either bank (`optimize/inline.py::_far_body_is_bank_safe`). Two cases are refused "for now":
+
+- **`#[mode(databank=inline|caller)]` functions.** The inlined copy would need its own PHB / set DBR / PLB bracket.
+- **Bodies containing a `TraitDispatch`.** Whether a dispatch is bank-explicit depends on the trait's near/far calls and on `self_is_far`, so the predicate refuses all of them.
+
+**Why deferred**: failing closed is the right default for a cross-bank correctness check. For the databank case, the bracket costs about as much as the JSL/RTL the inline saves, so it pays only when inlining also folds constant arguments.
+
+**Approach if revisited**: for `TraitDispatch`, accept a dispatch whose trait methods are far and whose `self` is a far pointer, since that is bank-explicit on both axes; keep refusing the rest. For the databank modes, emit the bracket around the inlined body and gate it on a cost check, not on the attribute alone.
+
+---
+
+## Indexing an Element Reached Through a Pointer
+
+Indexing twice through a pointer is a MIR error ("indexing into an element reached through a pointer is not supported", `mir/builder.py`):
+
+```rust
+#[zeropage]
+static mut P: *[[u8; 4]; 4];
+let v: u8 = P[1][2];    // error
+```
+
+A static base works (`GRID[i][j]`), and so does an array field through a pointer (`R.cells[j]` with `R: *Row`).
+
+**Why deferred**: nested indexing landed for static bases, where the outer index folds into the base `MemoryLocation` (`resolve_array_base_memloc`). A pointer base has no static address to fold into. The full offset (`i * stride + j`) has to be computed into Y for `LDA (ptr),Y`, and a run-time `i` needs a stride multiply.
+
+**Approach if revisited**: when the base resolves to a pointer (`try_pointer_deref_array_base`), sum the index terms into one offset and lower through the existing pointer-indexed path. **Workaround today**: point at a flat array (`*[u8; 16]`) and write `P[i * 4 + j]`.
 
 ---
 
@@ -285,3 +328,15 @@ A trailing `match` (the last statement of a function or block) parses, because n
 **Approach if revisited**: do what Rust's grammar does — a block-like expression at the start of a statement is a statement, and does not continue as an operand. In LALR terms: give statement position its own entry for block-like expressions (`match`, and blocks/`if` used as values) that is not reachable through `primary`, and split `expr_stmt` so the expression it starts with cannot itself begin with a block-like expression (`match x {..} - 1;` then needs parentheses, as `(match x {..}) - 1;` does in Rust). The `}` collision needs the same choice for `block_expr`'s tail: a `match` immediately before `}` is the tail value when the block is used as a value, so either the tail rule takes block-like expressions explicitly or the statement form is preferred and a value-producing tail is recognised after the fact (as Rust does when a block's last statement is a block-like expression with a type). Check: the grammar builds with no collisions, `match ...;` still parses, and a trailing match still yields the function's value.
 
 **Workaround today**: end the match with `};`, or move what follows into the arms (or a function the arms call).
+
+---
+
+## Macros
+
+### More than one repeated parameter
+
+A macro arm may have only one repetition group. A second `$(...),*` in the same pattern is an error ("has multiple repeated parameters (not supported)", `frontend/macros.py`).
+
+**Why deferred**: the matcher splits an invocation into the simple parameters plus one repeated tail. Two groups need a rule for where the first one ends, and the macros written so far haven't needed one.
+
+**Approach if revisited**: follow Rust's `macro_rules!`, where a group ends at the separator or literal token that follows it in the pattern. Reject patterns where that boundary is ambiguous, e.g. two adjacent groups with no token between them.
