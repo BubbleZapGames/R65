@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
 from r65.compiler.codegen.asm_nodes import Immediate, Address
-from r65.compiler.codegen.register_alloc import PhysicalLocation, LocationKind
+from r65.compiler.codegen.register_alloc import PhysicalLocation
 
 if TYPE_CHECKING:
     from r65.compiler.codegen.instruction_select import InstructionSelector
@@ -146,12 +146,12 @@ class BaseSelector(ABC):
 
         # A may still hold something live (an '@ A' parameter used after this
         # store). The mode is pinned above and unchanged until the pull, so the
-        # push and the pull are the same width and the frame balances.
+        # push and the pull are the same width and the frame balances. A
+        # stack destination is placed past the push by the emitter's
+        # displacement, like every stack operand.
         a_is_live = not self.parent._hw_reg_is_free('A')
         if a_is_live:
             self._emit_instr(Opcode.PHA, comment="Save A (live value)")
-            if dest_loc.kind == LocationKind.STACK:
-                dest_loc = self.parent._offset_location(dest_loc, value_bytes)
 
         self._emit_instr(Opcode.TXA if reg == 'X' else Opcode.TYA,
                          comment=f"Transfer to A (no {STORE_MNEMONICS[reg]} with this addressing)")
@@ -182,11 +182,11 @@ class BaseSelector(ABC):
             self.parent._ensure_m8_mode()
             pushed = 1
 
+        # A stack destination is placed past the push by the emitter's
+        # displacement; the value of S is not, so its read adds it back.
         a_is_live = not self.parent._hw_reg_is_free('A')
         if a_is_live:
             self._emit_instr(Opcode.PHA, comment="Save A (live value)")
-            if dest_loc.kind == LocationKind.STACK:
-                dest_loc = self.parent._offset_location(dest_loc, pushed)
 
         if reg == 'D':
             self._emit_instr(Opcode.TDC, comment="D to A")

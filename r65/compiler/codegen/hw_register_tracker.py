@@ -36,6 +36,9 @@ class HardwareRegisterTracker:
         self._read_from = []
         aliases = mir_func.alias_tracker.aliases if getattr(mir_func, 'alias_tracker', None) else {}
         tracked = {alias.hardware_reg.name for alias in aliases.values()}
+        # Parameters the FixedStack pass promoted to a register arrive there
+        # the same way, read by the Move it injects at entry
+        tracked |= set(getattr(mir_func, 'hw_param_regs', {}).values())
         if not tracked:
             return
 
