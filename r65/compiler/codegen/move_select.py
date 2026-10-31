@@ -331,7 +331,13 @@ class MoveOperationSelector(BaseSelector):
             return
 
         value = src_operand.value
-        if is_u16:
+        if is_far_pointer(instr.type_info):
+            # 24-bit: the low word, then the bank byte.
+            self.parent._emit_16bit_immediate_store(value & 0xFFFF, dest_loc)
+            self.parent._ensure_m8_mode()
+            self._emit_instr(Opcode.LDA_IMMEDIATE, Immediate((value >> 16) & 0xFF))
+            self._emit_load_store('STA', self.parent._offset_location(dest_loc, 2))
+        elif is_u16:
             self.parent._emit_16bit_immediate_store(value, dest_loc)
         else:
             # A u8 store needs m8: in m16 it would write 2 bytes and
