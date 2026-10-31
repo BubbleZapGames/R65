@@ -1538,8 +1538,9 @@ class PeepholeOptimizer:
 
         Labels between Bcc and BRA are safe to skip because they contain
         no instructions — any branch targeting them reaches the same BRA.
+        RawAsm (inline asm, data) emits bytes and stops both scans.
         """
-        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address
+        from r65.compiler.codegen.asm_nodes import Instruction, Label, Address, RawAsm
         from r65.compiler.codegen.asm_nodes import invert_branch
 
         CONDITIONAL_BRANCHES = BRANCH_OPCODES - {Opcode.BRA, Opcode.BRL}
@@ -1562,7 +1563,7 @@ class PeepholeOptimizer:
                 # transparent — branches to them reach the same BRA destination.
                 j = i + 1
                 between = []
-                while j < len(nodes) and not isinstance(nodes[j], Instruction):
+                while j < len(nodes) and not isinstance(nodes[j], (Instruction, RawAsm)):
                     between.append(nodes[j])
                     j += 1
 
@@ -1596,7 +1597,7 @@ class PeepholeOptimizer:
                     between2 = []
                     found_target = False
                     while k < len(nodes):
-                        if isinstance(nodes[k], Instruction):
+                        if isinstance(nodes[k], (Instruction, RawAsm)):
                             break  # Hit an instruction before finding target
                         if isinstance(nodes[k], Label) and nodes[k].name == cond_target:
                             found_target = True

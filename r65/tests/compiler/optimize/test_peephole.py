@@ -213,6 +213,21 @@ class TestBranchOverBranchEliminationSelfLoopGuard:
         assert first.opcode == Opcode.BEQ
         assert first.operand.value == "elsewhere"
 
+    def test_rawasm_before_bra_is_not_skipped(self):
+        """`while flag { asm!("WAI"); }`: the BEQ jumps over the asm body,
+        not a bare BRA. Retargeting it would drop WAI out of the loop."""
+        nodes = [
+            Label("test"),
+            Instruction(opcode=Opcode.BEQ, operand=Address("exit")),
+            Label("body"),
+            RawAsm("WAI"),
+            Instruction(opcode=Opcode.BRA, operand=Address("test")),
+            Label("exit"),
+            Instruction(opcode=Opcode.RTS),
+        ]
+        opt = PeepholeOptimizer()
+        assert opt._eliminate_branch_over_branch(list(nodes)) == nodes
+
 
 class TestDeadModeChangeElimination:
     """Test _eliminate_dead_mode_changes pass."""
