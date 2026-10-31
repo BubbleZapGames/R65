@@ -2676,6 +2676,26 @@ class MIRBuilder:
         return compute_scaled_index(index_operand, element_size, index_type,
                                     self.ctx, self.emit, self.call_lowerer)
 
+    def pointer_index_offset(self, index_operand, element_size: int, index_type):
+        """`(operand, type)` to move into Y for `ptr[index]`: the byte offset.
+        A negative constant - which reaches here masked to its type, `-1: i8`
+        as 255 - wraps to $FFxx, so `c[-1]` is the element below c, not 255
+        above it; a run-time i8 index is sign-extended. An unsigned byte
+        index moves as itself, which zero-extends it."""
+        from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
+        u16 = BasicTypeInfo('u16')
+        t = strip_newtype(index_type) if index_type is not None else None
+        signed = isinstance(t, BasicTypeInfo) and t.name in ('i8', 'i16')
+        if isinstance(index_operand, Immediate) and index_operand.symbol is None:
+            value = index_operand.value
+            if signed:
+                bits = 8 if t.name == 'i8' else 16
+                value = ((value + (1 << (bits - 1))) & ((1 << bits) - 1)) - (1 << (bits - 1))
+            return Immediate((value * element_size) & 0xFFFF), u16
+        if element_size == 1 and not signed:
+            return index_operand, index_type
+        return self.scale_index(index_operand, element_size, index_type), u16
+
     def _get_type_size(self, type_info) -> int:
         """Get size in bytes for a type."""
         return get_unified_type_size(type_info)

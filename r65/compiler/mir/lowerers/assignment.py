@@ -444,25 +444,10 @@ class AssignmentLowerer:
 
         array_index = expr.target
         element_type = expr.expr_type
-        # Use the index type (not element type) for the Move to Y register.
-        # The index type determines the bit width: u16 indices must load as 16-bit
-        # to avoid truncation when index >= 256.
-        index_type = array_index.index.expr_type
-
-        # Lower index expression
-        index_operand = self.builder.lower_expression(array_index.index)
-
-        # Scale index by element size for multi-byte elements
-        # (ptr[i] byte offset = i * sizeof(element), matching _lower_pointer_index in expression.py)
-        element_size = self.builder._get_type_size(element_type)
-        if element_size > 1:
-            if isinstance(index_operand, Immediate):
-                index_operand = Immediate(index_operand.value * element_size)
-            else:
-                # The same scaling as the read path: a u8 index widens to
-                # u16 before the shift, or ptr[150] of u16 would overflow.
-                index_operand = self.builder.scale_index(
-                    index_operand, element_size, index_type)
+        # Y holds the byte offset, as on the read path.
+        index_operand, index_type = self.builder.pointer_index_offset(
+            self.builder.lower_expression(array_index.index),
+            self.builder._get_type_size(element_type), array_index.index.expr_type)
 
         # Lower the pointer expression to get the pointer value
         ptr_operand = self.builder.lower_expression(array_index.array)

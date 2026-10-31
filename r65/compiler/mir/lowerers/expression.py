@@ -654,15 +654,9 @@ class ExpressionLowerer:
         # Get the pointer value (should be in a vreg for parameters)
         ptr_operand = self.builder.lower_expression(expr.array)
 
-        # Use the index type (not element type) for the Move to Y register.
-        # The index type determines the bit width: u16 indices must load as 16-bit
-        # to avoid truncation when index >= 256.
-        index_type = expr.index.expr_type
-
-        # For indexed addressing, we need the index in Y register
-        # If element_size > 1, multiply first
-        if element_size > 1:
-            index_operand = self.builder.scale_index(index_operand, element_size, index_type)
+        # Y holds the u16 byte offset (see pointer_index_offset).
+        index_operand, index_type = self.builder.pointer_index_offset(
+            index_operand, element_size, expr.index.expr_type)
 
         # Move index to Y register for indirect indexed addressing
         y_reg = HardwareRegister('Y')
