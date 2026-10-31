@@ -2,11 +2,10 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """
 R65 Compiler Setup
-A Rust-inspired compiler for 6502/65816 processors targeting WLA-DX assembly.
+A Rust-inspired compiler for 65816 processors targeting WLA-DX assembly.
 
 After installation, the 'r65c' command will be available:
     r65c game.r65 -o game.asm    # Compile R65 to assembly
-    r65c game.r65 --dump-ast      # Show parsed AST
     r65c game.r65 -v -o game.asm  # Verbose compilation
 """
 
@@ -19,14 +18,14 @@ long_description = readme_file.read_text(encoding="utf-8") if readme_file.exists
 
 setup(
     name="r65",
-    version="0.3.0",
-    description="A Rust-inspired compiler for 6502/65816 processors targeting WLA-DX assembly",
+    version="0.4.0",
+    description="A Rust-inspired compiler for 65816 processors targeting WLA-DX assembly",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="R65 Contributors",
     author_email="",
-    url="https://github.com/yourusername/R65",  # Update with actual repository URL
-    license="MIT",  # Update if different license is chosen
+    url="https://github.com/BubbleZapGames/R65",
+    license="MIT",
 
     # Package discovery
     packages=find_packages(exclude=["tests", "tests.*", "docs", "examples"]),
@@ -85,12 +84,12 @@ setup(
     ],
 
     # Keywords
-    keywords="compiler 6502 65816 snes retro-computing assembly",
+    keywords="compiler 65816 snes retro-computing assembly",
 
     # Project URLs
     project_urls={
-        "Documentation": "https://github.com/yourusername/R65/docs",  # Update with actual URL
-        "Source": "https://github.com/yourusername/R65",  # Update with actual URL
-        "Bug Reports": "https://github.com/yourusername/R65/issues",  # Update with actual URL
+        "Documentation": "https://r65.dev/docs/getting-started/overview",
+        "Source": "https://github.com/BubbleZapGames/R65",
+        "Bug Reports": "https://github.com/BubbleZapGames/R65/issues",
     },
 )
