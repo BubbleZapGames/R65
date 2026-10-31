@@ -55,6 +55,10 @@ def get_unified_type_size(type_obj: Any, symbol_table=None) -> int:
     if ast_types and isinstance(type_obj, (ast_types.BasicType, ast_types.Identifier)):
         return _named_type_size(type_obj, symbol_table)
 
+    if ast_types and isinstance(type_obj, (ast_types.PointerType, ast_types.FunctionType)):
+        # A far pointer is a bank byte wider (`fn()` is far unless `near`)
+        return 3 if type_obj.is_far else 2
+
     if ast_types and isinstance(type_obj, ast_types.ArrayType):
         elem_size = get_unified_type_size(type_obj.element_type, symbol_table)
         if hasattr(type_obj, 'length') and type_obj.length:

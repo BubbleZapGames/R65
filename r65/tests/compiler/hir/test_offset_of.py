@@ -127,6 +127,17 @@ class TestOffsetOf:
                   if isinstance(d, HIRConstDecl)}
         assert consts == {'SZ_KIND': width, 'SZ_REC': width + 1, 'OFF_TAIL': width}
 
+    def test_pointer_fields_are_sized(self):
+        """A near pointer is 2 bytes, a far one 3; `fn()` is far unless near."""
+        source = """
+        struct Obj { kind: u8, sec: far *u8, p: *u8, f: fn(), g: near fn() }
+        const SZ: u8 = size_of(Obj);
+        const OFF_G: u8 = offset_of(Obj, g);
+        """
+        consts = {d.name: d.value.value for d in build_hir(source).declarations
+                  if isinstance(d, HIRConstDecl)}
+        assert consts == {'SZ': 11, 'OFF_G': 9}
+
     def test_union_field_offset_is_zero(self):
         """Every union field overlays offset 0."""
         source = """
