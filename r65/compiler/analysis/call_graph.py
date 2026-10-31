@@ -210,6 +210,42 @@ class RecursionChecker:
         # Check functions with address taken
         self._check_address_taken(graph)
 
+        self._check_interrupt_sharing(graph)
+
+    def _check_interrupt_sharing(self, graph: CallGraph):
+        """
+        Warn about a function with promoted aggregate locals that an interrupt
+        handler and the code it interrupts can both be inside.
+
+        The locals are one static, so an interrupt landing mid-call rewrites
+        the interrupted call's copy. The main program and each handler are a
+        context; a function two of them reach is shared. The program may run
+        the call with the interrupt disabled, which is why this warns.
+        """
+        contexts = [(f"interrupt handler '{f.name}'", graph.reachable_from([f.name]))
+                    for f in self.program.functions if f.interrupt_attr is not None]
+        if not contexts:
+            return
+        entries = [f.name for f in self.program.functions if f.is_entry]
+        contexts.insert(0, ("the main program", graph.reachable_from(entries)))
+
+        for func in self.program.functions:
+            if not func.has_promoted_locals or func.interrupt_attr is not None:
+                continue
+            sharers = [name for name, reach in contexts if func.name in reach]
+            if len(sharers) < 2:
+                continue
+            self.diagnostics.warning(
+                f"Function '{func.name}' has local struct/array variables "
+                f"promoted to static storage and is called from both "
+                f"{' and '.join(sharers)}. An interrupt that lands while the "
+                f"function runs overwrites the interrupted call's locals.",
+                code="W004",
+                hint="Give the interrupt handler its own function, or make the "
+                     "locals scalars; the warning is moot if the interrupt is "
+                     "disabled around every other call."
+            )
+
     def _check_cycle(self, cycle: List[str], graph: CallGraph):
         """
         Check if a cycle contains functions with unsafe parameters.

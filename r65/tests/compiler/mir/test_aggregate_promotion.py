@@ -401,6 +401,25 @@ class TestRecursionWithPromotedLocals:
         checker = RecursionChecker(mir)
         checker.check()  # Should not raise
 
+    @pytest.mark.parametrize("handler_calls, warns", [
+        ("sum4()", True),       # shares main's promoted locals
+        ("other()", False),     # its own function
+    ])
+    def test_shared_with_interrupt_handler_warns(self, handler_calls, warns):
+        """W004: an interrupt landing mid-call rewrites the caller's locals."""
+        mir = build_mir(f'''
+            fn sum4() -> u8 {{ let t: [u8; 4] = [1, 2, 3, 4]; return t[0] + t[3]; }}
+            fn other() -> u8 {{ let t: [u8; 4] = [1, 2, 3, 4]; return t[1]; }}
+            #[interrupt(nmi)]
+            fn vblank() {{ let v: u8 = {handler_calls}; }}
+            #[entry]
+            fn main() {{ let v: u8 = sum4(); }}
+        ''')
+        checker = RecursionChecker(mir)
+        checker.check()
+        codes = [d.code for d in checker.diagnostics.get_warnings()]
+        assert codes == (["W004"] if warns else [])
+
 
 # =============================================================================
 # Struct with enum/pointer fields (eligible for decomposition)
