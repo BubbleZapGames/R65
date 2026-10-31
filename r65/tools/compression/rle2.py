@@ -13,10 +13,12 @@ def compress(data):
 def decompress(data):
 	out = bytearray()
 	decomp = rle1.decompress(data)
-	half = len(decomp) // 2
+	# The even plane holds the extra byte of an odd length
+	half = (len(decomp) + 1) // 2
 	data1 = decomp[:half]
 	data2 = decomp[half:]
 	for i in range(0,half):
 		out.append(data1[i])
-		out.append(data2[i])
+		if i < len(data2):
+			out.append(data2[i])
 	return out
