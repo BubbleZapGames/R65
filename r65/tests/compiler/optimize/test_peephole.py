@@ -229,6 +229,27 @@ class TestBranchOverBranchEliminationSelfLoopGuard:
         assert opt._eliminate_branch_over_branch(list(nodes)) == nodes
 
 
+class TestOverwrittenLoadElimination:
+    """An LDA the next LDA replaces goes, unless reading it has an effect."""
+
+    def test_overwritten_loads(self):
+        nodes = [
+            Instruction(opcode=Opcode.LDA_STACK, operand=StackOffset(2)),
+            Instruction(opcode=Opcode.LDA_IMMEDIATE, operand=Immediate(0x20)),
+            Instruction(opcode=Opcode.LDA_STACK, operand=StackOffset(5)),
+            Instruction(opcode=Opcode.STA_ABSOLUTE, operand=Address(0x2181)),
+            Instruction(opcode=Opcode.LDA_ABSOLUTE, operand=Address(0x4212)),  # #[hw]
+            Instruction(opcode=Opcode.LDA_DP_INDIRECT_Y, operand=Address(0x10)),  # may be I/O
+            Instruction(opcode=Opcode.LDA_STACK, operand=StackOffset(1)),
+        ]
+        opt = PeepholeOptimizer(volatile_addresses={0x4212})
+        result = opt._eliminate_overwritten_loads(nodes)
+        assert [n.opcode for n in result] == [
+            Opcode.LDA_STACK, Opcode.STA_ABSOLUTE, Opcode.LDA_ABSOLUTE,
+            Opcode.LDA_DP_INDIRECT_Y, Opcode.LDA_STACK]
+        assert result[0].operand == StackOffset(5)
+
+
 class TestDeadModeChangeElimination:
     """Test _eliminate_dead_mode_changes pass."""
 

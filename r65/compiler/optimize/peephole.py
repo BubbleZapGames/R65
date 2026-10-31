@@ -183,6 +183,7 @@ class OptimizationStats:
     inc_dec_folded: int = 0
     memory_rmw_folded: int = 0
     redundant_cmp_zero_eliminated: int = 0
+    overwritten_loads_eliminated: int = 0
 
     @property
     def total(self) -> int:
@@ -560,6 +561,7 @@ class PeepholeOptimizer:
             nodes = self._eliminate_identity_copies(nodes)
             nodes = self._eliminate_redundant_loads_tracked(nodes)
             nodes = self._eliminate_dead_stores(nodes)
+            nodes = self._eliminate_overwritten_loads(nodes)
             nodes = self._eliminate_redundant_transfers(nodes)
             nodes = self._eliminate_redundant_stack_ops(nodes)
             nodes = self._eliminate_redundant_mode_changes(nodes)
@@ -744,6 +746,36 @@ class PeepholeOptimizer:
             optimized.append(node)
             i += 1
 
+        return optimized
+
+    # Loads with no side effect: a read of a non-#[hw] location, never one
+    # through a pointer or an index, which may reach an I/O register.
+    _PLAIN_LDA = frozenset({Opcode.LDA_IMMEDIATE, Opcode.LDA_DP, Opcode.LDA_ABSOLUTE,
+                            Opcode.LDA_LONG, Opcode.LDA_STACK})
+
+    def _eliminate_overwritten_loads(self, nodes: List['AsmNode']) -> List['AsmNode']:
+        """
+        Drop an LDA whose value the next instruction, another LDA, replaces.
+
+        Pattern: LDA a; LDA b -> LDA b. Adjacent instructions run in one
+        width, so the second writes every bit of A the first did, and N/Z.
+        Left by dead-store elimination taking the STA between them. Only a
+        load with no side effect goes (_PLAIN_LDA, not #[hw]).
+        """
+        from r65.compiler.codegen.asm_nodes import BlankLine, Comment, Instruction
+
+        optimized = []
+        for i, node in enumerate(nodes):
+            if (isinstance(node, Instruction) and node.opcode in self._PLAIN_LDA
+                    and not self._is_hardware_register(node.operand)):
+                j = i + 1
+                while j < len(nodes) and isinstance(nodes[j], (Comment, BlankLine)):
+                    j += 1
+                if (j < len(nodes) and isinstance(nodes[j], Instruction)
+                        and mnemonic(nodes[j].opcode) == 'LDA'):
+                    self.stats.overwritten_loads_eliminated += 1
+                    continue
+            optimized.append(node)
         return optimized
 
     def _is_indexed_addressing(self, opcode: Opcode) -> bool:
