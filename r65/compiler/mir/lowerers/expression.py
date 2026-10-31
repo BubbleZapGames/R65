@@ -79,6 +79,8 @@ class ExpressionLowerer:
 
         if expr.op in comparison_ops:
             return self._lower_comparison_op(expr)
+        if expr.op in ('&&', '||'):
+            return self._lower_logical_value(expr)
         else:
             return self._lower_arithmetic_op(expr)
 
@@ -131,6 +133,18 @@ class ExpressionLowerer:
                 result_type=expr.expr_type,
                 hint=f"{expr.op}_result",
             )
+
+    def _lower_logical_value(self, expr: HIRBinaryOp) -> VirtualRegister:
+        """`a && b` / `a || b` as a value: the short-circuit branches of an
+        `if` condition, each setting 1 or 0."""
+        result = self.ctx.alloc_vreg(expr.expr_type, f"{expr.op}_result")
+
+        def set_to(value):
+            return lambda: self.emit(Move(dest=result, source=Immediate(value),
+                                          type_info=expr.expr_type))
+
+        self.builder._lower_branches(expr, set_to(1), set_to(0))
+        return result
 
     def _emit_compare_to_bool(self, left, right, op: str,
                                left_type, result_type, hint: str) -> VirtualRegister:
