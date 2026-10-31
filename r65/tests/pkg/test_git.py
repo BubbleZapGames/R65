@@ -120,18 +120,72 @@ def test_r65pkg_add_remove_tree(tmp_path, repo, monkeypatch, capsys):
     assert "q10" not in app.read_text() and read_lock(app.parent / "r65.lock") == {}
 
 
+def _single_package_repo(directory, name, version):
+    """A repository whose root r65.toml is the package itself."""
+    directory.mkdir(parents=True)
+    git(directory, "init", "-q", "-b", "main")
+    package(directory, name, version, files={f"{name}.r65": "\n"})
+    git(directory, "add", "-A")
+    git(directory, "commit", "-q", "-m", version)
+    return directory
+
+
+def test_r65pkg_add_url_names_the_package_for_you(tmp_path, monkeypatch):
+    tween = _single_package_repo(tmp_path / "tween", "tween", "0.2.1")
+    app = package(tmp_path / "app", "app", lib=False)
+    monkeypatch.chdir(app.parent)
+    with pytest.raises(SystemExit):
+        r65pkg(["add", str(tween)])   # no release tags and no ref to read
+    r65pkg(["add", str(tween), "--branch", "main"])
+    assert 'tween = { git = "' + str(tween) + '", branch = "main" }' in app.read_text()
+    git(tween, "tag", "-a", "tween-v0.2.1", "-m", "0.2.1")
+    r65pkg(["add", str(tween)])
+    assert 'tween = { git = "' + str(tween) + '", version = "0.2" }' in app.read_text()
+
+
+def test_r65pkg_add_url_of_several_packages_needs_a_name(tmp_path, repo, monkeypatch, capsys):
+    app = package(tmp_path / "app", "app", lib=False)
+    monkeypatch.chdir(app.parent)
+    with pytest.raises(SystemExit):
+        r65pkg(["add", str(repo)])
+    assert "several packages (q10, std)" in capsys.readouterr().err
+    assert "[dependencies]" not in app.read_text()
+
+
 def test_r65pkg_tag_releases_the_committed_manifest_version(tmp_path, monkeypatch):
     r = repository(tmp_path / "ws", ["std"])
     release(r, "std", "0.1.0")
     monkeypatch.chdir(r / "std")
     package(r / "std", "std", "0.2.0")
     with pytest.raises(SystemExit):
-        r65pkg(["tag", "std"])   # the bump is not committed yet
+        r65pkg(["tag"])   # the bump is not committed yet
     git(r, "commit", "-qam", "bump")
-    r65pkg(["tag", "std"])
+    r65pkg(["tag"])
     assert git(r, "tag", "--list", "std-v0.2.0").strip() == "std-v0.2.0"
     with pytest.raises(SystemExit):
-        r65pkg(["tag", "std"])   # already tagged
+        r65pkg(["tag"])   # already tagged
+
+
+def test_r65pkg_tag_version_bumps_commits_and_tags(tmp_path, monkeypatch):
+    r = repository(tmp_path / "ws", ["std"])
+    release(r, "std", "0.1.0")
+    monkeypatch.chdir(r / "std")
+    r65pkg(["tag", "0.2.1"])
+    assert load_manifest(r / "std" / "r65.toml").version == (0, 2, 1)
+    assert git(r, "status", "--porcelain").strip() == ""
+    assert git(r, "log", "-1", "--format=%s", "std-v0.2.1").strip() == "std 0.2.1"
+    with pytest.raises(SystemExit):
+        r65pkg(["tag", "0.1.0"])   # taken
+
+
+def test_r65pkg_tag_needs_a_package_manifest_in_the_cwd(tmp_path, monkeypatch):
+    r = repository(tmp_path / "ws", ["std"])
+    release(r, "std", "0.1.0", files={"src/std.r65": "\n"})
+    for cwd in (r, r / "std" / "src"):   # a workspace root; no r65.toml here
+        monkeypatch.chdir(cwd)
+        with pytest.raises(SystemExit):
+            r65pkg(["tag", "0.2.0"])
+    assert git(r, "tag", "--list", "std-v0.2.0").strip() == ""
 
 
 def test_compile_a_fetched_git_dependency(tmp_path, repo, monkeypatch):

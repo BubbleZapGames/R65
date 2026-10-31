@@ -7,8 +7,10 @@ docs/packaging-system.md.
 
     r65pkg init [--lib|--bin] [NAME]
     r65pkg add NAME --path DIR | --git URL [--version REQ | --tag T | --rev R | --branch B]
+    r65pkg add URL [--version REQ | --tag T | --rev R | --branch B]
     r65pkg remove NAME
-    r65pkg fetch | update [NAME...] | tree | list | check | path [--include-flags] | tag NAME
+    r65pkg fetch | update [NAME...] | tree | list | check | path [--include-flags]
+    r65pkg tag [VERSION]
 """
 
 import argparse
@@ -24,7 +26,7 @@ from r65.pkg.manifest import (
     find_workspace_root, load_manifest,
 )
 from r65.pkg.resolve import DEPS_DIRNAME, Resolution, check_build, resolve
-from r65.pkg.version import Requirement, format_version, parse_version
+from r65.pkg.version import Requirement, VersionError, format_version, parse_version
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _INCLUDE = re.compile(r'include!\(\s*"([^"]+)"\s*\)')
@@ -124,6 +126,21 @@ def _edit_dependency(path: Path, name: str, line: Optional[str]) -> None:
     load_manifest(path)  # what was written must still parse
 
 
+def _set_package_version(path: Path, version: str) -> None:
+    """Set the `version = ...` line of the manifest's [package] table,
+    keeping everything else as written."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, l in enumerate(lines) if l.strip() == "[package]")
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].lstrip().startswith("[")), len(lines))
+    key = re.compile(r'^(\s*"?version"?\s*=\s*)"[^"]*"(.*)$')
+    at = next(i for i in range(start + 1, end) if key.match(lines[i]))
+    m = key.match(lines[at])
+    lines[at] = m.group(1) + _toml_string(version) + m.group(2)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    load_manifest(path)  # what was written must still parse
+
+
 # ---------------------------------------------------------------------------
 # Commands
 
@@ -144,10 +161,33 @@ def cmd_init(args) -> None:
     print(f"Created {'library' if args.lib else 'application'} package '{name}' in {path}")
 
 
+def _package_name_at(url: str, args) -> str:
+    """The one package a git repository holds: the name of its release tags,
+    or, with none, the package in its manifest at --tag, --rev or --branch."""
+    from r65.pkg.fetch import packages_at, released_packages
+    names = released_packages(url)
+    if not names:
+        ref = next(((k, getattr(args, k)) for k in ("tag", "rev", "branch") if getattr(args, k)),
+                   None)
+        if ref is None:
+            raise PackageError(f"{url} has no NAME-vX.Y.Z release tags; "
+                               f"name a --tag, --rev or --branch")
+        names = packages_at(url, *ref)
+    if len(names) != 1:
+        held = f"several packages ({', '.join(names)})" if names else "no package"
+        raise PackageError(f"{url} holds {held}: name one with "
+                           f"`r65pkg add NAME --git {url}`")
+    return names[0]
+
+
 def cmd_add(args) -> None:
     root = _root(args)
     if not _NAME.match(args.name):
-        raise PackageError(f"'{args.name}' is not a valid package name")
+        if args.git or args.path:
+            raise PackageError(f"'{args.name}' is not a valid package name")
+        # `r65pkg add URL`: a git dependency on the package the repository holds
+        args.git = args.name
+        args.name = _package_name_at(args.git, args)
     parts = []
     if args.path:
         if args.git or args.tag or args.rev or args.branch:
@@ -323,33 +363,35 @@ def _bare_cross_package_includes(resolution: Resolution) -> List[str]:
 
 
 def cmd_tag(args) -> None:
+    """Tag `NAME-vVERSION` for the package in the current directory. Given a
+    VERSION other than the manifest's, first write it into r65.toml and
+    commit that file, so the tag releases the version it names."""
     from r65.pkg.fetch import git
-    start = load_manifest(args.manifest) if args.manifest else None
-    if start is None:
-        path = discover_manifest(Path.cwd())
-        if path is None:
-            raise PackageError(f"no {MANIFEST_FILENAME} here or above")
-        start = load_manifest(path)
-    workspace = find_workspace_root(start) if start.is_package else start
-    candidates = [start] if start.name == args.name else []
-    if workspace is not None:
-        for directory in workspace.member_dirs():
-            path = directory / MANIFEST_FILENAME
-            if path.is_file() and load_manifest(path).name == args.name:
-                candidates.append(load_manifest(path))
-    if not candidates:
-        raise PackageError(f"no package named '{args.name}' here or in the workspace")
-    member = candidates[0]
-    tag = f"{member.name}-v{format_version(member.version)}"
+    path = Path.cwd() / MANIFEST_FILENAME
+    if not path.is_file():
+        raise PackageError(f"no {MANIFEST_FILENAME} in the current directory")
+    member = load_manifest(path)
+    if not member.is_package:
+        raise PackageError(f"{path} has no [package] to tag")
+    try:
+        version = parse_version(args.version) if args.version else member.version
+    except VersionError as e:
+        raise PackageError(str(e))
+    text = format_version(version)
+    tag = f"{member.name}-v{text}"
     top = Path(git("rev-parse", "--show-toplevel", cwd=member.dir).strip())
-    rel = member.path.relative_to(top.resolve()).as_posix()
+    if git("tag", "--list", tag, cwd=top).strip():
+        raise PackageError(f"tag {tag} already exists")
+    rel = member.path.resolve().relative_to(top.resolve()).as_posix()
     committed = git("show", f"HEAD:{rel}", cwd=top)
     if committed != member.path.read_text(encoding="utf-8"):
         raise PackageError(f"{member.path} differs from HEAD: commit it before tagging, so "
                            f"the tag releases the version it names")
-    if git("tag", "--list", tag, cwd=top).strip():
-        raise PackageError(f"tag {tag} already exists: bump [package] version first")
-    git("tag", "-a", tag, "-m", f"{member.name} {format_version(member.version)}", cwd=top)
+    if version != member.version:
+        _set_package_version(member.path, text)
+        git("commit", "-q", "-m", f"{member.name} {text}", "--", rel, cwd=top)
+        print(f"Set {member.name} version to {text} and committed {rel}")
+    git("tag", "-a", tag, "-m", f"{member.name} {text}", cwd=top)
     print(f"Tagged {tag} (push it with: git push origin {tag})")
 
 
@@ -366,7 +408,8 @@ def main(argv=None) -> None:
     p.set_defaults(run=cmd_init)
 
     p = sub.add_parser("add", help="add a dependency and lock it")
-    p.add_argument("name")
+    p.add_argument("name", metavar="NAME|URL",
+                   help="a package name with --path or --git, or a git URL alone")
     p.add_argument("--path")
     p.add_argument("--git", metavar="URL")
     p.add_argument("--version", metavar="REQ")
@@ -400,8 +443,9 @@ def main(argv=None) -> None:
     p.add_argument("--include-flags", action="store_true", help="as -I flags")
     p.set_defaults(run=cmd_path)
 
-    p = sub.add_parser("tag", help="tag NAME-v<version> from a member's manifest")
-    p.add_argument("name")
+    p = sub.add_parser("tag", help=f"tag NAME-vVERSION for ./{MANIFEST_FILENAME}, "
+                                   f"bumping and committing its version if given")
+    p.add_argument("version", nargs="?")
     p.set_defaults(run=cmd_tag)
 
     args = parser.parse_args(argv)

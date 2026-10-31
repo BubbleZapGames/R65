@@ -334,6 +334,7 @@ that writes manifests, writes the lockfile, or runs `git`.
 | `r65pkg init [--lib\|--bin] [NAME]` | Write an `r65.toml` in the current directory |
 | `r65pkg add NAME --path ../q10` | Add a path dependency |
 | `r65pkg add NAME --git URL [--version REQ \| --tag T \| --rev R \| --branch B]` | Add a git dependency (default: a caret requirement on the newest tag), resolve it, update the lock |
+| `r65pkg add URL [...]` | The same, naming the package from the repository: the one name its `NAME-vX.Y.Z` tags carry, or, with no release tags, the package in its `r65.toml` at `--tag`, `--rev` or `--branch`. A repository releasing several packages needs `NAME --git URL` |
 | `r65pkg remove NAME` | Drop a dependency and its lock entry |
 | `r65pkg fetch` | Lock any dependency not locked yet, then materialize everything in `r65.lock` into `.r65/deps/` |
 | `r65pkg update [NAME]` | Re-resolve (all dependencies, or one) to the newest versions the requirements allow, and rewrite the lock |
@@ -341,14 +342,17 @@ that writes manifests, writes the lockfile, or runs `git`.
 | `r65pkg list` | Resolved packages: version, source, include dir |
 | `r65pkg check` | Validate manifests, lock freshness, version conflicts, build requirements (`r65-version`, `cfg`), tag/manifest agreement, cross-package include ambiguity, and bare-name includes of another package's files — without compiling |
 | `r65pkg path [--include-flags]` | Print resolved include dirs, or `-I a -I b`, for tools other than `r65c` |
-| `r65pkg tag NAME` | Create the `NAME-v<version>` git tag from that member's manifest version |
+| `r65pkg tag [VERSION]` | In a package's directory: set `[package] version` to VERSION and commit `r65.toml` if it differs, then create the `NAME-v<version>` git tag |
 
-`r65pkg tag` is the monorepo release helper: it reads the member's `[package]
-version`, refuses while that manifest differs from `HEAD`, and creates an
-annotated tag, so a tag can never disagree with the manifest it claims to
-release. Pushing the tag is left to you (`git push origin stdlib-v0.1.0`).
-`--manifest PATH` before the command picks the package; `fetch`, `update` and
-`add` take `--offline`.
+`r65pkg tag` is the release helper. It runs in the package's own directory and
+needs an `r65.toml` with a `[package]` there. It refuses while that manifest
+differs from `HEAD`, or when the tag already exists. `r65pkg tag 0.2.1` writes
+`0.2.1` into `[package] version`, commits just `r65.toml` as `NAME 0.2.1`, and
+creates the annotated tag. Bare `r65pkg tag` tags the version the manifest
+already names. Either way a tag can never disagree with the manifest it claims
+to release. Pushing the commit and tag is left to you (`git push origin main
+stdlib-v0.1.0`). `--manifest PATH` before any other command picks the package;
+`fetch`, `update` and `add` take `--offline`.
 
 ### `r65c` and the Makefile
 
@@ -478,7 +482,7 @@ Not yet:
 
 - **The first release.** No `stdlib-v*` tag exists. A new project builds from
   its installed copy regardless, but a fresh checkout of one, or `r65pkg
-  update`, needs the tag: `r65pkg tag stdlib` after `stdlib/r65.toml` is
+  update`, needs the tag: `r65pkg tag` in `stdlib/` after `stdlib/r65.toml` is
   committed, then `git push origin stdlib-v0.1.0`.
 - **rotor_raiders and classickong** still carry `src/lib/` copies. They are
   separate repositories; migrating one is the same three steps.

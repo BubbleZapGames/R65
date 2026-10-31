@@ -9,11 +9,12 @@ Only the `r65pkg` tool imports this; `r65c` never runs git.
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from r65.pkg.lockfile import LockedPackage, git_source
-from r65.pkg.manifest import PackageError
+from r65.pkg.manifest import MANIFEST_FILENAME, PackageError, load_manifest
 from r65.pkg.resolve import Edge, ResolvedPackage, find_member, same_repository
 from r65.pkg.version import Version, format_version, parse_version, VersionError
 
@@ -35,9 +36,9 @@ def _clone_url(url: str) -> str:
     return Path(url).expanduser().resolve().as_uri()
 
 
-def release_tags(url: str, name: str) -> Dict[Version, Tuple[str, str]]:
-    """The repository's `NAME-vX.Y.Z` tags: version -> (tag, commit)."""
-    out = git("ls-remote", "--tags", _clone_url(url), f"refs/tags/{name}-v*")
+def _remote_tags(url: str, pattern: str) -> Dict[str, str]:
+    """The repository's tags matching `pattern`: tag -> commit."""
+    out = git("ls-remote", "--tags", _clone_url(url), f"refs/tags/{pattern}")
     commits: Dict[str, str] = {}
     for line in out.splitlines():
         sha, _, ref = line.partition("\t")
@@ -46,13 +47,48 @@ def release_tags(url: str, name: str) -> Dict[Version, Tuple[str, str]]:
             commits[tag[:-3]] = sha
         else:
             commits.setdefault(tag, sha)
+    return commits
+
+
+def release_tags(url: str, name: str) -> Dict[Version, Tuple[str, str]]:
+    """The repository's `NAME-vX.Y.Z` tags: version -> (tag, commit)."""
     tags = {}
-    for tag, sha in commits.items():
+    for tag, sha in _remote_tags(url, f"{name}-v*").items():
         try:
             tags[parse_version(tag[len(name) + 2:])] = (tag, sha)
         except VersionError:
             continue
     return tags
+
+
+def released_packages(url: str) -> List[str]:
+    """The names the repository has `NAME-vX.Y.Z` release tags for."""
+    names = set()
+    for tag in _remote_tags(url, "*-v*"):
+        name, _, version = tag.rpartition("-v")
+        try:
+            parse_version(version)
+        except VersionError:
+            continue
+        names.add(name)
+    return sorted(names)
+
+
+def packages_at(url: str, kind: str, value: str) -> List[str]:
+    """The packages in the repository at a tag, branch or commit: its root
+    package, or the packages among its [workspace] members."""
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "repo"
+        checkout(url, kind, value, dest)
+        root_path = dest / MANIFEST_FILENAME
+        if not root_path.is_file():
+            raise PackageError(f"{url} has no {MANIFEST_FILENAME} at its root")
+        root = load_manifest(root_path)
+        if root.is_package:
+            return [root.name]
+        members = (load_manifest(d / MANIFEST_FILENAME) for d in root.member_dirs()
+                   if (d / MANIFEST_FILENAME).is_file())
+        return sorted(m.name for m in members if m.is_package)
 
 
 def _head(dest: Path) -> Optional[str]:
