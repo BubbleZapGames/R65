@@ -4,15 +4,23 @@
 from itertools import groupby
 
 def compress(data):
-	# Find first unused byte value in data
-	tag = next((d for d in range(0,255) if d not in data))
+	# The tag is the first byte value the data never holds
+	tag = next((d for d in range(256) if d not in data), None)
+	if tag is None:
+		raise ValueError("byte_rle needs a byte value the data never holds; this data holds all 256")
 	out = bytearray([tag])
 
 	# Process grouped data runs
 	for val, item in groupby(data):
 		count = len(list(item))
 		if count > 2:
-			out += bytearray([val,tag,count-1])
+			# The byte, then tag/count pairs repeating it; a count is 1-255
+			out.append(val)
+			count -= 1
+			while count > 0:
+				n = min(count, 255)
+				out += bytearray([tag, n])
+				count -= n
 		else:
 			out += bytearray([val]*count)
 
