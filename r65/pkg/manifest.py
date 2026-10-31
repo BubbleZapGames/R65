@@ -204,6 +204,8 @@ def load_manifest(path) -> Manifest:
             m.bin_main = _string(path, data["bin"]["main"], "bin.main")
         if "cfg" in data["bin"]:
             m.bin_cfg = _string_list(path, data["bin"]["cfg"], "bin.cfg")
+            if any(c.split("=", 1)[0].strip() == "abi" for c in m.bin_cfg):
+                _fail(path, "bin.cfg cannot set 'abi'; the ABI is chosen with --abi")
     for name, spec in data.get("dependencies", {}).items():
         if name == m.name:
             _fail(path, f"[dependencies]: '{name}' cannot depend on itself")

@@ -80,6 +80,14 @@ def test_build_requirements(tmp_path):
     check_build(r, (0, 3, 1), ["snes", "debug"])
 
 
+def test_abi_requirement_names_the_abi_flag(tmp_path):
+    package(tmp_path / "fast", "fast", extra='cfg = ["abi=Pascal"]')
+    r = resolve(_app(tmp_path, 'fast = { path = "../fast" }'))
+    with pytest.raises(PackageError, match="must be built with --abi Pascal"):
+        check_build(r, (0, 3, 0), ["abi=Default"])
+    check_build(r, (0, 3, 0), ["abi=Pascal"])
+
+
 # ---------------------------------------------------------------------------
 # Through r65c
 

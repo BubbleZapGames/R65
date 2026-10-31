@@ -470,6 +470,16 @@ def write_depfile(depfile: str, target: str, prerequisites) -> None:
     Path(depfile).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def abi_cfg(cfg_options, abi_kind: ABIKind) -> list[str]:
+    """cfg_options plus `abi=<kind>`, the ABI the build uses, so code can test
+    it with `#[cfg(abi = "FixedStack")]`. Only --abi chooses the ABI: a flag
+    that sets `abi` itself raises ValueError."""
+    for flag in cfg_options or []:
+        if flag.split('=', 1)[0].strip() == 'abi':
+            raise ValueError(f"--cfg {flag}: 'abi' is set by --abi")
+    return list(cfg_options or []) + [f"abi={abi_kind.value}"]
+
+
 def load_packages(source_file: str, cfg_options, manifest: str = None):
     """Resolve the root source file's r65.toml (the nearest at or above it,
     or `manifest`): the packages' include roots, the cfg the build uses
@@ -527,9 +537,10 @@ def compile_string(source: str, filename: str = "<string>", abi_model=None,
     """
     from r65.compiler.analysis import RecursionChecker
 
-    hir_program = run_frontend(source, filename, cfg_options=cfg_options,
-                               include_paths=include_paths).hir_program
     mir_abi_kind = abi_model.kind if abi_model else ABIKind.DEFAULT
+    hir_program = run_frontend(source, filename,
+                               cfg_options=abi_cfg(cfg_options, mir_abi_kind),
+                               include_paths=include_paths).hir_program
     mir_builder = MIRBuilder(abi_kind=mir_abi_kind)
     mir_program = mir_builder.build_program(hir_program)
 
@@ -715,10 +726,18 @@ examples:
         print(f"Error reading file: {e}", file=sys.stderr)
         sys.exit(1)
 
+    from r65.compiler.codegen.abi_model import abi_model_from_string
+    abi_model = abi_model_from_string(args.abi)
+    try:
+        cfg_options = abi_cfg(args.cfg_options, abi_model.kind)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     try:
         packages, cfg_options, manifest_files = (
-            ([], args.cfg_options, []) if args.no_manifest
-            else load_packages(args.file, args.cfg_options, args.manifest))
+            ([], cfg_options, []) if args.no_manifest
+            else load_packages(args.file, cfg_options, args.manifest))
     except Exception as e:
         from r65.pkg.manifest import PackageError
         if not isinstance(e, PackageError):
@@ -753,9 +772,6 @@ examples:
             return
 
         # Normal compilation
-        from r65.compiler.codegen.abi_model import abi_model_from_string
-        abi_model = abi_model_from_string(args.abi)
-
         compile_source(source, filename, args.output, args.verbose, args.quiet,
                        cfg_options, args.include_paths, opt_level=args.opt_level,
                        debug=args.generate_debug,

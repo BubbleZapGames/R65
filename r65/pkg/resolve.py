@@ -272,6 +272,12 @@ def _order(packages: Dict[str, ResolvedPackage]) -> List[str]:
     return order
 
 
+def _build_flag(cfg: str) -> str:
+    """The r65c flag that sets a cfg condition: `abi` comes from --abi."""
+    key, _, value = cfg.partition("=")
+    return f"--abi {value}" if key.strip() == "abi" else f"--cfg {cfg}"
+
+
 def check_build(resolution: Resolution, compiler_version: Version, cfg: List[str]) -> None:
     """The build requirements every package states: the oldest r65c it
     builds with, and the cfg conditions it must be built with."""
@@ -283,4 +289,4 @@ def check_build(resolution: Resolution, compiler_version: Version, cfg: List[str
         missing = [c for c in manifest.cfg if c not in cfg]
         if missing:
             raise PackageError(f"{manifest.label} must be built with "
-                               f"{' '.join('--cfg ' + c for c in missing)}")
+                               f"{' '.join(_build_flag(c) for c in missing)}")

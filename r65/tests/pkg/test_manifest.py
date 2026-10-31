@@ -56,6 +56,12 @@ q10 = { path = "../q10" }
     assert m.dependencies["q10"].path_dir() == (tmp_path / "../q10").resolve()
 
 
+def test_bin_cfg_cannot_set_the_abi(tmp_path):
+    path = _manifest(tmp_path, '[package]\nname = "a"\nversion = "0.1.0"\n[bin]\ncfg = ["abi=Pascal"]\n')
+    with pytest.raises(PackageError, match="bin.cfg cannot set 'abi'"):
+        load_manifest(path)
+
+
 @pytest.mark.parametrize("deps, message", [
     ('x = { git = "u" }', "exactly one of `version`, `tag`, `rev` or `branch`"),
     ('x = { git = "u", tag = "a", rev = "b" }', "exactly one of"),

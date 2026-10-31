@@ -259,6 +259,27 @@ def test_cfg_in_const():
     assert hir.declarations[0].evaluated_value is True
 
 
+
+def test_cfg_abi_is_the_selected_abi():
+    """`abi` holds the --abi value; it cannot be set with --cfg."""
+    from r65.compiler.codegen.abi_model import abi_model_from_string
+    from r65.compiler.main import abi_cfg, compile_string
+    source = """
+    #[cfg(abi = "Pascal")]
+    fn pick() { A = 0x11; }
+    #[cfg(not(abi = "Pascal"))]
+    fn pick() { A = 0x22; }
+    const DEFAULT: bool = cfg(abi = "Default");
+    #[entry]
+    fn main() { pick(); A = DEFAULT as u8; }
+    """
+    asm = compile_string(source, abi_model=abi_model_from_string("Pascal"))
+    assert "#$11" in asm and "#$22" not in asm
+    asm = compile_string(source)
+    assert "#$22" in asm and "#$11" not in asm and "#$01" in asm
+    with pytest.raises(ValueError, match="'abi' is set by --abi"):
+        abi_cfg(["abi=Pascal"], abi_model_from_string("Default").kind)
+
 if __name__ == '__main__':
     # Run basic parsing tests
     test_cfg_simple_identifier()

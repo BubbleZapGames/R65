@@ -179,8 +179,10 @@ compiled with. `--cfg` adds to them (a debug build's `--cfg debug`), and a flag
 that gives a `key=value` condition a different value from `[bin]` is an error,
 so the Makefile and the manifest cannot drift.
 
-The ABI is deliberately absent. It is a compile-time choice — `--abi` on the
-`r65c` command line — and packaging has no say in it.
+The ABI is chosen only by `--abi` on the `r65c` command line, so `[bin] cfg`
+cannot set it. The compiler defines it as the cfg value `abi`, so a package
+that works under one ABI alone lists `cfg = ["abi=FixedStack"]`; the error
+then names `--abi FixedStack`.
 
 ### Overriding a package — `[patch]`
 

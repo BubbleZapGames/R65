@@ -6,6 +6,8 @@ R65's calling convention is **explicit and flexible**, designed to match hand-wr
 
 R65 supports three compile-wide ABI models selected via the `--abi` flag. Each model controls how stack parameters are passed, who cleans up the stack, and how return values are delivered. Per-function details (register bindings, preserves, far/near) apply within any model.
 
+The model is also the cfg value `abi`, so code can test it with `#[cfg(abi = "FixedStack")]` or `cfg!(abi = "Pascal")`. Only `--abi` sets it: `--cfg abi=…` and `[bin] cfg = ["abi=…"]` are errors.
+
 ```bash
 r65c game.r65 -o game.asm              # Default ABI (implicit)
 r65c game.r65 -o game.asm --abi FixedStack
