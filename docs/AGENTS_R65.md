@@ -17,6 +17,14 @@ takes `@ A: u16`, and `X`/`Y` are always 16-bit. The compiler rejects work the
 hardware cannot do cheaply (a multiply by 3, a variable shift) and makes you call
 a library routine instead, so the cost stays visible.
 
+Treat R65 as the equivalent of an embedded Rust target built `#![no_std]`. There
+is no OS, no allocator and no `std`: no `Vec`, `String`, `Box`, `println!`,
+files or threads. The program owns the machine from reset. It starts at
+`#[entry]`, never returns (`-> !`), talks to hardware through memory-mapped
+registers (`#[hw]` statics), and handles interrupts itself. The `stdlib/` files
+play the role of `core` plus a board-support crate. If an idiom would not build
+for a bare-metal `no_std` microcontroller, it will not work in R65 either.
+
 Target: SNES (LoROM), assembled by WLA-DX. Source files end in `.r65`.
 
 ## 2. A complete program
