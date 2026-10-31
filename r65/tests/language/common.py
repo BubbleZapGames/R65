@@ -5,6 +5,7 @@ Common test utilities for R65 language tests.
 Provides shared helper functions for parsing and HIR building.
 """
 
+from r65.compiler.frontend.ast import CallKind
 import pytest
 from r65.compiler.frontend.parser import parse, ParseError
 from r65.compiler.frontend import ast
@@ -184,7 +185,7 @@ def get_mir_instructions(mir_prog, func_name: str) -> list:
 
 
 def make_mir_function(name: str, *, return_type='u8', is_entry=False,
-                      is_far=False, bank_attr=None, inline_attr=None,
+                      call_kind=CallKind.NEAR, bank_attr=None, inline_attr=None,
                       interrupt_attr=None) -> MIRFunction:
     """Create a MIRFunction with sensible test defaults.
 
@@ -195,7 +196,7 @@ def make_mir_function(name: str, *, return_type='u8', is_entry=False,
         name=name,
         return_type=rt,
         is_entry=is_entry,
-        is_far=is_far,
+        call_kind=call_kind,
         bank_attr=bank_attr,
         inline_attr=inline_attr,
         interrupt_attr=interrupt_attr,

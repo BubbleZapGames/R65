@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test function code generation."""
 
+from r65.compiler.frontend.ast import CallKind
 from r65.compiler.codegen import (
     AssemblyEmitter,
     FunctionCodeGenerator,
@@ -211,7 +212,7 @@ def test_function_header():
         bank_attr=None,
         interrupt_attr=None,
         is_entry=True,  # Entry point
-        is_far=True,    # Far function
+        call_kind=CallKind.FAR,    # Far function
         vreg_allocator=VirtualRegisterAllocator(),
         alias_tracker=None,
     )
@@ -275,7 +276,7 @@ def create_function_with_stack_params():
         bank_attr=None,
         interrupt_attr=None,
         is_entry=False,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=VirtualRegisterAllocator(),
         alias_tracker=None,
     )
@@ -333,7 +334,7 @@ def create_function_with_16bit_stack_param():
         bank_attr=None,
         interrupt_attr=None,
         is_entry=False,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=VirtualRegisterAllocator(),
         alias_tracker=None,
     )

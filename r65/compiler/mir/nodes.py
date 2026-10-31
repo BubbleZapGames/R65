@@ -8,6 +8,7 @@ Provides a 3-address-code style IR for code generation.
 from dataclasses import dataclass, field, fields as dataclass_fields
 from typing import Optional, List, Dict, Set, Any, Union, Tuple, NamedTuple, FrozenSet
 from enum import Enum
+from r65.compiler.frontend.ast import CallKind
 from r65.compiler.hir.status_flags import STATUS_FLAGS
 
 
@@ -1339,7 +1340,12 @@ class MIRFunction:
     inline_attr: Optional[Any] = None       # InlineAttribute
     is_entry: bool = False
     is_used: bool = False                   # #[used]: a dead-function-elimination root
-    is_far: bool = False
+    call_kind: CallKind = CallKind.NEAR
+
+    @property
+    def is_far(self) -> bool:
+        return self.call_kind.is_far
+
     is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
     is_recursive: bool = False  # True if function is in a recursive cycle
 

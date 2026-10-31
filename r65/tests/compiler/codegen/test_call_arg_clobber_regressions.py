@@ -24,6 +24,7 @@ Regressions from the classickong.r65 intro cutscene:
    shift operand to u16.
 """
 
+from r65.compiler.frontend.ast import CallKind
 import pytest
 from r65.compiler.main import compile_string
 
@@ -127,7 +128,7 @@ class TestMoveToXYFromHintedVregClobbersA:
             return_type=None,
             blocks={0: entry},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc,
         ), vreg_idx, vreg_result
 

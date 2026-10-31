@@ -147,6 +147,17 @@ class ASTBuilder(Transformer):
             return True, idx + 1
         return False, idx
 
+    def _take_call_kind(self, items, idx):
+        """Consume an optional FAR or NEAR function modifier.
+
+        A bare `fn` is far but demotable; `far fn` pins it far.
+        Returns (call_kind, new_idx).
+        """
+        is_far, is_near, idx = self._take_far_near(items, idx)
+        if is_far:
+            return ast.CallKind.FORCE_FAR, idx
+        return (ast.CallKind.NEAR if is_near else ast.CallKind.FAR), idx
+
     def _take_far_near(self, items, idx):
         """Consume an optional FAR or NEAR pointer modifier (mutually exclusive).
 
@@ -310,10 +321,9 @@ class ASTBuilder(Transformer):
         # Check for const
         is_const, idx = self._take(items, idx, 'CONST')
 
-        # Functions are far by default; `near fn` opts out (`far fn` is
-        # accepted as the explicit spelling of the default)
-        _is_far, is_near, idx = self._take_far_near(items, idx)
-        is_far = not is_near
+        # Functions are far by default; `near fn` opts out, and `far fn`
+        # pins the function far so far_to_near never demotes it
+        call_kind, idx = self._take_call_kind(items, idx)
 
         name = items[idx]
         idx += 1
@@ -335,7 +345,7 @@ class ASTBuilder(Transformer):
 
         return ast.FunctionDecl(
             attributes=attrs,
-            is_far=is_far,
+            call_kind=call_kind,
             name=_tok(name),
             params=params,
             return_type=return_type,
@@ -736,9 +746,8 @@ class ASTBuilder(Transformer):
         # Check for const
         is_const, idx = self._take(items, idx, 'CONST')
 
-        # Methods are far by default; `near fn` opts out
-        _is_far, is_near, idx = self._take_far_near(items, idx)
-        is_far = not is_near
+        # Methods are far by default; `near fn` opts out, `far fn` pins far
+        call_kind, idx = self._take_call_kind(items, idx)
 
         # Method name
         name = _tok(items[idx])
@@ -773,7 +782,7 @@ class ASTBuilder(Transformer):
 
         return ast.ImplMethod(
             attributes=attrs,
-            is_far=is_far,
+            call_kind=call_kind,
             name=name,
             self_is_far=self_is_far,
             params=params,
@@ -972,9 +981,9 @@ class ASTBuilder(Transformer):
 
         doc, idx = self._collect_doc_comments(items, 0)
 
-        # Trait methods are far by default; `near fn` opts out
-        _is_far, is_near, idx = self._take_far_near(items, idx)
-        is_far = not is_near
+        # Trait methods are far by default; `near fn` opts out, `far fn`
+        # pins every implementation far
+        call_kind, idx = self._take_call_kind(items, idx)
 
         # Method name
         name = _tok(items[idx])
@@ -1011,7 +1020,7 @@ class ASTBuilder(Transformer):
 
         return ast.ImplMethod(
             attributes=[],
-            is_far=is_far,
+            call_kind=call_kind,
             name=name,
             self_is_far=self_is_far,
             params=params,
@@ -1074,8 +1083,7 @@ class ASTBuilder(Transformer):
         attrs, idx = self._collect_attributes(items, idx)
 
         # Far by default, like every function; `extern near fn` opts out
-        _is_far, is_near, idx = self._take_far_near(items, idx)
-        is_far = not is_near
+        call_kind, idx = self._take_call_kind(items, idx)
 
         name = items[idx]
         idx += 1
@@ -1091,7 +1099,7 @@ class ASTBuilder(Transformer):
 
         return ast.FunctionDecl(
             attributes=attrs,
-            is_far=is_far,
+            call_kind=call_kind,
             name=_tok(name),
             params=params,
             return_type=return_type,

@@ -7,6 +7,7 @@ allocation when a virtual register's only definition is a Move from a hardware
 register and its only use is in a Return instruction.
 """
 
+from r65.compiler.frontend.ast import CallKind
 import pytest
 from r65.compiler.codegen import ProgramCodeGenerator
 from r65.compiler.codegen.slot_allocator import StackSlotAllocator, SlotAllocation
@@ -51,7 +52,7 @@ class TestHwCoalescingSlotAllocator:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -105,7 +106,7 @@ class TestHwCoalescingSlotAllocator:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -150,7 +151,7 @@ class TestHwCoalescingSlotAllocator:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -184,7 +185,7 @@ class TestHwCoalescingSlotAllocator:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -220,7 +221,7 @@ class TestHwCoalescingCodeGen:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             bank_attr=BankAttribute(name='bank', bank_number=1),
             vreg_allocator=vreg_alloc
         )
@@ -279,7 +280,7 @@ class TestHwCoalescingCodeGen:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             bank_attr=BankAttribute(name='bank', bank_number=1),
             vreg_allocator=vreg_alloc
         )
@@ -339,7 +340,7 @@ class TestBRegisterReturns:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             bank_attr=BankAttribute(name='bank', bank_number=1),
             vreg_allocator=vreg_alloc
         )
@@ -397,7 +398,7 @@ class TestBRegisterReturns:
             return_type=BasicTypeInfo('u8'),
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             bank_attr=BankAttribute(name='bank', bank_number=1),
             vreg_allocator=vreg_alloc
         )
@@ -453,7 +454,7 @@ class TestBRegisterReturns:
             return_type=BasicTypeInfo('u8'),  # Simplified - real tuple would differ
             blocks={0: entry_block},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             bank_attr=BankAttribute(name='bank', bank_number=1),
             vreg_allocator=vreg_alloc
         )
@@ -532,7 +533,7 @@ class TestCrossBlockCoalescence:
             return_type=BasicTypeInfo('u8'),
             blocks={0: block0, 1: block1, 2: block2},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -579,7 +580,7 @@ class TestCrossBlockCoalescence:
             return_type=BasicTypeInfo('u8'),
             blocks={0: block0, 1: block1},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -617,7 +618,7 @@ class TestCrossBlockCoalescence:
             return_type=BasicTypeInfo('u8'),
             blocks={0: block0},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -656,7 +657,7 @@ class TestCrossBlockCoalescence:
             return_type=BasicTypeInfo('u8'),
             blocks={0: block0},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -702,7 +703,7 @@ class TestNarrowerHintRejection:
             return_type=BasicTypeInfo('u16'),
             blocks={0: block0},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -749,7 +750,7 @@ class TestNarrowerHintRejection:
             return_type=BasicTypeInfo('u16'),
             blocks={0: block0, 1: block1},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -821,7 +822,7 @@ class TestNarrowerHintRejection:
             return_type=BasicTypeInfo('u8'),
             blocks={0: block0, 1: block1, 2: block2},
             entry_block_id=0,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 
@@ -960,7 +961,7 @@ class TestNarrowerHintRejection:
             return_type=None,
             blocks={1: block1, 3: block3, 4: block4, 5: block5, 6: block6},
             entry_block_id=1,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=vreg_alloc
         )
 

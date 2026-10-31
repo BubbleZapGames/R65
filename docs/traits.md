@@ -173,8 +173,9 @@ impl Drawable for Player {
 ### Far Traits (Default)
 
 Methods are far by default, so a trait written with plain `fn` uses the
-JSL/RTL calling convention and is callable from any bank (`far fn` is
-accepted and means the same):
+JSL/RTL calling convention and is callable from any bank. Writing `far fn`
+on a trait method also pins every implementation far, so `far_to_near`
+never demotes one to JSR/RTS:
 
 ```rust
 trait Renderable {

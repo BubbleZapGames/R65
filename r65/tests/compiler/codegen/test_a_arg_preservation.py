@@ -7,7 +7,7 @@ through A and destroys the value. Nothing reloads it, because an A-resident
 value has no memory home to reload *from* — which is why the same call is
 correct when the A-bound value happens to be a stack parameter.
 
-    // stdlib/math.r65: far fn mul8(multA @ A: u8, multB @ B: u8) -> u16
+    // stdlib/math.r65: fn mul8(multA @ A: u8, multB @ B: u8) -> u16
     fn scaled(v @ A: u8, k: u8) -> u16 { return mul8(v, k); }
 
     LDA $03,S   ; k -- A held v, now destroyed
@@ -169,7 +169,7 @@ def assert_a_survives(source: str, expect_b=None):
         assert b == expect_b, f"B holds {b!r}, expected {expect_b!r}\n  {instrs}"
 
 
-MUL8 = '#[inline(never)] far fn mul8(multA @ A: u8, multB @ B: u8) -> u16 { return 0; }'
+MUL8 = '#[inline(never)] fn mul8(multA @ A: u8, multB @ B: u8) -> u16 { return 0; }'
 TAKES_X = ('#[inline(never)] far fn takes_x(a @ A: u8, b @ X: u16) -> u16 '
            '{ return (a as u16) + b; }')
 TAKES_Y = ('#[inline(never)] far fn takes_y(a @ A: u8, b @ Y: u16) -> u16 '

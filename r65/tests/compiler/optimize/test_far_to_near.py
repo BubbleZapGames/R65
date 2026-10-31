@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for far-to-near call optimization pass."""
 
+from r65.compiler.frontend.ast import CallKind
 import pytest
 
 from r65.compiler.optimize.far_to_near import FarToNearOptimizer
@@ -15,7 +16,8 @@ from r65.compiler.hir.attributes import (
     BankAttribute, InterruptAttribute, InterruptVector
 )
 from r65.compiler.mir.virtual_registers import VirtualRegisterAllocator
-from r65.tests.language.common import make_mir_function
+from r65.tests.language.common import make_mir_function, build_hir, build_mir, get_mir_function
+from r65.compiler.errors import HIRError
 
 
 def create_near_function(name: str, is_entry: bool = False):
@@ -36,7 +38,7 @@ def create_near_function(name: str, is_entry: bool = False):
 
 def create_far_function(name: str, bank: int = 0):
     """Create a simple far function in the specified bank."""
-    func = make_mir_function(name, is_far=True,
+    func = make_mir_function(name, call_kind=CallKind.FAR,
                              bank_attr=BankAttribute(name='bank', bank_number=bank))
 
     vreg = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
@@ -139,7 +141,7 @@ class TestFarToNearOptimizer:
             interrupt_attr=InterruptAttribute(name='interrupt', vector=InterruptVector.NMI),
             inline_attr=None,
             is_entry=False,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -186,7 +188,7 @@ class TestFarToNearOptimizer:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=True,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -304,7 +306,7 @@ class TestFarToNearOptimizer:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
-            is_far=True,
+            call_kind=CallKind.FAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -335,7 +337,7 @@ class TestFarToNearOptimizer:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=True,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -359,6 +361,49 @@ class TestFarToNearOptimizer:
 
         assert converted == 1
         assert not far_callee.is_far, "Function should be converted to near"
+
+
+class TestFarFnKeyword:
+    """`far fn` pins a function far: far_to_near never demotes it, though a
+    plain `fn` in the same position is demoted."""
+
+    SOURCE = """
+        #[zeropage(0x10)] static mut O: u8;
+        #[inline(never)] far fn pinned() { O = 1; }
+        #[inline(never)] fn plain() { O = 2; }
+        #[entry] fn main() { pinned(); plain(); }
+    """
+
+    def test_far_fn_not_demoted(self):
+        program = build_mir(self.SOURCE)
+        FarToNearOptimizer().optimize(program)
+
+        assert get_mir_function(program, "pinned").is_far
+        assert not get_mir_function(program, "plain").is_far
+        calls = {c.function: c.is_far
+                 for c in get_mir_function(program, "main").blocks[0].instructions
+                 if isinstance(c, Call)}
+        assert calls == {"pinned": True, "plain": False}
+
+    def test_trait_far_fn_pins_implementations(self):
+        program = build_mir("""
+            #[zeropage(0x10)] static mut O: u8;
+            struct P { v: u8 }
+            trait T { far fn get(*self) -> u8; fn put(*self); }
+            impl T for P {
+                fn get(*self) -> u8 { return self.v; }
+                fn put(*self) { O = self.v; }
+            }
+            #[lowram] static mut PP: P;
+            #[entry] fn main() { O = PP.get(); PP.put(); }
+        """)
+        assert get_mir_function(program, "P__get").call_kind is CallKind.FORCE_FAR
+        assert get_mir_function(program, "P__put").call_kind is CallKind.FAR
+
+    @pytest.mark.parametrize("attr", ["#[entry]", "#[interrupt(nmi)]"])
+    def test_far_fn_vector_rejected(self, attr):
+        with pytest.raises(HIRError, match="cannot be 'far fn'"):
+            build_hir(f"{attr} far fn handler() {{ }}")
 
 
 class TestFarToNearVerbose:

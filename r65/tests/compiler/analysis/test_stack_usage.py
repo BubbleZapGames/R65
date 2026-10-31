@@ -10,6 +10,7 @@ The analyzer:
     CallGraph.address_taken.
 """
 
+from r65.compiler.frontend.ast import CallKind
 import pytest
 
 from r65.compiler.mir.nodes import (
@@ -32,7 +33,7 @@ from r65.compiler.analysis.stack_usage import (
 # ---------------------------------------------------------------------------
 
 def _make_func(name, *,
-               is_entry=False, is_far=False,
+               is_entry=False, call_kind=CallKind.NEAR,
                calls=None, far_calls=None, trait_calls=None, indirect_calls=None,
                address_taken=None,
                interrupt_attr=None, interrupt_modified_regs=None,
@@ -81,7 +82,7 @@ def _make_func(name, *,
         entry_block_id=0,
         exit_block_ids=[0],
         is_entry=is_entry,
-        is_far=is_far,
+        call_kind=call_kind,
         interrupt_attr=interrupt_attr,
         vreg_allocator=VirtualRegisterAllocator(),
     )
@@ -143,7 +144,7 @@ class TestCallChain:
         assert chain_names == ["main", "a", "c"]
 
     def test_far_call_costs_three(self):
-        leaf = _make_func("leaf", is_far=True)
+        leaf = _make_func("leaf", call_kind=CallKind.FAR)
         main = _make_func("main", is_entry=True, far_calls=["leaf"])
         budget = analyze_stack_usage(_program(main, leaf))
         # 0 + 3 (JSL) + 0 = 3

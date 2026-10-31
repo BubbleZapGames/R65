@@ -610,7 +610,7 @@ same register.
 
 ### Far (JSL/RTL): the default
 
-**Syntax**: `fn name() { }` (`far fn` is accepted and means the same)
+**Syntax**: `fn name() { }`, or `far fn name() { }` to pin it far (see below)
 
 Every function is far unless it says otherwise: free functions, methods in
 `impl` blocks, trait methods and `extern fn` alike. A far call uses a 24-bit
@@ -673,7 +673,17 @@ own bank, so a same-bank program compiles to the JSR/RTS it would with
 - `*dyn` dispatch: a far trait's wrapper is `JSL` + `JML` trampolines
   (~20–25 cycles) against ~10–12 for a near trait, so a trait dispatched in a
   hot loop should say `near fn`;
-- interrupt handlers, and functions nothing calls directly.
+- interrupt handlers, and functions nothing calls directly;
+- a function written `far fn`.
+
+`far fn` is not a spelling of the default: it pins the function far for
+good, so every call is a `JSL` and the body ends in `RTL` even when every
+caller shares its bank. Use it when something the compiler cannot see
+depends on the long convention: a `JSL` from hand-written `asm!` or an
+included `.s` file, a debugger or test that enters the function with a long
+call, or a ROM layout where the function will be moved to another bank. On a
+trait method it pins every implementation. It is an error on `#[entry]` and
+`#[interrupt]` functions, which the vectors reach with a 16-bit address.
 
 ```rust
 impl Player {
@@ -694,8 +704,10 @@ inlines exactly as a near one would (trivial getters and setters are
 still auto-`#[inline]`); only a *cross-bank* inline has to prove the
 body is bank-independent.
 
-Hand-written `asm!` that `JSR`s a function label must use `JSL` unless the
-function is `near fn`: `far_to_near` cannot see calls inside `asm!`.
+Hand-written `asm!` cannot rely on either convention for a plain `fn`:
+`far_to_near` cannot see calls inside `asm!`, so it may demote a function
+the asm `JSL`s. Declare the function `far fn` (call it with `JSL`) or
+`near fn` (call it with `JSR`).
 
 ### Data Bank Register (DBR) Management
 

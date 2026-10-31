@@ -9,6 +9,7 @@ and desugaring, but before full type checking.
 from dataclasses import dataclass, field, fields as dataclass_fields
 from typing import Optional, List, NamedTuple, Union, Any
 from r65.compiler.hir.errors import *
+from r65.compiler.frontend.ast import CallKind
 
 
 # =============================================================================
@@ -153,7 +154,12 @@ class HIRParameter(HIRNode):
 class HIRFunctionDecl(HIRDeclaration):
     """Function declaration."""
     name: str = ""
-    is_far: bool = False
+    call_kind: CallKind = CallKind.NEAR
+
+    @property
+    def is_far(self) -> bool:
+        return self.call_kind.is_far
+
     is_const: bool = False
     is_trait_method: bool = False  # True for trait impl methods (self passed in Y)
     is_extern: bool = False  # `extern fn` — implemented in an included .s file

@@ -5,10 +5,27 @@ Abstract Syntax Tree (AST) node definitions for R65.
 Each node represents a syntactic construct in the language.
 """
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from r65.compiler.errors import SourceLocation
+
+
+class CallKind(Enum):
+    """A function's calling convention.
+
+    NEAR is `near fn` (JSR/RTS). FAR is a plain `fn`: JSL/RTL, but
+    far_to_near may demote it when every caller shares its bank. FORCE_FAR
+    is `far fn`: JSL/RTL for good, never demoted.
+    """
+    NEAR = 'near'
+    FAR = 'far'
+    FORCE_FAR = 'force_far'
+
+    @property
+    def is_far(self) -> bool:
+        return self is not CallKind.NEAR
 
 
 # ============================================================================
@@ -184,7 +201,7 @@ class Parameter(ASTNode):
 class FunctionDecl(Declaration):
     """Function declaration."""
     attributes: List[Attribute]
-    is_far: bool
+    call_kind: CallKind
     name: str
     params: List[Parameter]
     return_type: Optional[Union[Type, NeverType]]
@@ -192,6 +209,10 @@ class FunctionDecl(Declaration):
     is_const: bool = False
     is_extern: bool = False  # `extern fn` — body lives in an included .s file
     doc: Optional[str] = None
+
+    @property
+    def is_far(self) -> bool:
+        return self.call_kind.is_far
 
 
 @dataclass
@@ -325,7 +346,7 @@ class ImplMethod(ASTNode):
     gives none (`fn draw(*self);`).
     """
     attributes: List[Attribute]
-    is_far: bool  # False only when declared `near fn`; methods are far by default
+    call_kind: CallKind  # NEAR only when declared `near fn`; methods are far by default
     name: str
     self_is_far: bool  # True if self param is `far *self`
     params: List[Parameter]  # Parameters after self
@@ -335,6 +356,10 @@ class ImplMethod(ASTNode):
     doc: Optional[str] = None
     self_by_value: bool = False  # bare `self`: newtype/enum value in A, or #[soa]/tagged-enum index in X
     has_self: bool = True  # False for an associated fn declaring no self at all
+
+    @property
+    def is_far(self) -> bool:
+        return self.call_kind.is_far
 
 
 @dataclass

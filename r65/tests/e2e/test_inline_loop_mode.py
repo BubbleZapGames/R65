@@ -66,7 +66,7 @@ class TestInlinedLoopModeBackEdge:
             }
 
             #[entry]
-            far fn main() {
+            fn main() {
                 let result @ A: u16 = loopy(0x1234);
                 RESULT = A;
             }
@@ -118,7 +118,7 @@ class TestInlinedLoopModeBackEdge:
             }
 
             #[entry]
-            far fn main() {
+            fn main() {
                 let result @ A: u16 = shift_left_by(0x0123, 4);
                 RESULT = A;
             }
@@ -153,7 +153,7 @@ class TestInlinedLoopModeBackEdge:
             }
 
             #[entry]
-            far fn main() {
+            fn main() {
                 // 0x0123 ^ 0x8000 = 0x8123, x*2 = 0x10246 -> 0x0246 (u16)
                 // 0x0246 ^ 0x8000 = 0x8246, x*2 = 0x048C
                 // 0x048C ^ 0x8000 = 0x848C, x*2 = 0x10918 -> 0x0918

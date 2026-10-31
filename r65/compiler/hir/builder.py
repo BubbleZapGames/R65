@@ -834,6 +834,18 @@ class HIRBuilder:
                      "#[bank] directive, or put #[bank(0)] above it"
             )
 
+    def _check_force_far_vector(self, name: str, call_kind: ast.CallKind, is_entry: bool,
+                                interrupt_attr, loc):
+        """`far fn` pins a function far, but a vector reaches the entry and
+        the interrupt handlers with a 16-bit address, so they must be near."""
+        if call_kind is not ast.CallKind.FORCE_FAR or not (is_entry or interrupt_attr is not None):
+            return
+        what = "entry function" if is_entry else "interrupt handler"
+        raise HIRError(
+            f"{what} '{name}' cannot be 'far fn'",
+            source_loc=loc,
+            hint="the vector holds a 16-bit address, so it is always near; drop 'far'")
+
     def _check_databank_far(self, name: str, mode_attr, is_far: bool, loc, keyword: str = "far fn"):
         """DBR management saves and restores the bank across a JSL/RTL pair."""
         if mode_attr and mode_attr.databank != DataBankMode.NONE and not is_far:
@@ -907,7 +919,7 @@ class HIRBuilder:
         func_symbol = self.symbol_table.lookup(func.name)
         return hir.HIRFunctionDecl(
             name=func.name,
-            is_far=func.is_far,
+            call_kind=func.call_kind,
             is_const=False,
             is_extern=True,
             parameters=hir_params,
@@ -951,7 +963,10 @@ class HIRBuilder:
             hint="drop 'near', or place it in an explicit bank with #[bank(n)]"))
         # The vectors reach the entry and the interrupt handlers without a
         # call, so the far default means nothing for them: keep them near.
-        is_far = func.is_far and not is_entry and interrupt_attr is None
+        self._check_force_far_vector(func.name, func.call_kind, is_entry,
+                                     interrupt_attr, func.source_loc)
+        call_kind = (ast.CallKind.NEAR if is_entry or interrupt_attr is not None
+                     else func.call_kind)
 
         # Enter function scope
         func_scope_id = self.symbol_table.enter_scope(ScopeKind.FUNCTION)
@@ -977,7 +992,7 @@ class HIRBuilder:
         entry_m_mode, ret_type, exit_m_mode = self._signature_modes(
             hir_params, func.return_type, func.name, func.source_loc)
         func_symbol = self.symbol_table.lookup(func.name)
-        self._check_databank_far(func.name, mode_attr, is_far, func.source_loc)
+        self._check_databank_far(func.name, mode_attr, call_kind.is_far, func.source_loc)
 
         inline_attr = self._auto_inline_hint(
             inline_attr, interrupt_attr, is_entry, hir_body)
@@ -988,7 +1003,7 @@ class HIRBuilder:
 
         return hir.HIRFunctionDecl(
             name=func.name,
-            is_far=is_far,
+            call_kind=call_kind,
             is_const=func.is_const,
             parameters=hir_params,
             return_type=ret_type,
@@ -3101,6 +3116,9 @@ class HIRBuilder:
                     source_loc=method.source_loc,
                     hint=("drop 'near' from the impl method" if trait_method.is_far
                           else "declare it 'near fn' to match the trait"))
+            # `far fn` in the trait pins every implementation far
+            if trait_method is not None and trait_method.call_kind is ast.CallKind.FORCE_FAR:
+                method.call_kind = ast.CallKind.FORCE_FAR
 
         # Validate near/far consistency for this struct
         kind = 'far' if trait_is_far else 'near'
@@ -3340,6 +3358,8 @@ class HIRBuilder:
         is_entry = attrs['is_entry']
 
         self._check_vector_bank(mangled_name, is_entry, interrupt_attr, method.source_loc)
+        self._check_force_far_vector(f"{impl.struct_name}::{method.name}", method.call_kind,
+                                     is_entry, interrupt_attr, method.source_loc)
         bank_attr = self._bank_attr_for(method.is_far, lambda: HIRError(
             f"method '{impl.struct_name}::{method.name}' in auto-bank mode cannot be 'near fn'",
             source_loc=method.source_loc,
@@ -3481,7 +3501,7 @@ class HIRBuilder:
 
         return hir.HIRFunctionDecl(
             name=mangled_name,
-            is_far=method.is_far,
+            call_kind=method.call_kind,
             is_const=method.is_const,
             # Lang-item traits (Clone, operator traits) are static-dispatch only:
             # self is a normal stack arg, not the dyn-dispatch self-in-Y convention.

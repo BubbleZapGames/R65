@@ -127,7 +127,7 @@ def _inject_builtin_traits(program):
       - ToString: fn to_string(far *self, buf: far *u8) -> u16
     """
     from r65.compiler.frontend.ast import (
-        TraitDecl, ImplMethod, Parameter, BasicType, PointerType,
+        TraitDecl, ImplMethod, Parameter, BasicType, PointerType, CallKind,
     )
 
     # trait ToString { fn to_string(far *self, buf: far *u8) -> u16; }
@@ -136,7 +136,7 @@ def _inject_builtin_traits(program):
         methods=[
             ImplMethod(
                 attributes=[],
-                is_far=True,
+                call_kind=CallKind.FAR,
                 name='to_string',
                 self_is_far=True,
                 params=[

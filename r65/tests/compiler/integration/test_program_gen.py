@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test complete program code generation."""
 
+from r65.compiler.frontend.ast import CallKind
 from r65.compiler.codegen import ProgramCodeGenerator
 from r65.compiler.mir.nodes import (
     MIRProgram,
@@ -143,7 +144,7 @@ def create_test_program():
         bank_attr=None,
         interrupt_attr=None,
         is_entry=True,  # Entry point
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=VirtualRegisterAllocator(),
         alias_tracker=None,
     )
@@ -175,7 +176,7 @@ def create_test_program():
         bank_attr=None,
         interrupt_attr=None,
         is_entry=False,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=VirtualRegisterAllocator(),
         alias_tracker=None,
     )
@@ -211,7 +212,7 @@ def create_test_program():
             preserve=True
         ),
         is_entry=False,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=VirtualRegisterAllocator(),
         alias_tracker=None,
     )

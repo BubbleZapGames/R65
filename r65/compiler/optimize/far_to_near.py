@@ -20,11 +20,14 @@ The optimization is safe when:
 5. The function has at least one direct caller.
 6. The function has no `#[mode(databank=...)]`: DBR management is defined
    for far functions only, and codegen emits it only while `is_far` holds.
+7. The function was not written `far fn` (or as an implementation of a
+   trait's `far fn`): the explicit keyword pins it far.
 """
 
 from typing import Dict, Set, List, Optional, Tuple
 from dataclasses import dataclass, field
 
+from r65.compiler.frontend.ast import CallKind
 from r65.compiler.mir.nodes import MIRProgram, MIRFunction, Call
 from r65.compiler.analysis.call_graph import CallGraph, build_call_graph
 # The bank #[bank(auto)] functions are placed in; codegen places them by it.
@@ -36,7 +39,7 @@ class FunctionBankInfo:
     """Information about a function's bank placement and call relationships."""
     name: str
     bank: int
-    is_far: bool
+    call_kind: CallKind
     has_address_taken: bool = False
     is_interrupt: bool = False
     manages_dbr: bool = False
@@ -144,7 +147,7 @@ class FarToNearOptimizer:
             self.bank_info[func.name] = FunctionBankInfo(
                 name=func.name,
                 bank=self._get_function_bank(func),
-                is_far=func.is_far,
+                call_kind=func.call_kind,
                 has_address_taken=func.name in graph.address_taken,
                 is_interrupt=func.interrupt_attr is not None,
                 manages_dbr=_manages_dbr(func),
@@ -164,7 +167,13 @@ class FarToNearOptimizer:
 
         for func_name, info in self.bank_info.items():
             # Skip if not a far function
-            if not info.is_far:
+            if info.call_kind is CallKind.NEAR:
+                continue
+
+            # Skip `far fn`: the keyword pins it far
+            if info.call_kind is CallKind.FORCE_FAR:
+                if self.verbose:
+                    print(f"  Skip {func_name}: declared far fn")
                 continue
 
             # Skip if address is taken (could be called indirectly from any bank)
@@ -229,7 +238,7 @@ class FarToNearOptimizer:
         Convert a far function to near.
 
         Updates:
-        1. The function's is_far flag to False
+        1. The function's call_kind to NEAR
         2. All Call instructions that call this function to is_far = False
         3. Stack parameter offsets (reduced by 1 since return address shrinks from 3 to 2 bytes)
 
@@ -239,7 +248,7 @@ class FarToNearOptimizer:
         """
         # Update the function declaration
         func = self.func_map[func_name]
-        func.is_far = False
+        func.call_kind = CallKind.NEAR
 
         # Adjust stack parameter offsets: far return address is 3 bytes, near is 2 bytes
         # So all stack parameters shift down by 1 byte

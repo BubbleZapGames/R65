@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test far function calls and DBR management."""
 
+from r65.compiler.frontend.ast import CallKind
 from r65.compiler.codegen import ProgramCodeGenerator
 from r65.compiler.mir.nodes import (
     MIRProgram,
@@ -47,7 +48,7 @@ def test_basic_far_function():
         return_type=None,
         blocks={0: entry_block},
         entry_block_id=0,
-        is_far=True,  # Far function
+        call_kind=CallKind.FAR,  # Far function
         mode_attr=None,  # No mode requirements, databank=none by default
         bank_attr=BankAttribute(
             name='bank',
@@ -98,7 +99,7 @@ def test_far_function_with_databank_inline():
         return_type=None,
         blocks={0: entry_block},
         entry_block_id=0,
-        is_far=True,
+        call_kind=CallKind.FAR,
         mode_attr=ModeAttribute(
             name='mode',
             databank=DataBankMode.INLINE  # Callee manages DBR
@@ -174,7 +175,7 @@ def test_far_function_databank_inline_skipped_when_no_rom_access():
         return_type=None,
         blocks={0: entry_block},
         entry_block_id=0,
-        is_far=True,
+        call_kind=CallKind.FAR,
         mode_attr=ModeAttribute(
             name='mode',
             databank=DataBankMode.INLINE
@@ -233,7 +234,7 @@ def test_far_function_databank_inline_kept_with_near_call():
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=VirtualRegisterAllocator()
     )
 
@@ -255,7 +256,7 @@ def test_far_function_databank_inline_kept_with_near_call():
         return_type=None,
         blocks={0: entry_block},
         entry_block_id=0,
-        is_far=True,
+        call_kind=CallKind.FAR,
         mode_attr=ModeAttribute(
             name='mode',
             databank=DataBankMode.INLINE
@@ -300,7 +301,7 @@ def test_far_function_with_databank_caller():
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=True,
+        call_kind=CallKind.FAR,
         mode_attr=ModeAttribute(
             name='mode',
             databank=DataBankMode.CALLER  # Caller manages DBR
@@ -338,7 +339,7 @@ def test_far_function_with_databank_caller():
         return_type=None,
         blocks={0: caller_block},
         entry_block_id=0,
-        is_far=False,  # Near function
+        call_kind=CallKind.NEAR,  # Near function
         vreg_allocator=vreg_alloc
     )
 
@@ -393,7 +394,7 @@ def test_near_function_uses_rts():
         return_type=None,
         blocks={0: entry_block},
         entry_block_id=0,
-        is_far=False,  # Near function
+        call_kind=CallKind.NEAR,  # Near function
         vreg_allocator=vreg_alloc
     )
 
@@ -427,7 +428,7 @@ def test_far_call_jsl():
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=True,
+        call_kind=CallKind.FAR,
         mode_attr=None,  # databank=none (default)
         bank_attr=BankAttribute(
             name='bank',
@@ -455,7 +456,7 @@ def test_far_call_jsl():
         return_type=None,
         blocks={0: caller_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -491,7 +492,7 @@ def test_near_call_jsr():
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=False,  # Near function
+        call_kind=CallKind.NEAR,  # Near function
         vreg_allocator=vreg_alloc
     )
 
@@ -514,7 +515,7 @@ def test_near_call_jsr():
         return_type=None,
         blocks={0: caller_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 

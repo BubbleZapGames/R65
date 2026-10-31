@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Test function pointer implementation."""
 
+from r65.compiler.frontend.ast import CallKind
 from r65.compiler.codegen import ProgramCodeGenerator
 from r65.compiler.mir.nodes import (
     MIRProgram,
@@ -42,7 +43,7 @@ def test_near_function_pointer_assignment():
         return_type=BasicTypeInfo('u8'),
         blocks={0: target_block},
         entry_block_id=0,
-        is_far=False,  # Near function
+        call_kind=CallKind.NEAR,  # Near function
         vreg_allocator=vreg_alloc
     )
 
@@ -76,7 +77,7 @@ def test_near_function_pointer_assignment():
         return_type=None,
         blocks={0: main_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -112,7 +113,7 @@ def test_far_function_pointer_assignment():
         return_type=None,
         blocks={0: target_block},
         entry_block_id=0,
-        is_far=True,  # Far function
+        call_kind=CallKind.FAR,  # Far function
         mode_attr=None,  # databank=none (default)
         bank_attr=BankAttribute(
             name='bank',
@@ -150,7 +151,7 @@ def test_far_function_pointer_assignment():
         return_type=None,
         blocks={0: main_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -190,7 +191,7 @@ def test_near_indirect_call():
         return_type=BasicTypeInfo('u8'),
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -229,7 +230,7 @@ def test_near_indirect_call():
         return_type=None,
         blocks={0: caller_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -286,7 +287,7 @@ def test_far_indirect_call():
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=True,
+        call_kind=CallKind.FAR,
         mode_attr=None,  # databank=none (default)
         bank_attr=BankAttribute(
             name='bank',
@@ -330,7 +331,7 @@ def test_far_indirect_call():
         return_type=None,
         blocks={0: caller_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -395,7 +396,7 @@ def test_function_pointer_with_arguments():
         return_type=None,
         blocks={0: callee_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -437,7 +438,7 @@ def test_function_pointer_with_arguments():
         return_type=None,
         blocks={0: caller_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -488,7 +489,7 @@ def test_state_machine_example():
         return_type=BasicTypeInfo('u8'),
         blocks={0: menu_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -504,7 +505,7 @@ def test_state_machine_example():
         return_type=BasicTypeInfo('u8'),
         blocks={0: game_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 
@@ -544,7 +545,7 @@ def test_state_machine_example():
         return_type=None,
         blocks={0: update_block},
         entry_block_id=0,
-        is_far=False,
+        call_kind=CallKind.NEAR,
         vreg_allocator=vreg_alloc
     )
 

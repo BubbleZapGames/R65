@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Neutron Emulation, LLC. MIT licensed.
 """Tests for function inlining optimization pass."""
 
+from r65.compiler.frontend.ast import CallKind
 import pytest
 
 from r65.compiler.optimize.inline import (
@@ -116,7 +117,7 @@ def create_recursive_function():
 
 def create_far_function():
     """Create a far function that should not be inlined."""
-    func = make_mir_function("far_helper", is_far=True, inline_attr=INLINE)
+    func = make_mir_function("far_helper", call_kind=CallKind.FAR, inline_attr=INLINE)
 
     vreg_result = VirtualRegister(id=0, type_info=BasicTypeInfo('u8'), hint="result")
     func.blocks[0] = BasicBlock(
@@ -405,7 +406,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -456,7 +457,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -496,7 +497,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -535,7 +536,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=True,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -563,7 +564,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -602,7 +603,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=True,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -643,7 +644,7 @@ class TestInlinabilityChecker:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=True,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -893,7 +894,7 @@ class TestFunctionInliner:
             interrupt_attr=None,
             inline_attr=None,
             is_entry=False,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=None,
         )
@@ -2166,7 +2167,7 @@ class TestASubstitutionGating:
 
 def _make_far_callee(name: str, body_instrs):
     """Build a one-block far function with the given body."""
-    func = make_mir_function(name, is_far=True, inline_attr=INLINE)
+    func = make_mir_function(name, call_kind=CallKind.FAR, inline_attr=INLINE)
     func.blocks[0] = BasicBlock(
         block_id=0,
         instructions=body_instrs,

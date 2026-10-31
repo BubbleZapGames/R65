@@ -19,7 +19,7 @@ from r65.compiler.hir.types import BasicTypeInfo, StructTypeInfo
 from r65.compiler.mir.nodes import (
     MIRFunction, BasicBlock,
     VirtualRegister, FunctionPointer, MemoryLocation,
-    Store, Return, Immediate,
+    Store, Return, Immediate, CallKind,
     MemoryFill, BlockCopy, ROMDataRef, SymbolByte,
 )
 
@@ -101,7 +101,7 @@ class StaticInitLowerer:
             bank_attr=None,
             interrupt_attr=None,
             is_entry=False,
-            is_far=False,
+            call_kind=CallKind.NEAR,
             vreg_allocator=VirtualRegisterAllocator(),
             alias_tracker=RegisterAliasTracker()
         )

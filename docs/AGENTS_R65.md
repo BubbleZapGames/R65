@@ -196,7 +196,8 @@ fn use_them() {
 **Near and far.** Every `fn` is far by default (JSL/RTL) and callable from any
 bank: free functions, methods, `extern fn` and `fn()` pointer types alike.
 `near fn` opts out (JSR/RTS, its own bank only). `-O1`+ demotes far functions
-whose callers share their bank, so you rarely need `near`. Pointers: `*T` is
+whose callers share their bank, so you rarely need `near`. Write plain `fn`,
+not `far fn`: `far fn` pins the function far and blocks that demotion. Pointers: `*T` is
 16-bit (current data bank), `far *T` is 24-bit.
 
 **Check the cost.** `r65c src/main.r65 -I src --cfg snes` prints the assembly to
