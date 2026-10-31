@@ -108,7 +108,7 @@ class lz_compress:
 	def _search_reverse(self):
 		max_length = 0
 		max_index = 0
-		for index in range(self._offset, -1, -1):
+		for index in range(self._offset - 1, -1, -1):
 			offset = self._offset
 			while offset < len(self._in) and index >= 0 and self._in[index] == self._in[offset]:
 				offset += 1
