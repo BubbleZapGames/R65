@@ -36,13 +36,10 @@ class lz5_decompress(lz_decompress):
 		self._functions = [self._direct_copy, self._fill_byte, self._fill_word, self._inc_fill, self._repeat_le, self._repeat_inverse, self._repeat_rel, self._long_command]
 
 	def _repeat_inverse(self):
-		start = (self._in[self._offset] << 8) | self._in[self._offset+1]
-		end = start + self._length
-		self._out += bytearray([b ^ 0xFF for b in self._out[start:end]])
+		self._copy((self._in[self._offset] << 8) | self._in[self._offset+1], lambda b: b ^ 0xFF)
 		self._offset += 2
 
 	def _repeat_rel(self):
 		start = len(self._out) - self._in[self._offset]
 		self._offset += 1
-		end = start + self._length
-		self._out += self._out[start:end]
+		self._copy(start)

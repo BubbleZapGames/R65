@@ -197,28 +197,27 @@ class lz_decompress:
 		self._out += bytearray([x & 0xFF for x in range(val, val + self._length)])
 		self._offset += 1
 
+	def _copy(self, start, transform=None):
+		# Byte by byte: a copy may overlap the bytes it writes, as a run does
+		for i in range(self._length):
+			b = self._out[start + i]
+			self._out.append(transform(b) if transform else b)
+
 	def _repeat_be(self):
-		start = (self._in[self._offset] | (self._in[self._offset+1] << 8))
-		end = start + self._length
-		self._out += self._out[start:end]
+		self._copy(self._in[self._offset] | (self._in[self._offset+1] << 8))
 		self._offset += 2
 
 	def _repeat_le(self):
-		start = ((self._in[self._offset] << 8) | self._in[self._offset+1])
-		end = start + self._length
-		self._out += self._out[start:end]
+		self._copy((self._in[self._offset] << 8) | self._in[self._offset+1])
 		self._offset += 2
 
 	def _repeat_reverse(self):
-		start = (self._in[self._offset] | (self._in[self._offset+1] << 8)) - 1
-		end = start + self._length
-		self._out += self._out[end:start:-1]
+		start = (self._in[self._offset] | (self._in[self._offset+1] << 8))
+		self._out += self._out[start:start + self._length][::-1]
 		self._offset += 2
 
 	def _repeat_bit_reverse(self):
-		start = (self._in[self._offset] | (self._in[self._offset+1] << 8))
-		end = start + self._length
-		self._out += bytearray([bit_reverse(b) for b in self._out[start:end]])
+		self._copy(self._in[self._offset] | (self._in[self._offset+1] << 8), bit_reverse)
 		self._offset += 2
 
 	def _noop(self):
