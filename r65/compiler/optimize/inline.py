@@ -10,7 +10,7 @@ The inlining pass operates on MIR after HIR lowering, before code generation.
 
 import copy
 from dataclasses import replace
-from typing import Dict, List, Set, Optional, Tuple
+from typing import Any, Dict, List, Set, Optional, Tuple
 
 from r65.compiler.codegen.type_utils import defines_in_a
 from r65.compiler.codegen.arg_order import register_arg_rank
@@ -1142,18 +1142,25 @@ class FunctionInliner:
 
         # Exit-boundary SetMode: switches back to the caller's mode at
         # every Return so the merge block has a single predecessor mode
-        # (mirrors call_select.py's _emit_exit_mode_restore). Computed
-        # once — every Return uses the same transition.
-        exit_setmode = self._make_boundary_setmode(
-            from_mode=getattr(callee, 'exit_m_mode', None),
-            to_mode=caller_mode_at_call.m_mode,
-        )
+        # (mirrors call_select.py's _emit_exit_mode_restore). It starts from
+        # the mode the callee's MIR is in at that Return - not exit_m_mode,
+        # the ABI exit its epilogue's SEP/REP makes, which an inlined body
+        # has none of: a body ending in a call made in m16 is still in m16.
+        return_modes = self._return_modes(callee, cloner.block_map)
+
+        def exit_setmode_for(block_id):
+            return self._make_boundary_setmode(
+                from_mode=return_modes.get(block_id,
+                                           getattr(callee, 'exit_m_mode', None)),
+                to_mode=caller_mode_at_call.m_mode,
+            )
 
         # Replace Return instructions with Move + Jump to merge block
         return_blocks = []
 
         for cloned_block in cloned_blocks.values():
             new_instructions = []
+            exit_setmode = exit_setmode_for(cloned_block.block_id)
             for instr in cloned_block.instructions:
                 if isinstance(instr, Return):
                     # Pair each Return value with its caller-side
@@ -1279,6 +1286,19 @@ class FunctionInliner:
                 else:
                     mode = mode.apply_rep(instr.mask)
         return mode
+
+    @staticmethod
+    def _return_modes(callee: MIRFunction, block_map) -> Dict[int, Any]:
+        """The M mode the callee is in at each of its returning blocks,
+        keyed by the cloned block's id; empty if its modes cannot be told."""
+        from r65.compiler.mir.mode_tracker import reanalyze_function
+        if (any(b.exit_mode is None for b in callee.blocks.values())
+                and not reanalyze_function(callee)):
+            return {}
+        return {block_map[old_id]: block.exit_mode.m_mode
+                for old_id, block in callee.blocks.items()
+                if old_id in block_map and block.exit_mode is not None
+                and any(isinstance(i, Return) for i in block.instructions)}
 
     def _make_boundary_setmode(self, from_mode, to_mode):
         """Return a SetMode that transitions M flag from `from_mode` to
