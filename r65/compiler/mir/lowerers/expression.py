@@ -6,6 +6,7 @@ Handles binary ops, unary ops, type casts, array indexing,
 field access, dereference, and address-of operations.
 """
 
+import dataclasses
 from typing import TYPE_CHECKING, Optional
 
 from r65.compiler.hir import (
@@ -176,6 +177,13 @@ class ExpressionLowerer:
         folded = self._lower_constant_chain(expr)
         if folded is not None:
             return folded
+
+        if expr.op == '*':
+            # Codegen multiplies by a constant right operand; `32 * x` is `x * 32`.
+            from r65.compiler.hir.hir_const_eval import try_eval_const_int
+            if (try_eval_const_int(expr.left) is not None
+                    and try_eval_const_int(expr.right) is None):
+                expr = dataclasses.replace(expr, left=expr.right, right=expr.left)
 
         left = self.builder.lower_expression(expr.left)
 

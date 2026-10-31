@@ -16,6 +16,7 @@ a const fn body (evaluated at compile time).
 from typing import Optional
 from r65.compiler.hir import *
 from r65.compiler.typeck.errors import *
+from r65.compiler.hir.hir_const_eval import try_eval_const_int
 from r65.compiler.typeck.register_capabilities import (
     can_register_do_binary_op,
     get_register_hint,
@@ -57,14 +58,13 @@ class OperatorValidator:
     @staticmethod
     def _validate_multiply(op_node: HIRBinaryOp):
         """Validate multiply operator."""
-        left = op_node.left
-        right = op_node.right
+        # A literal, a named const or a constant expression
+        left_value = try_eval_const_int(op_node.left)
+        right_value = try_eval_const_int(op_node.right)
+        left_const = left_value is not None
+        right_const = right_value is not None
 
-        # Check if either operand is a constant
-        left_const = isinstance(left, HIRIntegerLiteral)
-        right_const = isinstance(right, HIRIntegerLiteral)
-
-        # Both operands are literals: will be const-folded, no restriction needed
+        # Both operands are constants: will be const-folded, no restriction needed
         if left_const and right_const:
             return
 
@@ -75,8 +75,7 @@ class OperatorValidator:
                 hint="use mul8() or mul16() for general multiplication"
             )
 
-        # Extract constant value
-        const_value = left.value if left_const else right.value
+        const_value = left_value if left_const else right_value
 
         # Validate power-of-two
         if const_value not in OperatorValidator.POWER_OF_TWO_CONSTANTS:
@@ -89,16 +88,14 @@ class OperatorValidator:
     @staticmethod
     def _validate_divide(op_node: HIRBinaryOp):
         """Validate divide operator."""
-        right = op_node.right
+        divisor = try_eval_const_int(op_node.right)
 
-        if not isinstance(right, HIRIntegerLiteral):
+        if divisor is None:
             raise TypeCheckError(
                 f"divide operator (/) requires a power-of-2 constant divisor (1 to 256)",
                 source_loc=op_node.source_loc,
                 hint="use div8() or div16() for general division"
             )
-
-        divisor = right.value
 
         if divisor not in OperatorValidator.POWER_OF_TWO_CONSTANTS:
             raise TypeCheckError(
