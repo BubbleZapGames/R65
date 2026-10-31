@@ -22,7 +22,7 @@ from r65.compiler.hir.attributes import StorageKind
 from r65.compiler.mir.nodes import (
     MIRInstruction, MIRProgram, MIRFunction, BasicBlock,
     VirtualRegister, HardwareRegister, Immediate, FunctionPointer, LabelRef, MemoryLocation,
-    Load, Store, Move, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
+    Load, Store, Move, BinaryOp, Jump, CondBranch, Return, ReturnFromInterrupt, Call, StatusFlagRead,
     MemoryFill, BlockCopy, AggregateCopy, AGGREGATE_COPY_UNROLL_MAX, ROMDataRef,
     InlineAsm, TERMINATOR_TYPES, index_writes,
 )
@@ -2676,12 +2676,19 @@ class MIRBuilder:
         return compute_scaled_index(index_operand, element_size, index_type,
                                     self.ctx, self.emit, self.call_lowerer)
 
-    def pointer_index_offset(self, index_operand, element_size: int, index_type):
-        """`(operand, type)` to move into Y for `ptr[index]`: the byte offset.
-        A negative constant - which reaches here masked to its type, `-1: i8`
-        as 255 - wraps to $FFxx, so `c[-1]` is the element below c, not 255
-        above it; a run-time i8 index is sign-extended. An unsigned byte
-        index moves as itself, which zero-extends it."""
+    def pointer_index_access(self, ptr, ptr_type, index_operand, element_size: int,
+                             index_type):
+        """`(pointer, offset, index_register)` for an indirect access to
+        `ptr[index]`, emitting whatever sets them up.
+
+        A constant index is the access's offset. A negative one - which
+        reaches here masked to its type, `-1: i8` as 255 - and a run-time
+        signed index are added to the pointer in 16 bits instead: an index in
+        Y is added to the full 24-bit address, so `LDY #$FFFF` would reach
+        into the next bank, where `c[-1]` is the byte below c in its own. An
+        unsigned run-time index goes in Y, an unsigned byte moving as itself
+        (which zero-extends it).
+        """
         from r65.compiler.hir.types import BasicTypeInfo, strip_newtype
         u16 = BasicTypeInfo('u16')
         t = strip_newtype(index_type) if index_type is not None else None
@@ -2691,10 +2698,33 @@ class MIRBuilder:
             if signed:
                 bits = 8 if t.name == 'i8' else 16
                 value = ((value + (1 << (bits - 1))) & ((1 << bits) - 1)) - (1 << (bits - 1))
-            return Immediate((value * element_size) & 0xFFFF), u16
-        if element_size == 1 and not signed:
-            return index_operand, index_type
-        return self.scale_index(index_operand, element_size, index_type), u16
+            offset = value * element_size
+            if 0 <= offset <= 0xFFFF:
+                return ptr, offset, None
+            return self._pointer_add(ptr, ptr_type, Immediate(offset & 0xFFFF)), 0, None
+        if signed:
+            scaled = self.scale_index(index_operand, element_size, index_type)
+            return self._pointer_add(ptr, ptr_type, scaled), 0, None
+        if element_size == 1:
+            y_source, y_type = index_operand, index_type
+        else:
+            y_source, y_type = self.scale_index(index_operand, element_size, index_type), u16
+        if isinstance(ptr, HardwareRegister) and ptr.name in ('A', 'Y'):
+            # Loading the index into Y would overwrite it
+            held = self.ctx.alloc_vreg(ptr_type, 'ptr_temp')
+            self.emit(Move(dest=held, source=ptr, type_info=ptr_type))
+            ptr = held
+        self.emit(Move(dest=HardwareRegister('Y'), source=y_source, type_info=y_type))
+        return ptr, 0, 'Y'
+
+    def _pointer_add(self, ptr, ptr_type, offset):
+        """*ptr* + byte *offset*, wrapping in its bank."""
+        if (isinstance(ptr, Immediate) and ptr.symbol is None
+                and isinstance(offset, Immediate)):
+            return Immediate((ptr.value & ~0xFFFF) | ((ptr.value + offset.value) & 0xFFFF))
+        moved = self.ctx.alloc_vreg(ptr_type, 'ptr_off')
+        self.emit(BinaryOp(dest=moved, left=ptr, right=offset, op='+', type_info=ptr_type))
+        return moved
 
     def _get_type_size(self, type_info) -> int:
         """Get size in bytes for a type."""

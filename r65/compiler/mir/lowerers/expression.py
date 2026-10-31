@@ -676,31 +676,26 @@ class ExpressionLowerer:
         # Get the pointer value (should be in a vreg for parameters)
         ptr_operand = self.builder.lower_expression(expr.array)
 
-        # Y holds the u16 byte offset (see pointer_index_offset).
-        index_operand, index_type = self.builder.pointer_index_offset(
-            index_operand, element_size, expr.index.expr_type)
-
-        # Move index to Y register for indirect indexed addressing
-        y_reg = HardwareRegister('Y')
-        self.emit(Move(dest=y_reg, source=index_operand, type_info=index_type))
-
-        # If pointer is in a hardware register or immediate, move to a vreg first
-        if isinstance(ptr_operand, HardwareRegister):
-            ptr_vreg = self.ctx.alloc_vreg(ptr_type, "ptr_temp")
-            self.emit(Move(dest=ptr_vreg, source=ptr_operand, type_info=ptr_type))
-            ptr_operand = ptr_vreg
-        elif isinstance(ptr_operand, Immediate):
-            # Immediate pointer (rare, but handle it)
+        # A pointer in X or Y is addressed as `abs,X` / `abs,Y`; one in A
+        # cannot be, and a constant one keeps its value for _const_pointer.
+        if isinstance(ptr_operand, HardwareRegister) and ptr_operand.name == 'A':
             ptr_vreg = self.ctx.alloc_vreg(ptr_type, "ptr_temp")
             self.emit(Move(dest=ptr_vreg, source=ptr_operand, type_info=ptr_type))
             ptr_operand = ptr_vreg
 
-        # Emit LoadIndirect with Y indexing
+        ptr_operand, offset, index_register = self.builder.pointer_index_access(
+            ptr_operand, ptr_type, index_operand, element_size, expr.index.expr_type)
+        if isinstance(ptr_operand, Immediate) and index_register is not None:
+            ptr_vreg = self.ctx.alloc_vreg(ptr_type, "ptr_temp")
+            self.emit(Move(dest=ptr_vreg, source=ptr_operand, type_info=ptr_type))
+            ptr_operand = ptr_vreg
+
         self.emit(LoadIndirect(
             dest=result,
             pointer=ptr_operand,
             is_far=ptr_type.is_far,
-            index_register='Y',
+            index_register=index_register,
+            offset=offset,
             type_info=element_type
         ))
 

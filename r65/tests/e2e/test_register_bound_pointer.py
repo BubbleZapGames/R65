@@ -11,14 +11,23 @@ a vreg and crashed on. A pointer in X or Y is now addressed `abs,X` /
 from r65.tests.e2e import ExpectedState
 
 
-def test_y_bound_pointer(e2e):
+def test_x_and_y_bound_pointers(e2e):
     result = e2e.run('''
         struct Obj { kind: u8, x: u16 }
 
+        #[lowram(0x0300)]
+        static mut BUF: [u8; 8];
         #[lowram(0x0310)]
         static mut POOL: [Obj; 2];
         #[zeropage(0x20)]
         static mut OUT: u16;
+
+        #[inline(never)]
+        fn put(a: u8, b: u8) {
+            let p @ X: *u8 = &BUF[4] as *u8;
+            p[0] = a;
+            p[1] = b;
+        }
 
         #[inline(never)]
         fn second_x() {
@@ -29,9 +38,10 @@ def test_y_bound_pointer(e2e):
         #[entry]
         fn main() {
             POOL[1].x = 0x1234;
+            put(10, 20);
             second_x();
         }
-    ''', ExpectedState(memory={0x20: [0x34, 0x12]}))
+    ''', ExpectedState(memory={0x0304: [10, 20], 0x20: [0x34, 0x12]}))
     assert result.success, f"Failures: {result.failures}"
 
 

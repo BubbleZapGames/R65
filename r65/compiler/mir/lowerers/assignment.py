@@ -444,39 +444,25 @@ class AssignmentLowerer:
 
         array_index = expr.target
         element_type = expr.expr_type
-        # Y holds the byte offset, as on the read path.
-        index_operand, index_type = self.builder.pointer_index_offset(
-            self.builder.lower_expression(array_index.index),
+        index_operand = self.builder.lower_expression(array_index.index)
+        ptr_operand = self.builder.lower_expression(array_index.array)
+        if isinstance(ptr_operand, HardwareRegister) and ptr_operand.name == 'A':
+            held = self.ctx.alloc_vreg(pointer_type, 'ptr_temp')
+            self.emit(Move(dest=held, source=ptr_operand, type_info=pointer_type))
+            ptr_operand = held
+
+        # The index as an offset, a pointer add, or Y, as on the read path
+        ptr_operand, offset, index_register = self.builder.pointer_index_access(
+            ptr_operand, pointer_type, index_operand,
             self.builder._get_type_size(element_type), array_index.index.expr_type)
 
-        # Lower the pointer expression to get the pointer value
-        ptr_operand = self.builder.lower_expression(array_index.array)
-
-        # Determine index register - must be Y for [dp],Y addressing
-        index_register = None
-        if isinstance(index_operand, HardwareRegister):
-            if index_operand.name == 'Y':
-                index_register = 'Y'
-            elif index_operand.name == 'X':
-                # Move X to Y for indirect addressing
-                y_reg = HardwareRegister('Y')
-                self.emit(Move(dest=y_reg, source=index_operand, type_info=index_type))
-                index_register = 'Y'
-            else:
-                raise MIRLoweringError(f"Pointer indexing requires X or Y register, got: {index_operand.name}", source_loc=expr.source_loc)
-        else:
-            # Move index value to Y register
-            y_reg = HardwareRegister('Y')
-            self.emit(Move(dest=y_reg, source=index_operand, type_info=index_type))
-            index_register = 'Y'
-
-        # Emit StoreIndirect with index register
         self.emit(StoreIndirect(
             source=value,
             pointer=ptr_operand,
             is_far=pointer_type.is_far,
             type_info=element_type,
-            index_register=index_register
+            index_register=index_register,
+            offset=offset,
         ))
         return value
 
