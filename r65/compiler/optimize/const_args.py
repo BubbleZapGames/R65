@@ -263,9 +263,10 @@ def direct_constant_pointer_accesses(func: MIRFunction) -> int:
     rewritten = 0
     for block in func.blocks.values():
         for i, instr in enumerate(block.instructions):
+            # A pointer may be an Immediate or a register-bound alias
             if (not isinstance(instr, (LoadIndirect, StoreIndirect))
                     or instr.index_register is not None
-                    or instr.pointer.id not in consts):
+                    or getattr(instr.pointer, 'id', None) not in consts):
                 continue
             loc = _static_location(consts[instr.pointer.id], instr.is_far, instr.offset)
             if loc is None:

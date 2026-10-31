@@ -143,7 +143,7 @@ class IndirectCompareFolder:
             return False
         if defs.get(dest.id, 0) != 1:
             return False
-        if instr.pointer.id not in params:
+        if getattr(instr.pointer, 'id', None) not in params:
             return False
         if instr.index_register != 'Y' or instr.offset:
             return False

@@ -8,7 +8,7 @@ addressing modes for the 65816 processor.
 
 from typing import Optional
 
-from r65.compiler.mir.nodes import Load, Store, ModifyMemory, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
+from r65.compiler.mir.nodes import VirtualRegister, Load, Store, ModifyMemory, LoadIndirect, StoreIndirect, Immediate as MIRImmediate, FunctionPointer, LabelRef, FarPtrStrategy
 from r65.compiler.codegen.register_alloc import LocationKind, PhysicalLocation
 from r65.compiler.errors import InstructionSelectionError
 from r65.compiler.codegen.opcodes import Opcode, STORE_MNEMONICS
@@ -356,13 +356,13 @@ class MemoryOperationSelector(BaseSelector):
         ptr_loc = self.parent._get_operand_location(instr.pointer)
         dest_loc = self.parent._get_operand_location(instr.dest)
 
-        # Y-pointer optimization: pointer is in Y register (trait method self)
-        # Use LDA $offset,Y — effective address is DBR:(offset + Y)
-        # Only valid when no index_register is set (otherwise Y holds the index, not the pointer)
-        if (ptr_loc.is_hw('Y')
-                and not instr.index_register):
+        # Index-register pointer: in Y (trait method self) or X (`let p @ X`),
+        # LDA $offset,Y / $offset,X — effective address DBR:(offset + reg).
+        # Only valid when no index_register is set (otherwise Y holds the index)
+        if (ptr_loc.is_hw('Y') or ptr_loc.is_hw('X')) and not instr.index_register:
             offset = getattr(instr, 'offset', 0)
-            self._emit_y_pointer_load(offset, instr.type_info, dest_loc)
+            self._emit_y_pointer_load(offset, instr.type_info, dest_loc,
+                                      reg=ptr_loc.hw_register)
             return
 
         # Spill hardware register pointers to scratch for indirect addressing
@@ -550,13 +550,11 @@ class MemoryOperationSelector(BaseSelector):
         ptr_loc = self.parent._get_operand_location(instr.pointer)
         src_loc = self.parent._get_operand_location(instr.source)
 
-        # Y-pointer optimization: pointer is in Y register (trait method self)
-        # Use STA $offset,Y — effective address is DBR:(offset + Y)
-        # Only valid when no index_register is set (otherwise Y holds the index, not the pointer)
-        if (ptr_loc.is_hw('Y')
-                and not instr.index_register):
+        # Index-register pointer: STA $offset,Y / $offset,X (see the load)
+        if (ptr_loc.is_hw('Y') or ptr_loc.is_hw('X')) and not instr.index_register:
             offset = getattr(instr, 'offset', 0)
-            self._emit_y_pointer_store(offset, instr.type_info, src_loc, instr.source)
+            self._emit_y_pointer_store(offset, instr.type_info, src_loc, instr.source,
+                                       reg=ptr_loc.hw_register)
             return
 
         # Spill hardware register pointers to scratch for indirect addressing
@@ -692,24 +690,35 @@ class MemoryOperationSelector(BaseSelector):
     # Y-Pointer (Trait Self) Addressing
     # ========================================================================
 
-    def _emit_y_pointer_load(self, offset, type_info, dest_loc):
-        """Load through Y-pointer using LDA abs,Y addressing.
+    @staticmethod
+    def _index_pointer_operand(offset, reg) -> str:
+        """The operand for `LDA`/`STA` on Y, or `LDA.w`/`STA.w` on X: without
+        `.w` WLA-DX makes a small `$offset,X` direct page, which reads D's
+        page in bank 0 rather than DBR's."""
+        return f"${offset:04X},Y" if reg == 'Y' else f"${offset:04X},X"
 
-        Effective address = DBR:(offset + Y). Used for trait method self field access
-        where Y holds the struct base address and DBR is set to the object's bank.
+    def _emit_y_pointer_load(self, offset, type_info, dest_loc, reg='Y'):
+        """Load through a pointer in Y (or X) using LDA abs,Y (abs,X).
+
+        Effective address = DBR:(offset + reg). Used for trait method self field
+        access, where Y holds the struct base and DBR the object's bank, and for
+        a near pointer bound to X or Y.
 
         Args:
             offset: Field byte offset from struct base
             type_info: Type of the value being loaded
             dest_loc: Destination physical location
+            reg: The index register holding the pointer
         """
         is_u16 = self.parent._is_16bit(type_info)
+        lda = "LDA" if reg == 'Y' else "LDA.w"
+        operand = self._index_pointer_operand(offset, reg)
 
         if is_u16:
             # 16-bit load: switch to m16, LDA abs,Y, store, switch back
             self._emit_immediate(Opcode.REP_IMMEDIATE, M_FLAG, "16-bit A for u16 field load")
             self.parent.emitter.emit_accu_mode(16)
-            self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
+            self.parent.emitter.emit_raw(f"    {lda} {operand}")
             # Store 16-bit value
             if dest_loc.is_hw('A'):
                 pass  # Already in A
@@ -720,26 +729,28 @@ class MemoryOperationSelector(BaseSelector):
         else:
             # 8-bit load: LDA abs,Y directly, in m8 so it reads one byte
             self._ensure_m8_mode()
-            self.parent.emitter.emit_raw(f"    LDA ${offset:04X},Y")
+            self.parent.emitter.emit_raw(f"    {lda} {operand}")
             if dest_loc.is_hw('A'):
                 pass  # Already in A
             else:
                 self._emit_load_store('STA', dest_loc)
 
-    def _emit_y_pointer_store(self, offset, type_info, src_loc, source):
-        """Store through Y-pointer using STA abs,Y addressing.
+    def _emit_y_pointer_store(self, offset, type_info, src_loc, source, reg='Y'):
+        """Store through a pointer in Y (or X) using STA abs,Y (abs,X).
 
-        Effective address = DBR:(offset + Y). Used for trait method self field writes
-        where Y holds the struct base address and DBR is set to the object's bank.
+        Effective address = DBR:(offset + reg); see _emit_y_pointer_load.
 
         Args:
             offset: Field byte offset from struct base
             type_info: Type of the value being stored
             src_loc: Source physical location
             source: MIR source operand (for immediate detection)
+            reg: The index register holding the pointer
         """
 
         is_u16 = self.parent._is_16bit(type_info)
+        sta = "STA" if reg == 'Y' else "STA.w"
+        operand = self._index_pointer_operand(offset, reg)
 
         if is_u16:
             # 16-bit store
@@ -747,14 +758,14 @@ class MemoryOperationSelector(BaseSelector):
             self.parent.emitter.emit_accu_mode(16)
             # A source in Y is the pointer itself (`p.me = p`)
             self._load_word_into_a(src_loc, source)
-            self.parent.emitter.emit_raw(f"    STA ${offset:04X},Y")
+            self.parent.emitter.emit_raw(f"    {sta} {operand}")
             self._emit_immediate(Opcode.SEP_IMMEDIATE, M_FLAG, "Restore 8-bit A")
             self.parent.emitter.emit_accu_mode(8)
         else:
             # 8-bit store: load into A, STA abs,Y
             self._ensure_m8_mode()
             self._load_byte_into_a(src_loc, source)
-            self.parent.emitter.emit_raw(f"    STA ${offset:04X},Y")
+            self.parent.emitter.emit_raw(f"    {sta} {operand}")
 
     # ========================================================================
 
@@ -1533,7 +1544,13 @@ class MemoryOperationSelector(BaseSelector):
         emitted as direct page, which reads D's page instead."""
         if instr.is_far:
             return None
-        addr = self.parent._vreg_const_map.get(instr.pointer.id)
+        pointer = instr.pointer
+        if isinstance(pointer, MIRImmediate) and pointer.symbol is None:
+            addr = pointer.value                    # `*(0x0300 as *u8)`
+        elif isinstance(pointer, VirtualRegister):
+            addr = self.parent._vreg_const_map.get(pointer.id)
+        else:
+            return None                             # a pointer held in X/Y
         if addr is None or not 0x100 <= addr + instr.offset <= 0xFFFF:
             return None
         return addr
