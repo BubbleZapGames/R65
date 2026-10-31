@@ -133,6 +133,22 @@ def test_far_bank_lines_are_in_their_banks_segment(tmp_path):
     assert f.value == 0x8000
 
 
+def test_hirom_segments_and_symbols_carry_their_bank(tmp_path):
+    """HiROM banks run from $C0:0000, $C1:0000, ... as WLA-DX links them."""
+    info = _compile_debug(tmp_path,
+        '#[snesrom(name="T", hirom)]\n'
+        '#[zeropage] static mut R: u8;\n'
+        '#[bank(1)]\n'
+        '#[inline(never)]\n'
+        'far fn f() { R = 1; }\n'
+        '#[bank(0)]\n'
+        '#[entry] fn main() -> ! { f(); loop {} }\n')
+    assert {s.name: s.start for s in info.segments} == {
+        "BANK0": 0xC00000, "BANK1": 0xC10000}
+    sym = {s.name: s.value for s in info.symbols}
+    assert sym["main"] == 0xC00000 and sym["f"] == 0xC10000
+
+
 def test_prologue_is_on_the_declaration_line(tmp_path):
     # Pausing in an interrupt handler's register saves shows the handler
     info = _compile_debug(tmp_path,

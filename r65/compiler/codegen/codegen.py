@@ -1150,8 +1150,12 @@ class ProgramCodeGenerator:
         if mir_program.snesrom_config:
             is_hirom = mir_program.snesrom_config.hirom or mir_program.snesrom_config.exhirom
 
-        # Calculate base address for LoROM/HiROM
-        base_address = 0xC000 if is_hirom else 0x8000
+        # The in-bank address of a bank's first byte: LoROM maps a bank at
+        # $8000, HiROM a whole bank from $0000. A HiROM segment and its
+        # symbols carry the CPU bank too ($C0:0000, $C1:0000, ...), which the
+        # debugger reads as placed in that bank.
+        base_address = 0x0000 if is_hirom else 0x8000
+        self._dbg_banked = is_hirom
 
         # Collect segments (one per bank)
         self._collect_segments(mir_program, nodes, base_address, is_hirom)
@@ -1183,7 +1187,7 @@ class ProgramCodeGenerator:
         Args:
             mir_program: MIR program
             nodes: Assembly nodes
-            base_address: Base address (0x8000 for LoROM, 0xC000 for HiROM)
+            base_address: In-bank address of a bank's first byte
             is_hirom: Whether using HiROM mapping
         """
         # Organize functions by bank to determine which banks are used
@@ -1194,8 +1198,9 @@ class ProgramCodeGenerator:
 
         # Create segment for each bank
         for bank_num in sorted(functions_by_bank.keys()):
-            # Calculate start address for this bank
             start = base_address
+            if is_hirom:
+                start |= self._cpu_bank(bank_num) << 16
 
             # Output file offset (bank * bank_size for LoROM)
             ooffs = bank_num * bank_size
@@ -1261,6 +1266,8 @@ class ProgramCodeGenerator:
                     if bank_num is None:
                         bank_num = auto_bank
             seg_id = self._segment_id(bank_num)
+            if getattr(self, '_dbg_banked', False):
+                addr |= self._cpu_bank(bank_num) << 16
 
             # Register source file
             file_id = None
