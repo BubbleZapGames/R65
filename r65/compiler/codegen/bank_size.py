@@ -10,7 +10,7 @@ and bank-0 bytes run into the ROM header are only a warning, linked into a
 ROM with a broken header.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 LOROM_BANK_SIZE = 0x8000   # 32KB
 HIROM_BANK_SIZE = 0x10000  # 64KB
@@ -36,7 +36,8 @@ def _bytes(n: int) -> str:
 
 
 def check_bank_overflow(nodes: list, mir_program, rom_banks: int, is_hirom: bool,
-                        bank0_end: Optional[Tuple[int, str]] = None) -> None:
+                        bank0_end: Optional[Tuple[int, str]] = None,
+                        symbols: Optional[Mapping[str, int]] = None) -> None:
     """Raise CodegenError if any ROM bank's code and data pass its end.
 
     *nodes* are the banks' contents, without what codegen places at fixed
@@ -53,7 +54,7 @@ def check_bank_overflow(nodes: list, mir_program, rom_banks: int, is_hirom: bool
     from r65.compiler.codegen.symbol_gen import auto_bank_number, rom_static_bank
     from r65.compiler.errors import CodegenError
 
-    calc = AddressCalculator(0)
+    calc = AddressCalculator(0, symbols=symbols)
     addresses, _ = calc.calculate_with_labels(nodes)
     bank_size = rom_bank_size(is_hirom)
 

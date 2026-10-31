@@ -27,7 +27,7 @@ This approach avoids the inefficiency of recalculating after each individual fix
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Set, Optional
+from typing import List, Dict, Mapping, Tuple, Set, Optional
 
 from r65.compiler.codegen.opcodes import (
     Opcode, mnemonic, instruction_size,
@@ -91,9 +91,11 @@ class BranchFixup:
     then applies fixups in a single pass.
     """
 
-    def __init__(self):
+    def __init__(self, symbols: Optional[Mapping[str, int]] = None):
         self._skip_label_counter = 0
         self.branches_fixed = 0
+        # .DEFINE / .EQU values, which size inline-asm operands
+        self.symbols = symbols
 
     def fixup(self, nodes: List[AsmNode]) -> List[AsmNode]:
         """
@@ -249,7 +251,7 @@ class BranchFixup:
                 # Data directives (.db / .dw / .dl / .dsb / .dsw etc.).
                 current_offset += data_directive_size(node.name, node.args)
             elif isinstance(node, RawAsm):
-                current_offset += raw_asm_size(node.text, acc_16, idx_16)
+                current_offset += raw_asm_size(node.text, acc_16, idx_16, self.symbols)
 
         # Add final offset (end of code)
         offsets.append(current_offset)
@@ -350,7 +352,8 @@ class BranchFixup:
 # Public API
 # ============================================================================
 
-def fixup_nodes(nodes: List[AsmNode]) -> Tuple[List[AsmNode], int]:
+def fixup_nodes(nodes: List[AsmNode],
+                symbols: Optional[Mapping[str, int]] = None) -> Tuple[List[AsmNode], int]:
     """
     Apply long branch fixup to AsmNode list.
 
@@ -359,10 +362,11 @@ def fixup_nodes(nodes: List[AsmNode]) -> Tuple[List[AsmNode], int]:
 
     Args:
         nodes: List of AsmNode objects
+        symbols: .DEFINE / .EQU values, which size inline-asm operands
 
     Returns:
         Tuple of (fixed nodes, number of branches fixed)
     """
-    fixup = BranchFixup()
+    fixup = BranchFixup(symbols)
     fixed_nodes = fixup.fixup(nodes)
     return fixed_nodes, fixup.branches_fixed

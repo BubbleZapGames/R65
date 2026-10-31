@@ -567,7 +567,8 @@ class TestRawAsmInstructionSizes:
         ("WDM $01", False, 2),
         ("ASL $1234", False, 3),
         ("LDA $10", False, 2),
-        ("LDA $0010", False, 3),
+        ("LDA $0010", False, 2),       # WLA-DX sizes a number by its value
+        ("LDA.w $0010", False, 3),
         ("LDA $7E2000", False, 4),
         ("LDA.l SOMEWHERE", False, 4),
         ("LDA ($10),Y", False, 2),
@@ -588,6 +589,36 @@ class TestRawAsmInstructionSizes:
     ])
     def test_line_sizes(self, text, m16, expected):
         assert asm_line_size(text, m16=m16) == expected
+
+    # Sizes measured by assembling each line with WLA-DX. A .DEFINE is sized
+    # by its value; a label, resolved at link time, takes the narrowest mode
+    # the instruction has.
+    SYMBOLS = {'READY': 0x0000, 'PR': 0x0001, 'LO': 0x0300, 'INIDISP': 0x2100}
+
+    @pytest.mark.parametrize("text,expected", [
+        ("LDA READY", 2),
+        ("LDA INIDISP", 3),
+        ("LDA LO+1", 3),
+        ("LDA LO-$300", 2),
+        ("LDA (PR),Y", 2),
+        ("LDA [PR],Y", 2),
+        ("STA ram_label", 2),
+        ("LDA ram_label,Y", 3),       # no dp,Y form for LDA
+        ("LDX ram_label,Y", 2),
+        ("JMP (ram_label)", 3),
+        ("JMP (ram_label,X)", 3),
+        ("JSR fn_label", 3),
+        ("PEI (ram_label)", 2),
+    ])
+    def test_symbol_operand_sizes(self, text, expected):
+        assert asm_line_size(text, symbols=self.SYMBOLS) == expected
+
+    def test_unknown_name_without_symbols_is_absolute(self):
+        """Without the define table a name may be a wide .DEFINE: absolute
+        overestimates, which branch fixup tolerates; a mode of one width
+        is exact either way."""
+        assert asm_line_size("LDA READY") == 3
+        assert asm_line_size("LDA (PR),Y") == 2
 
     def test_branch_over_an_inline_table_is_made_long(self):
         """A five-entry word table plus a little code is past the 127-byte

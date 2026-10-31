@@ -652,14 +652,15 @@ class ProgramCodeGenerator:
 
         # Apply node-based long branch fixup (always required for correct assembly)
         # Code generator emits BRA by default; fixup converts to JMP when target > 127 bytes
-        final_nodes, num_branch_fixups = fixup_nodes(optimized_nodes)
+        final_nodes, num_branch_fixups = fixup_nodes(optimized_nodes, self.emitter.asm_symbols)
 
         if num_branch_fixups > 0:
             print(f"Branch fixup: {num_branch_fixups} long branch(es) fixed", file=sys.stderr)
 
         # Every bank's code and data must fit, sized as WLA-DX will lay them out
         check_bank_overflow([n for n in final_nodes if id(n) not in fixed],
-                            mir_program, rom_banks, is_hirom, bank0_end)
+                            mir_program, rom_banks, is_hirom, bank0_end,
+                            self.emitter.asm_symbols)
 
         # Convert nodes to assembly string
         assembly = emit_nodes(final_nodes)
@@ -1247,7 +1248,7 @@ class ProgramCodeGenerator:
         """
 
         # Calculate label addresses
-        calc = AddressCalculator(base_address)
+        calc = AddressCalculator(base_address, symbols=self.emitter.asm_symbols)
         _, label_addresses = calc.calculate_with_labels(nodes)
 
         # Add function symbols
@@ -1330,7 +1331,7 @@ class ProgramCodeGenerator:
         )
 
         # Calculate label addresses to get function sizes
-        calc = AddressCalculator(base_address)
+        calc = AddressCalculator(base_address, symbols=self.emitter.asm_symbols)
         node_addresses, label_addresses = calc.calculate_with_labels(nodes)
         func_ends = self._function_ends(mir_program, nodes, node_addresses)
 
@@ -1416,7 +1417,7 @@ class ProgramCodeGenerator:
         prologue_loc = None
 
         # Calculate addresses for all nodes
-        calc = AddressCalculator(base_address)
+        calc = AddressCalculator(base_address, symbols=self.emitter.asm_symbols)
         node_addresses = calc.calculate(nodes)
 
         # Group instructions by source line

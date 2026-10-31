@@ -6,7 +6,7 @@ Provides address calculation for generating debug info with accurate
 instruction addresses for source-level debugging.
 """
 
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Mapping, Optional, Set, Tuple
 
 from r65.compiler.codegen.asm_nodes import (
     AsmNode, Instruction, Label, Directive, ModeChange, BlankLine, Comment,
@@ -32,7 +32,8 @@ class AddressCalculator:
     `.INCLUDE`d file is not measured, and its bank goes in unsized_banks.
     """
 
-    def __init__(self, base_address: int, m16: bool = False, x16: bool = True):
+    def __init__(self, base_address: int, m16: bool = False, x16: bool = True,
+                 symbols: Optional[Mapping[str, int]] = None):
         """
         Initialize address calculator.
 
@@ -40,8 +41,10 @@ class AddressCalculator:
             base_address: The CPU address of a bank's first byte
             m16: Whether accumulator is in 16-bit mode (affects immediate sizes)
             x16: Whether index registers are in 16-bit mode (affects immediate sizes)
+            symbols: .DEFINE / .EQU values, which size inline-asm operands
         """
         self.base_address = base_address
+        self.symbols = symbols
         self.m16 = m16
         self.x16 = x16
         # Filled by calculate_with_labels: the WLA bank of each sized node
@@ -145,7 +148,7 @@ class AddressCalculator:
                 else:
                     self._x16 = rest == '16'
                 continue
-            line_size = asm_line_size(line, self._m16, self._x16)
+            line_size = asm_line_size(line, self._m16, self._x16, self.symbols)
             if line_size > 0:
                 if start is None:
                     start = self._offset
@@ -206,7 +209,7 @@ class AddressCalculator:
             case Directive(name, args, _):
                 return data_directive_size(name, args)
             case RawAsm(text):
-                return raw_asm_size(text, m16, x16)
+                return raw_asm_size(text, m16, x16, self.symbols)
             case Label() | Comment() | BlankLine() | ModeChange(_, _, _):
                 return 0
             case _:

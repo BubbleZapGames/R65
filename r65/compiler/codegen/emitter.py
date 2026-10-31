@@ -10,7 +10,7 @@ via emit_nodes().
 """
 
 from contextlib import contextmanager
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime
 
 if TYPE_CHECKING:
@@ -348,6 +348,9 @@ class AssemblyEmitter:
         """
         self.source_file = source_file or "unknown.r65"
         self.nodes: List[AsmNode] = []
+        # Every .DEFINE / .EQU value emitted: WLA-DX sizes an `asm!` operand
+        # naming one by its value (see asm_size.asm_line_size).
+        self.asm_symbols: Dict[str, int] = {}
         # Track current processor modes for optimization
         self._current_accu_mode = 8  # Default m8 mode
         self._current_index_mode = 16  # Default x16 mode
@@ -941,6 +944,7 @@ class AssemblyEmitter:
         Generated:
             .DEFINE TEMP $0020      ; main.r65:5
         """
+        self.asm_symbols[name] = value
         line = f".DEFINE {name} ${value:04X}"
 
         if comment:
@@ -963,6 +967,7 @@ class AssemblyEmitter:
 
         A bool value is written as 1/0: WLA-DX has no True/False.
         """
+        self.asm_symbols[name] = int(value)
         line = f".EQU {name} {int(value)}"
 
         if comment:
