@@ -57,7 +57,7 @@ from r65.compiler.codegen.location_resolver import (
 )
 from r65.compiler.codegen.asm_nodes import Immediate, Address, StackOffset, Instruction as AsmInstruction
 from r65.compiler.codegen.type_utils import (
-    is_16bit_scalar, is_far_ptr, pointer_element_size, is_signed_scalar, is_inc_dec_step)
+    is_16bit_scalar, is_far_ptr, is_signed_scalar, is_inc_dec_step)
 
 
 class InstructionSelector:
@@ -705,13 +705,9 @@ class InstructionSelector:
         op = instr.op
         is_u16 = self._is_16bit(instr.type_info)
 
-        # POINTER ARITHMETIC SCALING: ptr++ on *u16 should add sizeof(u16)=2.
-        # Scale immediate operands by pointee element size for pointer types.
+        # A pointer step's right operand is already a byte offset (scaled
+        # by the element size in MIR lowering).
         right_operand = instr.right
-        if op in ('+', '-') and isinstance(instr.right, MIRImmediate):
-            elem_size = self._get_pointer_element_size(instr.type_info)
-            if elem_size > 1:
-                right_operand = MIRImmediate(instr.right.value * elem_size)
 
         # OPTIMIZATION: Detect register increment/decrement patterns
         # reg = reg + 1  →  INX/INY/INC A
@@ -1899,10 +1895,6 @@ class InstructionSelector:
     def _is_far_pointer(self, type_info) -> bool:
         """Check if type is a far pointer (24-bit / 3 bytes)."""
         return is_far_ptr(type_info)
-
-    def _get_pointer_element_size(self, type_info) -> int:
-        """The pointee size `ptr++` steps by, or 0 for a non-pointer."""
-        return pointer_element_size(type_info)
 
     def _is_16bit(self, type_info) -> bool:
         """Whether *type_info* moves through A as one 16-bit value."""

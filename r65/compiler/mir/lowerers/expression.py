@@ -70,6 +70,10 @@ class ExpressionLowerer:
         if const_result is not None:
             return Immediate(const_result)
 
+        step = self._pointer_step(expr)
+        if step is not None:
+            return self._lower_pointer_step(expr, *step)
+
         comparison_ops = {'==', '!=', '<', '<=', '>', '>='}
 
         if expr.op in comparison_ops:
@@ -208,6 +212,42 @@ class ExpressionLowerer:
             type_info=expr.expr_type
         ))
 
+        return result
+
+    @staticmethod
+    def _pointer_step(expr: HIRBinaryOp):
+        """`(pointer side, integer side, element size)` for `ptr ± n` or
+        `n + ptr`, else None. Pointer - pointer is not a step."""
+        if expr.op not in ('+', '-'):
+            return None
+        left_ptr = isinstance(expr.left.expr_type, PointerTypeInfo)
+        right_ptr = isinstance(expr.right.expr_type, PointerTypeInfo)
+        if left_ptr == right_ptr or (right_ptr and expr.op == '-'):
+            return None
+        ptr_side, int_side = ('left', 'right') if left_ptr else ('right', 'left')
+        pointee = getattr(expr, ptr_side).expr_type.pointee_type
+        from r65.compiler.hir.unified_type_utils import get_unified_type_size
+        return ptr_side, int_side, get_unified_type_size(pointee)
+
+    def _lower_pointer_step(self, expr: HIRBinaryOp, ptr_side: str,
+                            int_side: str, element_size: int) -> VirtualRegister:
+        """`ptr ± n` steps by n elements: the BinaryOp adds n * element size
+        bytes, so every later pass reads a pointer step as a byte offset."""
+        ptr_expr, int_expr = getattr(expr, ptr_side), getattr(expr, int_side)
+        ptr = self.builder.lower_expression(ptr_expr)
+        if isinstance(ptr, HardwareRegister) and ptr.name == 'A':
+            # Lowering and scaling the count go through A.
+            held = self.ctx.alloc_vreg(ptr_expr.expr_type, 'ptr_base')
+            self.emit(Move(dest=held, source=ptr, type_info=ptr_expr.expr_type))
+            ptr = held
+        count = self.builder.lower_expression(int_expr)
+        if isinstance(count, Immediate) and count.symbol is None:
+            offset = Immediate(count.value * element_size)
+        else:
+            offset = self.builder.scale_index(count, element_size, int_expr.expr_type)
+        result = self.ctx.alloc_vreg(expr.expr_type, f"{expr.op}_result")
+        self.emit(BinaryOp(dest=result, left=ptr, right=offset, op=expr.op,
+                           type_info=expr.expr_type))
         return result
 
     def _lower_constant_chain(self, expr: HIRBinaryOp) -> Optional[VirtualRegister]:

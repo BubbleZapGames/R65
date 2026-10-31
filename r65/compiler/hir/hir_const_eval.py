@@ -71,6 +71,7 @@ def try_eval_const_int(expr, symbol_table: 'SymbolTable' = None) -> Optional[int
         right = try_eval_const_int(expr.right, symbol_table)
         if left is None or right is None:
             return None
+        left, right = _scale_pointer_step(expr, left, right)
         return _eval_binary_int(expr.op, left, right)
 
     # Block expression: evaluate statements (must be no-ops for const), then final expr
@@ -193,6 +194,7 @@ def try_eval_const_binary_masked(expr, symbol_table: 'SymbolTable' = None) -> Op
         return None
 
     mask = _get_type_mask(expr.expr_type)
+    left, right = _scale_pointer_step(expr, left, right)
     result = _eval_binary_int(expr.op, left, right)
     if result is None:
         return None
@@ -201,6 +203,22 @@ def try_eval_const_binary_masked(expr, symbol_table: 'SymbolTable' = None) -> Op
     if expr.op in ('+', '-', '*', '<<'):
         return result & mask
     return result
+
+
+def _scale_pointer_step(expr, left: int, right: int):
+    """*left*, *right* with the integer side of `ptr ± n` / `n + ptr`
+    multiplied by the element size: a pointer steps by elements."""
+    from r65.compiler.hir.types import PointerTypeInfo
+    if expr.op not in ('+', '-'):
+        return left, right
+    left_ptr = isinstance(expr.left.expr_type, PointerTypeInfo)
+    right_ptr = isinstance(expr.right.expr_type, PointerTypeInfo)
+    if left_ptr == right_ptr:
+        return left, right
+    from r65.compiler.hir.unified_type_utils import get_unified_type_size
+    if left_ptr:
+        return left, right * get_unified_type_size(expr.left.expr_type.pointee_type)
+    return left * get_unified_type_size(expr.right.expr_type.pointee_type), right
 
 
 def _eval_binary_int(op: str, left: int, right: int) -> Optional[int]:

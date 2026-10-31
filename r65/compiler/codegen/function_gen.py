@@ -19,7 +19,7 @@ from r65.compiler.codegen.emitter import AssemblyEmitter, emit_node
 from r65.compiler.codegen.instruction_select import InstructionSelector
 from r65.compiler.codegen.register_alloc import ScratchRegisterPool, RegisterAllocator, PhysicalLocation, LocationKind, group_interrupt_scratch_pushes
 from r65.compiler.codegen.memory_alloc import MemoryAllocator
-from r65.compiler.codegen.type_utils import get_type_size, pointer_element_size
+from r65.compiler.codegen.type_utils import get_type_size
 from r65.compiler.codegen.constants import DEFAULT_STACK_UPPER, M_FLAG, X_FLAG
 from r65.compiler.codegen.opcodes import (
     Opcode, PUSH_OPCODES, PULL_OPCODES,

@@ -28,7 +28,7 @@ from r65.compiler.mir.liveness import LivenessAnalyzer
 from r65.compiler.hir.unified_type_utils import get_unified_type_size
 from r65.compiler.codegen.type_utils import (
     get_vreg_size, is_a_resident_convert, convert_operand_widths, defines_in_a,
-    is_far_ptr, is_inc_dec_step, is_signed_scalar, pointer_element_size)
+    is_far_ptr, is_inc_dec_step, is_signed_scalar)
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 if _TYPE_CHECKING:
@@ -1426,9 +1426,7 @@ class StackSlotAllocator:
                     or type(right) is not Immediate or not isinstance(right.value, int)):
                 return False
             reg = self.pre_allocated_hw.get(dest.id)
-            scale = pointer_element_size(instr.type_info)
-            step = right.value * scale if scale > 1 else right.value
-            return reg in ('X', 'Y') and is_inc_dec_step(step, reg)
+            return reg in ('X', 'Y') and is_inc_dec_step(right.value, reg)
         if type(instr) is Compare:
             return (type(instr.left) is VirtualRegister
                     and self.pre_allocated_hw.get(instr.left.id) in ('X', 'Y')

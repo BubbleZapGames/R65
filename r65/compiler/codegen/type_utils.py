@@ -63,18 +63,6 @@ def is_far_ptr(type_info) -> bool:
             and type_info.is_far)
 
 
-def pointer_element_size(type_info) -> int:
-    """The pointee's size for a pointer type, else 0 — what `ptr++` steps by."""
-    pointee = getattr(type_info, 'pointee_type', None)
-    if pointee is None:
-        return 0
-    from r65.compiler.hir.unified_type_utils import get_unified_type_size
-    try:
-        return get_unified_type_size(pointee)
-    except Exception:
-        return 0
-
-
 def arg_param_size(arg) -> int:
     """Bytes an argument occupies at its parameter: the parameter's type, else
     the value's, else an untyped immediate's own width (1, 2 or 3)."""
